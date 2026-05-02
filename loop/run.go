@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,13 @@ const defaultMaxTurns = 32
 // receives a snapshot of every loop event in source order; nil disables event
 // delivery. Messages, Tools, and Options are defensively copied so callers may
 // reuse the input slices and maps.
+//
+// Parallel controls within-turn tool execution. When false (the default),
+// tool calls in a single assistant message are executed sequentially in
+// source order. When true, the loop fans them out concurrently and waits
+// for all of them before appending tool-result messages — but the appended
+// results, EventToolStart, and EventToolEnd are still emitted in assistant
+// source order so the transcript stays deterministic.
 type RunRequest struct {
 	Provider     Provider
 	Model        string
@@ -24,6 +32,7 @@ type RunRequest struct {
 	Tools        []Tool
 	Options      map[string]any
 	MaxTurns     int
+	Parallel     bool
 	Emit         func(Event)
 }
 
@@ -95,38 +104,94 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			return snapshot(), nil
 		}
 
-		for _, call := range toolCalls {
-			if err := ctx.Err(); err != nil {
-				return fail(err)
-			}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
 
+		toolMessages, err := executeToolCalls(ctx, req, toolCalls, emit)
+		if err != nil {
+			return fail(err)
+		}
+		messages = append(messages, toolMessages...)
+		newMessages = append(newMessages, toolMessages...)
+
+		emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
+	}
+
+	return fail(fmt.Errorf("loop: maximum turns exceeded (%d)", maxTurns))
+}
+
+// executeToolCalls runs every tool call requested by an assistant turn and
+// returns the tool-result messages in assistant source order. The behavior
+// is the same in sequential and parallel modes: source-ordered tool_start
+// events, source-ordered tool_end events, source-ordered append. Parallel
+// mode only changes when the executors run.
+func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emit func(Event)) ([]Message, error) {
+	type result struct {
+		call    ToolCall
+		out     ToolResult
+		message Message
+	}
+
+	results := make([]result, len(calls))
+	if req.Parallel {
+		var wg sync.WaitGroup
+		for i, call := range calls {
 			emit(Event{
 				Type:       EventToolStart,
 				ToolCall:   toolCallPtr(call),
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
 			})
-
-			normalizedCall, toolResult := executeToolCall(ctx, req.Tools, call)
-			toolMessage := toolResultMessage(normalizedCall, toolResult)
-
-			messages = append(messages, toolMessage)
-			newMessages = append(newMessages, toolMessage)
-
-			emit(Event{
-				Type:       EventToolEnd,
-				ToolCall:   toolCallPtr(normalizedCall),
-				ToolCallID: normalizedCall.ID,
-				ToolName:   normalizedCall.Name,
-				ToolResult: toolResultPtr(toolResult),
-				Message:    messagePtr(toolMessage),
-			})
+			wg.Add(1)
+			go func(i int, call ToolCall) {
+				defer wg.Done()
+				normalizedCall, toolResult := executeToolCall(ctx, req.Tools, call)
+				results[i] = result{
+					call:    normalizedCall,
+					out:     toolResult,
+					message: toolResultMessage(normalizedCall, toolResult),
+				}
+			}(i, call)
 		}
-
-		emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
+		wg.Wait()
+	} else {
+		for i, call := range calls {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			emit(Event{
+				Type:       EventToolStart,
+				ToolCall:   toolCallPtr(call),
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+			})
+			normalizedCall, toolResult := executeToolCall(ctx, req.Tools, call)
+			results[i] = result{
+				call:    normalizedCall,
+				out:     toolResult,
+				message: toolResultMessage(normalizedCall, toolResult),
+			}
+		}
 	}
 
-	return fail(fmt.Errorf("loop: maximum turns exceeded (%d)", maxTurns))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	messages := make([]Message, len(results))
+	for i, r := range results {
+		messages[i] = r.message
+		emit(Event{
+			Type:       EventToolEnd,
+			ToolCall:   toolCallPtr(r.call),
+			ToolCallID: r.call.ID,
+			ToolName:   r.call.Name,
+			ToolResult: toolResultPtr(r.out),
+			Message:    messagePtr(r.message),
+		})
+	}
+	return messages, nil
 }
 
 // executeToolCall normalizes a single tool call's arguments and invokes its

@@ -86,12 +86,19 @@ The concrete P0 entry point is `loop.Run(ctx, loop.RunRequest)`. It returns a
 that run. `RunRequest.Emit` receives event snapshots for callers such as sessions
 and CLIs.
 
-P0 uses sequential tool execution. This keeps the transcript deterministic and
-simple to verify. Tool arguments must be JSON objects; missing arguments are
-treated as `{}`. Unknown tools, invalid arguments, and executor errors are
-represented as error tool results that are visible to the model, rather than
-crashing the loop. A later parallel mode can run tools concurrently while still
-appending results in assistant source order.
+By default the loop executes tool calls sequentially in source order, which
+keeps the transcript deterministic and simple to verify. Tool arguments
+must be JSON objects; missing arguments are treated as `{}`. Unknown
+tools, invalid arguments, and executor errors are represented as error
+tool results that are visible to the model, rather than crashing the loop.
+
+Setting `RunRequest.Parallel = true` opts callers into concurrent
+execution: tool calls within a single assistant message are dispatched in
+parallel goroutines, but `EventToolStart`, the executor invocations'
+visible side effects on the transcript, and `EventToolEnd` events are
+still ordered by assistant source position so the transcript is identical
+to a sequential run that took the same set of inputs. Sequential remains
+the default until callers explicitly opt in.
 
 The default maximum loop length is 32 assistant turns to prevent accidental
 infinite tool cycles. Callers can override this with `RunRequest.MaxTurns`.
