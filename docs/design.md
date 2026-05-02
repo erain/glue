@@ -130,8 +130,12 @@ result, err := session.Prompt(ctx, "Use the weather tool for Toronto.")
 ```
 
 Sessions are in-memory in P0. `Session.Subscribe(func(glue.Event))` registers a
-session-level event handler, and `glue.WithEvents` registers a per-prompt event
-handler. File-backed stores are added in P1.
+session-level event handler that fires for every prompt run on that session,
+and `glue.WithEvents` registers a per-prompt event handler that fires
+alongside (both receive the same events for the prompt). The current
+`AgentOptions` reserves `Store`, `WorkDir`, `Role`, and `Roles` fields so the
+public type stays stable as those features land in #11, #13, and #14.
+File-backed stores are added in P1.
 
 `PromptJSON(ctx, prompt, outPtr, opts...)` requests structured output and
 unmarshals the assistant's final text into a caller-provided non-nil pointer. It
