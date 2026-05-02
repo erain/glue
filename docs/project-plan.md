@@ -94,8 +94,10 @@ session.
 
 ## Current Status
 
-Bootstrap. The repository contains LICENSE, README, and (after issue #2 lands)
-the design docs, project plan, ADR 0001, and CONTRIBUTING. No Go module,
-package scaffold, runtime types, loop, providers, stores, or CLI exist yet —
-those are tracked by P0 issues #3 through #9. The next issue after #2 is #3:
-scaffold the Go module and package boundaries.
+P0 is complete. The repository contains the design docs, project plan, ADR 0001,
+CONTRIBUTING, a CI workflow, the Go module + package scaffold, normalized loop
+types, the reusable agent loop with deterministic sequential tool execution,
+the public `glue.Agent` / `glue.Session` API, the Gemini text streaming
+provider, and a README quickstart. P1 starts with #10 (Gemini function calling)
+and continues through file-backed sessions, structured JSON, skills, roles,
+and the CLI runner. See the pinned tracker for the next recommended issue.
