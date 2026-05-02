@@ -180,6 +180,16 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 	s.mu.Lock()
 	base := cloneMessages(s.messages)
 	s.mu.Unlock()
+
+	if compacted, did, err := s.maybeCompact(ctx, base); err != nil {
+		return PromptResult{}, err
+	} else if did {
+		s.mu.Lock()
+		s.messages = cloneMessages(compacted)
+		s.updatedAt = time.Now().UTC()
+		s.mu.Unlock()
+		base = compacted
+	}
 	runMessages := append(base, userMessage)
 
 	result, runErr := loop.Run(ctx, loop.RunRequest{
@@ -239,6 +249,29 @@ func (s *Session) stateLocked() SessionState {
 		CreatedAt: s.createdAt,
 		UpdatedAt: s.updatedAt,
 	}
+}
+
+// maybeCompact runs the agent's configured Compactor against the current
+// transcript when the message count exceeds the configured threshold. It
+// returns the (possibly new) transcript, a flag indicating whether a
+// compaction actually replaced messages, and any error.
+func (s *Session) maybeCompact(ctx context.Context, messages []Message) ([]Message, bool, error) {
+	if s.agent.compactor == nil || s.agent.compactionThreshold <= 0 {
+		return messages, false, nil
+	}
+	if len(messages) <= s.agent.compactionThreshold {
+		return messages, false, nil
+	}
+	out, err := s.agent.compactor.Compact(ctx, cloneMessages(messages))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(out) == len(messages) {
+		// No-op compactor; do not invalidate persistence with a no-op
+		// rewrite.
+		return messages, false, nil
+	}
+	return out, true, nil
 }
 
 func (s *Session) save(ctx context.Context, state SessionState) error {

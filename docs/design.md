@@ -241,6 +241,22 @@ Persisted data includes:
 - tool calls and tool results inside messages
 - usage inside messages when available
 
+## Context Compaction
+
+Long-running sessions can exceed provider context windows. Glue exposes an
+explicit, opt-in [`Compactor`](compactor.go) interface that callers wire
+through `AgentOptions.Compactor` and `AgentOptions.CompactionThreshold`.
+The agent runs the compactor before every prompt whenever the in-memory
+transcript has more than the threshold number of messages; the compactor's
+output replaces the in-memory transcript before the loop runs and is
+persisted by the next save.
+
+The first built-in policy is `KeepRecentMessages(n)`, which keeps the last
+`n` messages and replaces everything older with a single assistant-role
+marker carrying `Metadata["compaction"] = "keep_recent"`. Token-aware
+compaction can be added later as a separate `Compactor` implementation;
+see [`adr/0002-context-compaction.md`](adr/0002-context-compaction.md).
+
 ## Verification Policy
 
 Every issue must specify verification before work starts. At minimum:
