@@ -328,7 +328,7 @@ func buildJSONPrompt(text string, schema any) string {
 func (s *Session) promptConfig(options []PromptOption) promptConfig {
 	config := promptConfig{
 		model:        s.agent.model,
-		systemPrompt: s.agent.systemPrompt,
+		systemPrompt: composeSystemPrompt(s.agent.systemPrompt, s.agent.agentsMD, s.agent.skills),
 		tools:        cloneTools(s.agent.tools),
 		options:      cloneMap(s.agent.options),
 		maxTurns:     s.agent.maxTurns,
@@ -339,6 +339,24 @@ func (s *Session) promptConfig(options []PromptOption) promptConfig {
 		}
 	}
 	return config
+}
+
+// Skill renders the named skill (looked up from [AgentOptions.Skills] or the
+// agent's WorkDir context), appends args as JSON, and runs the result
+// through [Session.Prompt]. Unknown skill names return a typed error.
+func (s *Session) Skill(ctx context.Context, name string, args any, options ...PromptOption) (PromptResult, error) {
+	if s == nil || s.agent == nil {
+		return PromptResult{}, errors.New("glue: session has no agent")
+	}
+	skill, ok := s.agent.skills[name]
+	if !ok {
+		return PromptResult{}, fmt.Errorf("glue: skill %q not found", name)
+	}
+	prompt, err := buildSkillPrompt(skill, args)
+	if err != nil {
+		return PromptResult{}, err
+	}
+	return s.Prompt(ctx, prompt, options...)
 }
 
 func (s *Session) dispatchEvent(event Event) {

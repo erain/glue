@@ -11,14 +11,14 @@ const defaultSessionID = "default"
 
 // AgentOptions configures a Glue agent.
 //
-// Provider, Model, SystemPrompt, Tools, Options, MaxTurns, and Store are
-// wired. WorkDir, Role, and Roles are reserved for follow-up issues:
+// Provider, Model, SystemPrompt, Tools, Options, MaxTurns, Store, WorkDir,
+// and Skills are wired. Role and Roles are reserved for #14.
 //
-//   - WorkDir: AGENTS.md context and Markdown skill discovery (#13).
-//   - Role / Roles: scoped role instructions and per-role models (#14).
-//
-// Store, when set, persists session state across processes. The default
-// in-memory behavior is preserved when Store is nil.
+// When WorkDir is set, the agent loads `<WorkDir>/AGENTS.md` (non-fatal if
+// missing) into the system prompt and discovers Markdown skills under
+// `<WorkDir>/.agents/skills/<name>/SKILL.md`. Skills supplied via the
+// Skills field are merged with those discovered on disk; programmatic
+// entries win on name collision.
 type AgentOptions struct {
 	Provider     Provider
 	Model        string
@@ -27,9 +27,9 @@ type AgentOptions struct {
 	Options      map[string]any
 	MaxTurns     int
 	Store        Store
+	WorkDir      string
+	Skills       map[string]Skill
 
-	// WorkDir is reserved for #13.
-	WorkDir string
 	// Role is reserved for #14.
 	Role string
 	// Roles is reserved for #14.
@@ -45,6 +45,11 @@ type Agent struct {
 	options      map[string]any
 	maxTurns     int
 	store        Store
+	workDir      string
+
+	agentsMD      string
+	skills        map[string]Skill
+	contextLoaded bool
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -62,6 +67,8 @@ func NewAgent(options AgentOptions) *Agent {
 		options:      cloneMap(options.Options),
 		maxTurns:     options.MaxTurns,
 		store:        options.Store,
+		workDir:      options.WorkDir,
+		skills:       cloneSkills(options.Skills),
 		sessions:     make(map[string]*Session),
 	}
 }
@@ -84,6 +91,10 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 		return existing, nil
 	}
 
+	if err := a.ensureContextLoaded(); err != nil {
+		return nil, err
+	}
+
 	state, found, err := a.loadSessionState(ctx, id)
 	if err != nil {
 		return nil, err
@@ -104,6 +115,33 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 	}
 	a.sessions[id] = session
 	return session, nil
+}
+
+func (a *Agent) ensureContextLoaded() error {
+	if a.contextLoaded {
+		return nil
+	}
+	if a.workDir != "" {
+		loaded, err := LoadContext(a.workDir)
+		if err != nil {
+			return err
+		}
+		a.agentsMD = loaded.AgentsMD
+		if len(loaded.Skills) > 0 {
+			if a.skills == nil {
+				a.skills = map[string]Skill{}
+			}
+			for name, skill := range loaded.Skills {
+				if _, exists := a.skills[name]; exists {
+					// programmatic entries win on collision
+					continue
+				}
+				a.skills[name] = skill
+			}
+		}
+	}
+	a.contextLoaded = true
+	return nil
 }
 
 func (a *Agent) loadSessionState(ctx context.Context, id string) (SessionState, bool, error) {
