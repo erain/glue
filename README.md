@@ -108,6 +108,33 @@ result, err := session.Prompt(ctx, "Be concise.",
 )
 ```
 
+### Roles
+
+A role is a named instruction profile with an optional model override.
+Pass roles via `AgentOptions.Roles` or load them from
+`<WorkDir>/roles/*.md` with simple `name:` / `description:` / `model:`
+frontmatter.
+
+```go
+agent := glue.NewAgent(glue.AgentOptions{
+	Provider: gemini.New(gemini.Options{}),
+	Model:    "gemini-2.5-flash",
+	Roles: []glue.Role{
+		{Name: "reviewer", Model: "gemini-2.5-pro", Instructions: "Review for SQL safety."},
+		{Name: "writer", Instructions: "Write in plain English."},
+	},
+	Role: "writer", // agent default
+})
+
+session, _ := agent.Session(ctx, "review", glue.WithSessionRole("reviewer"))
+result, _ := session.Prompt(ctx, "Review this PR.", glue.WithRole("reviewer"))
+```
+
+Effective role precedence: `WithRole` (call) > `WithSessionRole` (session)
+> `AgentOptions.Role` (agent). Effective model precedence: `WithModel`
+(call) > effective role's `Model` > `AgentOptions.Model`. Unknown role
+names return a typed error.
+
 ### Project context and skills
 
 Set `AgentOptions.WorkDir` to enable Markdown context discovery:

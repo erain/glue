@@ -27,6 +27,7 @@ type Session struct {
 	metadata  map[string]any
 	createdAt time.Time
 	updatedAt time.Time
+	role      string
 
 	nextSubscriberID int
 	subscribers      map[int]func(Event)
@@ -94,11 +95,24 @@ type promptConfig struct {
 	maxTurns     int
 	emit         func(Event)
 	jsonSchema   any
+	role         string
+	modelSet     bool
 }
 
-// WithModel overrides the agent model for one prompt.
+// WithModel overrides the model for one prompt. When set, this beats
+// any role's Model and the agent's Model.
 func WithModel(model string) PromptOption {
-	return func(c *promptConfig) { c.model = model }
+	return func(c *promptConfig) {
+		c.model = model
+		c.modelSet = true
+	}
+}
+
+// WithRole overrides the effective role for one prompt. The named role
+// must exist in [AgentOptions.Roles] or the loaded WorkDir context, or
+// the prompt fails with a typed error.
+func WithRole(role string) PromptOption {
+	return func(c *promptConfig) { c.role = role }
 }
 
 // WithSystemPrompt overrides the agent system prompt for one prompt.
@@ -153,7 +167,10 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 
-	config := s.promptConfig(options)
+	config, err := s.promptConfig(options)
+	if err != nil {
+		return PromptResult{}, err
+	}
 	userMessage := Message{
 		Role:      MessageRoleUser,
 		Content:   []ContentPart{{Type: ContentTypeText, Text: text}},
@@ -325,20 +342,34 @@ func buildJSONPrompt(text string, schema any) string {
 	return b.String()
 }
 
-func (s *Session) promptConfig(options []PromptOption) promptConfig {
+func (s *Session) promptConfig(options []PromptOption) (promptConfig, error) {
 	config := promptConfig{
 		model:        s.agent.model,
 		systemPrompt: composeSystemPrompt(s.agent.systemPrompt, s.agent.agentsMD, s.agent.skills),
 		tools:        cloneTools(s.agent.tools),
 		options:      cloneMap(s.agent.options),
 		maxTurns:     s.agent.maxTurns,
+		role:         s.agent.role,
+	}
+	if s.role != "" {
+		config.role = s.role
 	}
 	for _, opt := range options {
 		if opt != nil {
 			opt(&config)
 		}
 	}
-	return config
+	if config.role != "" {
+		role, ok := s.agent.roles[config.role]
+		if !ok {
+			return promptConfig{}, fmt.Errorf("glue: role %q not found", config.role)
+		}
+		config.systemPrompt = appendRoleToSystemPrompt(config.systemPrompt, role)
+		if role.Model != "" && !config.modelSet {
+			config.model = role.Model
+		}
+	}
+	return config, nil
 }
 
 // Skill renders the named skill (looked up from [AgentOptions.Skills] or the

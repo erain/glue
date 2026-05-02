@@ -11,14 +11,18 @@ const defaultSessionID = "default"
 
 // AgentOptions configures a Glue agent.
 //
-// Provider, Model, SystemPrompt, Tools, Options, MaxTurns, Store, WorkDir,
-// and Skills are wired. Role and Roles are reserved for #14.
-//
-// When WorkDir is set, the agent loads `<WorkDir>/AGENTS.md` (non-fatal if
-// missing) into the system prompt and discovers Markdown skills under
-// `<WorkDir>/.agents/skills/<name>/SKILL.md`. Skills supplied via the
-// Skills field are merged with those discovered on disk; programmatic
+// All fields are wired. When WorkDir is set, the agent loads
+// `<WorkDir>/AGENTS.md` (non-fatal if missing), discovers Markdown skills
+// under `<WorkDir>/.agents/skills/<name>/SKILL.md`, and discovers Markdown
+// roles under `<WorkDir>/roles/*.md`. Programmatic entries supplied via
+// Skills and Roles are merged with the on-disk catalog; programmatic
 // entries win on name collision.
+//
+// Role is the agent-default role applied to every prompt unless overridden
+// at session or call level. Effective role precedence is
+// call ([WithRole]) > session ([WithSessionRole]) > agent (Role).
+// Effective model precedence is call ([WithModel]) > effective role's
+// Model > Model.
 type AgentOptions struct {
 	Provider     Provider
 	Model        string
@@ -29,11 +33,8 @@ type AgentOptions struct {
 	Store        Store
 	WorkDir      string
 	Skills       map[string]Skill
-
-	// Role is reserved for #14.
-	Role string
-	// Roles is reserved for #14.
-	Roles map[string]any
+	Roles        []Role
+	Role         string
 }
 
 // Agent owns shared configuration and an in-memory session map.
@@ -46,9 +47,11 @@ type Agent struct {
 	maxTurns     int
 	store        Store
 	workDir      string
+	role         string
 
 	agentsMD      string
 	skills        map[string]Skill
+	roles         map[string]Role
 	contextLoaded bool
 
 	mu       sync.Mutex
@@ -69,15 +72,41 @@ func NewAgent(options AgentOptions) *Agent {
 		store:        options.Store,
 		workDir:      options.WorkDir,
 		skills:       cloneSkills(options.Skills),
+		roles:        rolesFromSlice(options.Roles),
+		role:         options.Role,
 		sessions:     make(map[string]*Session),
 	}
+}
+
+func rolesFromSlice(roles []Role) map[string]Role {
+	if len(roles) == 0 {
+		return nil
+	}
+	out := make(map[string]Role, len(roles))
+	for _, r := range roles {
+		out[r.Name] = r
+	}
+	return out
+}
+
+// SessionOption configures a session at creation time.
+type SessionOption func(*sessionConfig)
+
+type sessionConfig struct {
+	role string
+}
+
+// WithSessionRole sets the session-default role used when no per-call
+// [WithRole] is provided.
+func WithSessionRole(role string) SessionOption {
+	return func(c *sessionConfig) { c.role = role }
 }
 
 // Session returns an existing session by id, or creates a new one. When the
 // agent has a configured [Store], an existing on-disk state is loaded into
 // the new in-memory session. Empty ids resolve to the default session
 // ("default").
-func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
+func (a *Agent) Session(ctx context.Context, id string, options ...SessionOption) (*Session, error) {
 	if a == nil {
 		return nil, errors.New("glue: nil agent")
 	}
@@ -95,6 +124,13 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 		return nil, err
 	}
 
+	cfg := sessionConfig{}
+	for _, opt := range options {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
 	state, found, err := a.loadSessionState(ctx, id)
 	if err != nil {
 		return nil, err
@@ -107,6 +143,7 @@ func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 		metadata:    cloneMap(state.Metadata),
 		createdAt:   state.CreatedAt,
 		updatedAt:   state.UpdatedAt,
+		role:        cfg.role,
 		subscribers: make(map[int]func(Event)),
 	}
 	if !found {
@@ -137,6 +174,17 @@ func (a *Agent) ensureContextLoaded() error {
 					continue
 				}
 				a.skills[name] = skill
+			}
+		}
+		if len(loaded.Roles) > 0 {
+			if a.roles == nil {
+				a.roles = map[string]Role{}
+			}
+			for name, role := range loaded.Roles {
+				if _, exists := a.roles[name]; exists {
+					continue
+				}
+				a.roles[name] = role
 			}
 		}
 	}

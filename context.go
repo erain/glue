@@ -19,13 +19,23 @@ type Skill struct {
 	Instructions string
 }
 
-// ProjectContext is the subset of [AgentOptions.WorkDir] state currently
-// loaded by [LoadContext]. AGENTS.md is appended to the system prompt and
-// Skills are exposed via [Session.Skill]. Roles are added in a follow-up
-// issue.
+// Role is a named instruction profile with an optional model override.
+// Roles are loaded from `<WorkDir>/roles/*.md` (with `name:`,
+// `description:`, `model:` frontmatter) or supplied via [AgentOptions.Roles].
+type Role struct {
+	Name         string
+	Description  string
+	Instructions string
+	Model        string
+}
+
+// ProjectContext is the WorkDir-loaded state injected by [LoadContext].
+// AgentsMD is appended to the system prompt; Skills are exposed via
+// [Session.Skill]; Roles are looked up by name during prompt configuration.
 type ProjectContext struct {
 	AgentsMD string
 	Skills   map[string]Skill
+	Roles    map[string]Role
 }
 
 // LoadContext loads AGENTS.md (non-fatal if missing) and skills under
@@ -48,7 +58,50 @@ func LoadContext(workDir string) (ProjectContext, error) {
 		return ProjectContext{}, err
 	}
 	ctx.Skills = skills
+
+	roles, err := loadRoles(filepath.Join(workDir, "roles"))
+	if err != nil {
+		return ProjectContext{}, err
+	}
+	ctx.Roles = roles
 	return ctx, nil
+}
+
+func loadRoles(rolesDir string) (map[string]Role, error) {
+	entries, err := os.ReadDir(rolesDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	roles := map[string]Role{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		path := filepath.Join(rolesDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		defaultName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		parsed, err := parseMarkdownWithFrontmatter(string(data), defaultName)
+		if err != nil {
+			return nil, fmt.Errorf("glue: role %q frontmatter: %w", entry.Name(), err)
+		}
+		roles[parsed.Name] = Role{
+			Name:         parsed.Name,
+			Description:  parsed.Description,
+			Instructions: parsed.Body,
+			Model:        parsed.Model,
+		}
+	}
+	if len(roles) == 0 {
+		return nil, nil
+	}
+	return roles, nil
 }
 
 func loadSkills(skillsDir string) (map[string]Skill, error) {
@@ -184,4 +237,26 @@ func cloneSkills(skills map[string]Skill) map[string]Skill {
 		out[name] = skill
 	}
 	return out
+}
+
+func cloneRoles(roles map[string]Role) map[string]Role {
+	if len(roles) == 0 {
+		return nil
+	}
+	out := make(map[string]Role, len(roles))
+	for name, role := range roles {
+		out[name] = role
+	}
+	return out
+}
+
+func appendRoleToSystemPrompt(systemPrompt string, role Role) string {
+	if strings.TrimSpace(role.Instructions) == "" {
+		return systemPrompt
+	}
+	block := "## Role: " + role.Name + "\n" + strings.TrimSpace(role.Instructions)
+	if strings.TrimSpace(systemPrompt) == "" {
+		return block
+	}
+	return strings.TrimSpace(systemPrompt) + "\n\n" + block
 }
