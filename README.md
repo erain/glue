@@ -221,9 +221,31 @@ smoke test:
 GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ```
 
+## CLI
+
+A thin local CLI is built on the same library API:
+
+```sh
+go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
+```
+
+Flags:
+
+- `--id` — session id (default `"default"`).
+- `--prompt` — prompt text (required).
+- `--model` — model id or `gemini/<model>` (default `gemini-2.5-flash`).
+- `--store` — file session store directory (default `.glue/sessions`).
+- `--env` — `.env` file to load before reading `GEMINI_API_KEY`. Repeatable;
+  shell environment wins on conflict.
+
+The CLI streams text deltas to stdout, persists sessions through
+`stores/file`, and uses `WorkDir="."` so `AGENTS.md`, `.agents/skills`, and
+`roles/` discovery work from the invocation directory. Errors return a
+non-zero exit code; missing `GEMINI_API_KEY` produces a clear message.
+
 ## Roadmap
 
-The P1 milestone adds Gemini function calling, a file-backed session store,
-structured JSON results, AGENTS.md and skill loading, role support, and a
-local CLI runner. See [docs/project-plan.md](docs/project-plan.md) and the
-project tracker (#1).
+P2 covers parallel tool execution, context compaction, an opt-in shell/
+filesystem tool design, a provider plugin guide, and the GitHub issue
+automation workflow. See [docs/project-plan.md](docs/project-plan.md) and
+the project tracker (#1).
