@@ -108,6 +108,23 @@ result, err := session.Prompt(ctx, "Be concise.",
 )
 ```
 
+### Structured JSON results
+
+```go
+var out struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+_, err := session.PromptJSON(ctx, "Return a project name and count.", &out)
+```
+
+`PromptJSON` augments the prompt with JSON-only instructions and sets
+`response_mime_type: application/json` on the provider request. Pass
+`glue.WithJSONSchema(schema)` to forward an explicit JSON Schema (Gemini:
+`response_json_schema`). V1 validation is JSON decoding into the caller's Go
+type.
+
 ## Testing without Gemini
 
 The `glue.Provider` interface is small, so tests can drive sessions with a

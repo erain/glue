@@ -2,7 +2,11 @@ package glue
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +93,7 @@ type promptConfig struct {
 	options      map[string]any
 	maxTurns     int
 	emit         func(Event)
+	jsonSchema   any
 }
 
 // WithModel overrides the agent model for one prompt.
@@ -121,6 +126,15 @@ func WithMaxTurns(maxTurns int) PromptOption {
 // installed via [Session.Subscribe].
 func WithEvents(handler func(Event)) PromptOption {
 	return func(c *promptConfig) { c.emit = handler }
+}
+
+// WithJSONSchema attaches a JSON Schema for [Session.PromptJSON]. The
+// schema may be passed as a Go value (map / struct), a json.RawMessage, a
+// []byte, or a string; bytes/string forms are JSON-decoded once. When the
+// active provider supports structured output, the schema is forwarded as
+// the provider's structured-response config (Gemini: `response_json_schema`).
+func WithJSONSchema(schema any) PromptOption {
+	return func(c *promptConfig) { c.jsonSchema = schema }
 }
 
 // Prompt sends a user message through the agent loop and stores the
@@ -215,6 +229,100 @@ func (s *Session) save(ctx context.Context, state SessionState) error {
 		return nil
 	}
 	return s.agent.store.Save(ctx, s.id, state)
+}
+
+// PromptJSON sends a prompt and decodes the assistant's final text into
+// outPtr, which must be a non-nil pointer. It augments the user prompt with
+// JSON-only instructions so non-Gemini providers can still produce
+// parseable output, and sets `response_mime_type: application/json` on the
+// provider request. When [WithJSONSchema] is provided, the schema is also
+// forwarded as `response_json_schema`.
+//
+// V1 validation is intentionally limited to JSON decoding into the
+// caller's Go type; full JSON Schema validation is out of scope.
+func (s *Session) PromptJSON(ctx context.Context, text string, outPtr any, options ...PromptOption) (PromptResult, error) {
+	if err := validateJSONOutputTarget(outPtr); err != nil {
+		return PromptResult{}, err
+	}
+
+	var probe promptConfig
+	for _, opt := range options {
+		if opt != nil {
+			opt(&probe)
+		}
+	}
+	schema, err := normalizeJSONSchema(probe.jsonSchema)
+	if err != nil {
+		return PromptResult{}, err
+	}
+
+	providerOptions := cloneMap(probe.options)
+	if providerOptions == nil {
+		providerOptions = map[string]any{}
+	}
+	providerOptions["response_mime_type"] = "application/json"
+	if schema != nil {
+		providerOptions["response_json_schema"] = schema
+	}
+
+	merged := append([]PromptOption{}, options...)
+	merged = append(merged, WithProviderOptions(providerOptions))
+
+	result, err := s.Prompt(ctx, buildJSONPrompt(text, schema), merged...)
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result.Text)), outPtr); err != nil {
+		return result, fmt.Errorf("glue: decode JSON result: %w", err)
+	}
+	return result, nil
+}
+
+func validateJSONOutputTarget(out any) error {
+	if out == nil {
+		return errors.New("glue: PromptJSON output target is nil")
+	}
+	value := reflect.ValueOf(out)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		return errors.New("glue: PromptJSON output target must be a non-nil pointer")
+	}
+	return nil
+}
+
+func normalizeJSONSchema(schema any) (any, error) {
+	switch value := schema.(type) {
+	case nil:
+		return nil, nil
+	case json.RawMessage:
+		return decodeJSONSchemaBytes(value)
+	case []byte:
+		return decodeJSONSchemaBytes(value)
+	case string:
+		return decodeJSONSchemaBytes([]byte(value))
+	default:
+		return value, nil
+	}
+}
+
+func decodeJSONSchemaBytes(data []byte) (any, error) {
+	var schema any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return nil, fmt.Errorf("glue: invalid JSON schema: %w", err)
+	}
+	return schema, nil
+}
+
+func buildJSONPrompt(text string, schema any) string {
+	var b strings.Builder
+	b.WriteString(text)
+	b.WriteString("\n\nRespond with only valid JSON. Do not include markdown fences, prose, or commentary.")
+	if schema != nil {
+		if data, err := json.MarshalIndent(schema, "", "  "); err == nil {
+			b.WriteString("\n\nThe JSON must conform to this schema:\n")
+			b.Write(data)
+		}
+	}
+	return b.String()
 }
 
 func (s *Session) promptConfig(options []PromptOption) promptConfig {
