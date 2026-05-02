@@ -221,6 +221,18 @@ smoke test:
 GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ```
 
+## Example
+
+[`examples/local-agent`](examples/local-agent) is a small Gemini-backed CLI
+that registers a `local_time` tool, streams the assistant text to stdout,
+and persists sessions through `stores/file`. It's the shortest path from
+zero to "Glue agent that calls a Go function":
+
+```sh
+export GEMINI_API_KEY=...
+go run ./examples/local-agent --prompt "Use local_time for America/Toronto." --id demo
+```
+
 ## CLI
 
 A thin local CLI is built on the same library API:
