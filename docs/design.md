@@ -163,12 +163,10 @@ Gemini behavior:
 - streams Gemini text deltas (and thinking deltas) as normalized provider events
 - maps final stop reason, response id metadata, model version, and usage when
   reported by the SDK
-- converts Glue tools to Gemini function declarations (added with function
-  calling support)
-- converts Gemini function calls to normalized tool calls (added with function
-  calling support)
-- converts Glue tool result messages to Gemini function responses (added with
-  function calling support)
+- converts Glue tools to Gemini function declarations
+- converts Gemini function calls to normalized tool calls
+- converts Glue tool result messages to Gemini function responses, grouping
+  consecutive tool-role messages into a single Gemini content per Glue turn
 
 Offline provider tests cover message conversion, config conversion, finish
 tool conversion, function response conversion, finish reason mapping, loop

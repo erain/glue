@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -51,27 +52,131 @@ func TestConvertMessagesEmptyTextDropsMessage(t *testing.T) {
 	}
 }
 
-func TestConvertMessagesToolCallNotYetSupported(t *testing.T) {
+func TestConvertMessagesToolCallContent(t *testing.T) {
 	t.Parallel()
 
-	_, err := ConvertMessages([]loop.Message{
+	contents, err := ConvertMessages([]loop.Message{
 		{Role: loop.MessageRoleAssistant, Content: []loop.ContentPart{
-			{Type: loop.ContentTypeToolCall, ToolCall: &loop.ToolCall{ID: "x", Name: "y"}},
+			{Type: loop.ContentTypeToolCall, ToolCall: &loop.ToolCall{
+				ID:        "call_1",
+				Name:      "weather",
+				Arguments: json.RawMessage(`{"city":"Toronto"}`),
+			}},
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "function-calling") {
-		t.Fatalf("err = %v, want function-calling not implemented", err)
+	if err != nil {
+		t.Fatalf("ConvertMessages: %v", err)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("len(contents) = %d, want 1", len(contents))
+	}
+	if contents[0].Role != string(genai.RoleModel) {
+		t.Fatalf("role = %q, want model", contents[0].Role)
+	}
+	fc := contents[0].Parts[0].FunctionCall
+	if fc == nil {
+		t.Fatal("FunctionCall part missing")
+	}
+	if fc.Name != "weather" || fc.ID != "call_1" {
+		t.Fatalf("FunctionCall = %#v, want name=weather id=call_1", fc)
+	}
+	if fc.Args["city"] != "Toronto" {
+		t.Fatalf("Args[city] = %v, want Toronto", fc.Args["city"])
 	}
 }
 
-func TestConvertMessagesToolRoleNotYetSupported(t *testing.T) {
+func TestConvertMessagesToolResultGroupsConsecutiveAsOneContent(t *testing.T) {
 	t.Parallel()
 
-	_, err := ConvertMessages([]loop.Message{
-		{Role: loop.MessageRoleTool, ToolName: "x", Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "result"}}},
+	contents, err := ConvertMessages([]loop.Message{
+		{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "hi"}}},
+		{Role: loop.MessageRoleTool, ToolCallID: "c1", ToolName: "weather", Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "sunny"}}},
+		{Role: loop.MessageRoleTool, ToolCallID: "c2", ToolName: "time", Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "noon"}}, IsError: true},
 	})
-	if err == nil || !strings.Contains(err.Error(), "function-calling") {
-		t.Fatalf("err = %v, want function-calling not implemented", err)
+	if err != nil {
+		t.Fatalf("ConvertMessages: %v", err)
+	}
+	if len(contents) != 2 {
+		t.Fatalf("len(contents) = %d, want 2 (user + grouped tool responses)", len(contents))
+	}
+	tools := contents[1]
+	if tools.Role != string(genai.RoleUser) {
+		t.Fatalf("tool group role = %q, want user", tools.Role)
+	}
+	if len(tools.Parts) != 2 {
+		t.Fatalf("tool group parts = %d, want 2", len(tools.Parts))
+	}
+	r1 := tools.Parts[0].FunctionResponse
+	if r1 == nil || r1.Name != "weather" || r1.Response["output"] != "sunny" {
+		t.Fatalf("response[0] = %#v, want weather output=sunny", r1)
+	}
+	r2 := tools.Parts[1].FunctionResponse
+	if r2 == nil || r2.Name != "time" || r2.Response["error"] != "noon" {
+		t.Fatalf("response[1] = %#v, want time error=noon", r2)
+	}
+}
+
+func TestConvertToolsBuildsFunctionDeclarations(t *testing.T) {
+	t.Parallel()
+
+	tools, err := ConvertTools([]loop.ToolSpec{
+		{
+			Name:        "weather",
+			Description: "Get weather for a city.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+		},
+		{Name: "time"},
+	})
+	if err != nil {
+		t.Fatalf("ConvertTools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1 (single bundle)", len(tools))
+	}
+	decls := tools[0].FunctionDeclarations
+	if len(decls) != 2 {
+		t.Fatalf("len(decls) = %d, want 2", len(decls))
+	}
+	if decls[0].Name != "weather" || decls[0].ParametersJsonSchema == nil {
+		t.Fatalf("decls[0] = %#v, want weather with schema", decls[0])
+	}
+	if decls[1].Name != "time" || decls[1].ParametersJsonSchema != nil {
+		t.Fatalf("decls[1] = %#v, want time with no schema", decls[1])
+	}
+}
+
+func TestConvertToolsBadSchemaErrors(t *testing.T) {
+	t.Parallel()
+
+	_, err := ConvertTools([]loop.ToolSpec{{Name: "x", Parameters: json.RawMessage(`not-json`)}})
+	if err == nil || !strings.Contains(err.Error(), "tool \"x\"") {
+		t.Fatalf("err = %v, want tool x parameters error", err)
+	}
+}
+
+func TestConvertFunctionCallFillsIDAndCleansNullArgs(t *testing.T) {
+	t.Parallel()
+
+	tc, err := convertFunctionCall(&genai.FunctionCall{Name: "weather"}, 7)
+	if err != nil {
+		t.Fatalf("convertFunctionCall: %v", err)
+	}
+	if tc.ID != "weather_7" {
+		t.Fatalf("ID = %q, want weather_7", tc.ID)
+	}
+	if string(tc.Arguments) != "{}" {
+		t.Fatalf("Arguments = %q, want {}", string(tc.Arguments))
+	}
+
+	tc2, err := convertFunctionCall(&genai.FunctionCall{ID: "abc", Name: "weather", Args: map[string]any{"city": "T"}}, 1)
+	if err != nil {
+		t.Fatalf("convertFunctionCall: %v", err)
+	}
+	if tc2.ID != "abc" {
+		t.Fatalf("ID = %q, want abc", tc2.ID)
+	}
+	if !strings.Contains(string(tc2.Arguments), `"city":"T"`) {
+		t.Fatalf("Arguments = %q, want {\"city\":\"T\"}", string(tc2.Arguments))
 	}
 }
 

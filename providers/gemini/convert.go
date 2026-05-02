@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 
 	"glue/loop"
@@ -9,22 +10,38 @@ import (
 	"google.golang.org/genai"
 )
 
-// ConvertMessages converts Glue text messages to Gemini contents.
+// ConvertMessages converts Glue messages to Gemini contents.
 //
-// Tool-call assistant content and tool-role messages are not supported in
-// the text-only provider; they will be wired up alongside Gemini function
-// calling in a follow-up issue. Encountering them here yields a clear error
-// rather than silently dropping the message.
+// Consecutive tool-role messages are grouped into a single Gemini content
+// with role "user" and one FunctionResponse part per message, matching how
+// the genai SDK expects multi-tool turns to be expressed.
 func ConvertMessages(messages []loop.Message) ([]*genai.Content, error) {
 	contents := make([]*genai.Content, 0, len(messages))
-	for _, message := range messages {
-		content, err := convertMessage(message)
+	for i := 0; i < len(messages); {
+		if messages[i].Role == loop.MessageRoleTool {
+			parts := make([]*genai.Part, 0)
+			for i < len(messages) && messages[i].Role == loop.MessageRoleTool {
+				part, err := convertToolMessage(messages[i])
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, part)
+				i++
+			}
+			if len(parts) > 0 {
+				contents = append(contents, genai.NewContentFromParts(parts, genai.RoleUser))
+			}
+			continue
+		}
+
+		content, err := convertMessage(messages[i])
 		if err != nil {
 			return nil, err
 		}
 		if content != nil {
 			contents = append(contents, content)
 		}
+		i++
 	}
 	return contents, nil
 }
@@ -37,7 +54,7 @@ func convertMessage(message loop.Message) (*genai.Content, error) {
 	case loop.MessageRoleAssistant:
 		role = genai.RoleModel
 	case loop.MessageRoleTool:
-		return nil, fmt.Errorf("gemini: tool messages require function-calling support (not yet implemented)")
+		return nil, fmt.Errorf("gemini: tool messages should be converted via ConvertMessages, not convertMessage")
 	default:
 		return nil, fmt.Errorf("gemini: unsupported message role %q", message.Role)
 	}
@@ -63,7 +80,18 @@ func convertMessage(message loop.Message) (*genai.Content, error) {
 			}
 			parts = append(parts, genai.NewPartFromBytes(data, part.Image.MIMEType))
 		case loop.ContentTypeToolCall:
-			return nil, fmt.Errorf("gemini: tool-call content requires function-calling support (not yet implemented)")
+			if part.ToolCall == nil {
+				return nil, fmt.Errorf("gemini: tool call content missing payload")
+			}
+			args, err := rawObject(part.ToolCall.Arguments)
+			if err != nil {
+				return nil, fmt.Errorf("gemini: tool call %q arguments: %w", part.ToolCall.Name, err)
+			}
+			parts = append(parts, &genai.Part{FunctionCall: &genai.FunctionCall{
+				ID:   part.ToolCall.ID,
+				Name: part.ToolCall.Name,
+				Args: args,
+			}})
 		default:
 			return nil, fmt.Errorf("gemini: unsupported content type %q", part.Type)
 		}
@@ -74,11 +102,94 @@ func convertMessage(message loop.Message) (*genai.Content, error) {
 	return genai.NewContentFromParts(parts, role), nil
 }
 
+func convertToolMessage(message loop.Message) (*genai.Part, error) {
+	if message.ToolName == "" {
+		return nil, fmt.Errorf("gemini: tool message missing tool name")
+	}
+	key := "output"
+	if message.IsError {
+		key = "error"
+	}
+	return &genai.Part{FunctionResponse: &genai.FunctionResponse{
+		ID:       message.ToolCallID,
+		Name:     message.ToolName,
+		Response: map[string]any{key: toolMessageText(message)},
+	}}, nil
+}
+
+func toolMessageText(message loop.Message) string {
+	var text string
+	for _, part := range message.Content {
+		if part.Type == loop.ContentTypeText {
+			if text != "" {
+				text += "\n"
+			}
+			text += part.Text
+		}
+	}
+	return text
+}
+
+// ConvertTools converts Glue tool specs to Gemini function declarations.
+// All declarations are bundled into a single Gemini Tool, which is how
+// genai expects multiple tools to be exposed to the model.
+func ConvertTools(tools []loop.ToolSpec) ([]*genai.Tool, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	declarations := make([]*genai.FunctionDeclaration, 0, len(tools))
+	for _, tool := range tools {
+		declaration := &genai.FunctionDeclaration{
+			Name:        tool.Name,
+			Description: tool.Description,
+		}
+		if len(tool.Parameters) > 0 {
+			schema, err := rawSchema(tool.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("gemini: tool %q parameters: %w", tool.Name, err)
+			}
+			declaration.ParametersJsonSchema = schema
+		}
+		declarations = append(declarations, declaration)
+	}
+	return []*genai.Tool{{FunctionDeclarations: declarations}}, nil
+}
+
+func rawObject(raw json.RawMessage) (map[string]any, error) {
+	if len(raw) == 0 {
+		return map[string]any{}, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	if object == nil {
+		return nil, fmt.Errorf("must be a JSON object")
+	}
+	return object, nil
+}
+
+func rawSchema(raw json.RawMessage) (any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return nil, err
+	}
+	return schema, nil
+}
+
 func buildGenerateConfig(req loop.ProviderRequest) (*genai.GenerateContentConfig, error) {
 	config := &genai.GenerateContentConfig{}
 	if req.SystemPrompt != "" {
 		config.SystemInstruction = genai.NewContentFromText(req.SystemPrompt, genai.RoleUser)
 	}
+	tools, err := ConvertTools(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	config.Tools = tools
 
 	for key, value := range req.Options {
 		switch key {
@@ -96,9 +207,9 @@ func buildGenerateConfig(req loop.ProviderRequest) (*genai.GenerateContentConfig
 			config.MaxOutputTokens = maxTokens
 		}
 	}
-	// Tools and structured-output options (response_mime_type,
-	// response_json_schema) are intentionally unhandled here; they belong
-	// to the function-calling and structured-JSON issues respectively.
+	// Structured-output options (response_mime_type, response_json_schema)
+	// are intentionally unhandled here; they belong to the structured-JSON
+	// result issue.
 	return config, nil
 }
 
