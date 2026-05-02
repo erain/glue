@@ -108,6 +108,30 @@ result, err := session.Prompt(ctx, "Be concise.",
 )
 ```
 
+### Project context and skills
+
+Set `AgentOptions.WorkDir` to enable Markdown context discovery:
+
+- `<WorkDir>/AGENTS.md` is appended to the system prompt for every prompt
+  on the agent's sessions (missing file is non-fatal).
+- `<WorkDir>/.agents/skills/<name>/SKILL.md` is loaded as a `glue.Skill`
+  with optional `name:` and `description:` frontmatter.
+
+```go
+agent := glue.NewAgent(glue.AgentOptions{
+	Provider: gemini.New(gemini.Options{}),
+	Model:    "gemini-2.5-flash",
+	WorkDir:  ".",
+})
+session, _ := agent.Session(ctx, "skills")
+result, err := session.Skill(ctx, "triage", map[string]int{"issue": 12})
+```
+
+`Session.Skill` renders the skill instructions, appends the args as
+formatted JSON, and runs the result through `Session.Prompt`. Unknown skill
+names return a typed error. Skills supplied via `AgentOptions.Skills` win on
+name collision over disk-discovered skills.
+
 ### Structured JSON results
 
 ```go
