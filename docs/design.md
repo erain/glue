@@ -133,9 +133,10 @@ Sessions are in-memory in P0. `Session.Subscribe(func(glue.Event))` registers a
 session-level event handler that fires for every prompt run on that session,
 and `glue.WithEvents` registers a per-prompt event handler that fires
 alongside (both receive the same events for the prompt). The current
-`AgentOptions` reserves `Store`, `WorkDir`, `Role`, and `Roles` fields so the
-public type stays stable as those features land in #11, #13, and #14.
-File-backed stores are added in P1.
+`AgentOptions` exposes `Store` (typed [`Store`](#persistence) interface) for
+durable session state and reserves `WorkDir`, `Role`, and `Roles` for #13 and
+#14 so the public type stays stable as those features land. The default
+in-memory behavior is preserved when `Store` is nil.
 
 `PromptJSON(ctx, prompt, outPtr, opts...)` requests structured output and
 unmarshals the assistant's final text into a caller-provided non-nil pointer. It
