@@ -1,5 +1,7 @@
 # glue
 
+[![CI](https://github.com/erain/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/erain/glue/actions/workflows/ci.yml)
+
 Glue is a Go agent harness for building local and programmable agents,
 inspired by [Flue](https://github.com/withastro/flue) and
 [pi-mono](https://github.com/badlogic/pi-mono). It is built around a reusable
