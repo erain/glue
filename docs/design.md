@@ -160,12 +160,15 @@ Gemini behavior:
 - accepts a model from `glue.AgentOptions.Model`, per-call `glue.WithModel`, or
   provider default model
 - converts text user and assistant messages to Gemini `Content`
-- streams Gemini text deltas as normalized provider events
+- streams Gemini text deltas (and thinking deltas) as normalized provider events
 - maps final stop reason, response id metadata, model version, and usage when
   reported by the SDK
-- converts Glue tools to Gemini function declarations
-- converts Gemini function calls to normalized tool calls
-- converts Glue tool result messages to Gemini function responses
+- converts Glue tools to Gemini function declarations (added with function
+  calling support)
+- converts Gemini function calls to normalized tool calls (added with function
+  calling support)
+- converts Glue tool result messages to Gemini function responses (added with
+  function calling support)
 
 Offline provider tests cover message conversion, config conversion, finish
 tool conversion, function response conversion, finish reason mapping, loop
