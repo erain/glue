@@ -11,15 +11,14 @@ const defaultSessionID = "default"
 
 // AgentOptions configures a Glue agent.
 //
-// Provider, Model, SystemPrompt, Tools, Options, and MaxTurns are wired in
-// this issue. Store, WorkDir, Role, and Roles are reserved for follow-up
-// issues and currently have no effect:
+// Provider, Model, SystemPrompt, Tools, Options, MaxTurns, and Store are
+// wired. WorkDir, Role, and Roles are reserved for follow-up issues:
 //
-//   - Store: file-backed session persistence (#11).
 //   - WorkDir: AGENTS.md context and Markdown skill discovery (#13).
 //   - Role / Roles: scoped role instructions and per-role models (#14).
 //
-// They are present so the public type stays stable as those features land.
+// Store, when set, persists session state across processes. The default
+// in-memory behavior is preserved when Store is nil.
 type AgentOptions struct {
 	Provider     Provider
 	Model        string
@@ -27,9 +26,8 @@ type AgentOptions struct {
 	Tools        []Tool
 	Options      map[string]any
 	MaxTurns     int
+	Store        Store
 
-	// Store is reserved for #11.
-	Store any
 	// WorkDir is reserved for #13.
 	WorkDir string
 	// Role is reserved for #14.
@@ -46,13 +44,15 @@ type Agent struct {
 	tools        []Tool
 	options      map[string]any
 	maxTurns     int
+	store        Store
 
 	mu       sync.Mutex
 	sessions map[string]*Session
 }
 
-// NewAgent creates an agent with in-memory session state. The Provider must
-// be supplied for [Session.Prompt] to succeed.
+// NewAgent creates an agent. When [AgentOptions.Store] is set, sessions are
+// loaded from and saved to that store; otherwise sessions are in-memory.
+// The Provider must be supplied for [Session.Prompt] to succeed.
 func NewAgent(options AgentOptions) *Agent {
 	return &Agent{
 		provider:     options.Provider,
@@ -61,13 +61,16 @@ func NewAgent(options AgentOptions) *Agent {
 		tools:        cloneTools(options.Tools),
 		options:      cloneMap(options.Options),
 		maxTurns:     options.MaxTurns,
+		store:        options.Store,
 		sessions:     make(map[string]*Session),
 	}
 }
 
-// Session returns an existing in-memory session by id or creates a new one.
-// Empty ids resolve to the default session ("default").
-func (a *Agent) Session(_ context.Context, id string) (*Session, error) {
+// Session returns an existing session by id, or creates a new one. When the
+// agent has a configured [Store], an existing on-disk state is loaded into
+// the new in-memory session. Empty ids resolve to the default session
+// ("default").
+func (a *Agent) Session(ctx context.Context, id string) (*Session, error) {
 	if a == nil {
 		return nil, errors.New("glue: nil agent")
 	}
@@ -80,16 +83,47 @@ func (a *Agent) Session(_ context.Context, id string) (*Session, error) {
 	if existing := a.sessions[id]; existing != nil {
 		return existing, nil
 	}
+
+	state, found, err := a.loadSessionState(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	session := &Session{
 		id:          id,
 		agent:       a,
-		createdAt:   now,
-		updatedAt:   now,
+		messages:    cloneMessages(state.Messages),
+		metadata:    cloneMap(state.Metadata),
+		createdAt:   state.CreatedAt,
+		updatedAt:   state.UpdatedAt,
 		subscribers: make(map[int]func(Event)),
+	}
+	if !found {
+		session.createdAt = now
+		session.updatedAt = now
 	}
 	a.sessions[id] = session
 	return session, nil
+}
+
+func (a *Agent) loadSessionState(ctx context.Context, id string) (SessionState, bool, error) {
+	if a.store == nil {
+		return SessionState{Version: SessionStateVersion, ID: id}, false, nil
+	}
+	state, found, err := a.store.Load(ctx, id)
+	if err != nil {
+		return SessionState{}, false, err
+	}
+	if !found {
+		return SessionState{Version: SessionStateVersion, ID: id}, false, nil
+	}
+	if state.ID == "" {
+		state.ID = id
+	}
+	if state.Version == 0 {
+		state.Version = SessionStateVersion
+	}
+	return state, true, nil
 }
 
 func cloneTools(tools []Tool) []Tool {

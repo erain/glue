@@ -172,14 +172,49 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 	s.messages = append(s.messages, result.NewMessages...)
 	s.updatedAt = time.Now().UTC()
 	transcript := cloneMessages(s.messages)
+	state := s.stateLocked()
 	s.mu.Unlock()
 
-	return PromptResult{
+	saveErr := s.save(ctx, state)
+
+	response := PromptResult{
 		Text:        assistantText(result.NewMessages),
 		Message:     lastAssistantMessage(result.NewMessages),
 		NewMessages: cloneMessages(result.NewMessages),
 		Messages:    transcript,
-	}, runErr
+	}
+	if runErr != nil && saveErr != nil {
+		return response, errors.Join(runErr, saveErr)
+	}
+	if runErr != nil {
+		return response, runErr
+	}
+	return response, saveErr
+}
+
+// State returns a snapshot of the durable session state.
+func (s *Session) State() SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stateLocked()
+}
+
+func (s *Session) stateLocked() SessionState {
+	return SessionState{
+		Version:   SessionStateVersion,
+		ID:        s.id,
+		Messages:  cloneMessages(s.messages),
+		Metadata:  cloneMap(s.metadata),
+		CreatedAt: s.createdAt,
+		UpdatedAt: s.updatedAt,
+	}
+}
+
+func (s *Session) save(ctx context.Context, state SessionState) error {
+	if s.agent == nil || s.agent.store == nil {
+		return nil
+	}
+	return s.agent.store.Save(ctx, s.id, state)
 }
 
 func (s *Session) promptConfig(options []PromptOption) promptConfig {
