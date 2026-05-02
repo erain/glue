@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -43,11 +44,11 @@ func New(options Options) *Provider {
 	}
 }
 
-// Stream implements [loop.Provider]. The current implementation supports
-// text-only conversations; function calling lands in a follow-up issue and
-// will extend ConvertMessages and buildGenerateConfig accordingly. Until
-// then, [loop.ProviderRequest.Tools] is silently ignored so the provider
-// never produces tool-call parts.
+// Stream implements [loop.Provider]. It supports text-only conversations
+// and Gemini function calling: tool specs in [loop.ProviderRequest.Tools]
+// are converted to function declarations, inbound function calls become
+// [loop.ProviderEventToolCall] events, and tool-role messages in the
+// transcript are converted to function responses.
 func (p *Provider) Stream(ctx context.Context, req loop.ProviderRequest) (<-chan loop.ProviderEvent, error) {
 	if p == nil {
 		return nil, errors.New("gemini: nil provider")
@@ -118,6 +119,7 @@ func (p *Provider) stream(
 		return
 	}
 
+	toolCallCount := 0
 	for response, err := range client.Models.GenerateContentStream(ctx, model, contents, config) {
 		if err != nil {
 			send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventError, Error: err.Error()})
@@ -136,7 +138,23 @@ func (p *Provider) stream(
 			continue
 		}
 		for _, part := range candidate.Content.Parts {
-			if part == nil || part.Text == "" {
+			if part == nil {
+				continue
+			}
+			if part.FunctionCall != nil {
+				toolCallCount++
+				toolCall, err := convertFunctionCall(part.FunctionCall, toolCallCount)
+				if err != nil {
+					send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventError, Error: err.Error()})
+					return
+				}
+				output.Content = append(output.Content, loop.ContentPart{Type: loop.ContentTypeToolCall, ToolCall: &toolCall})
+				if !send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventToolCall, ToolCall: &toolCall}) {
+					return
+				}
+				continue
+			}
+			if part.Text == "" {
 				continue
 			}
 			if part.Thought {
@@ -153,6 +171,9 @@ func (p *Provider) stream(
 		}
 	}
 
+	if hasToolCall(output) {
+		output.StopReason = loop.StopReasonToolUse
+	}
 	if output.StopReason == "" {
 		output.StopReason = loop.StopReasonStop
 	}
@@ -222,6 +243,38 @@ func applyResponseMetadata(message *loop.Message, response *genai.GenerateConten
 			TotalTokens:     int64(usage.TotalTokenCount),
 		}
 	}
+}
+
+func convertFunctionCall(call *genai.FunctionCall, fallbackIndex int) (loop.ToolCall, error) {
+	if call == nil {
+		return loop.ToolCall{}, errors.New("gemini: nil function call")
+	}
+	args, err := json.Marshal(call.Args)
+	if err != nil {
+		return loop.ToolCall{}, fmt.Errorf("gemini: marshal function call args: %w", err)
+	}
+	if string(args) == "null" {
+		args = []byte(`{}`)
+	}
+
+	id := call.ID
+	if id == "" {
+		id = fmt.Sprintf("%s_%d", call.Name, fallbackIndex)
+	}
+	return loop.ToolCall{
+		ID:        id,
+		Name:      call.Name,
+		Arguments: args,
+	}, nil
+}
+
+func hasToolCall(message loop.Message) bool {
+	for _, part := range message.Content {
+		if part.Type == loop.ContentTypeToolCall && part.ToolCall != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func mapFinishReason(reason genai.FinishReason) loop.StopReason {
