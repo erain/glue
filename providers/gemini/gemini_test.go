@@ -226,6 +226,39 @@ func TestBuildGenerateConfigInvalidNumeric(t *testing.T) {
 	}
 }
 
+func TestBuildGenerateConfigStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := buildGenerateConfig(loop.ProviderRequest{
+		Options: map[string]any{
+			"response_mime_type":   "application/json",
+			"response_json_schema": map[string]any{"type": "object"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildGenerateConfig: %v", err)
+	}
+	if cfg.ResponseMIMEType != "application/json" {
+		t.Fatalf("ResponseMIMEType = %q, want application/json", cfg.ResponseMIMEType)
+	}
+	asMap, ok := cfg.ResponseJsonSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("ResponseJsonSchema = %T, want map[string]any", cfg.ResponseJsonSchema)
+	}
+	if asMap["type"] != "object" {
+		t.Fatalf("schema.type = %v, want object", asMap["type"])
+	}
+}
+
+func TestBuildGenerateConfigBadResponseMIMEType(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"response_mime_type": 42}})
+	if err == nil || !strings.Contains(err.Error(), "response_mime_type") {
+		t.Fatalf("err = %v, want response_mime_type error", err)
+	}
+}
+
 func TestMapFinishReason(t *testing.T) {
 	t.Parallel()
 

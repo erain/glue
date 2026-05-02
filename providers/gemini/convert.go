@@ -205,11 +205,16 @@ func buildGenerateConfig(req loop.ProviderRequest) (*genai.GenerateContentConfig
 				return nil, fmt.Errorf("gemini: %s must be numeric", key)
 			}
 			config.MaxOutputTokens = maxTokens
+		case "response_mime_type":
+			mimeType, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("gemini: response_mime_type must be a string")
+			}
+			config.ResponseMIMEType = mimeType
+		case "response_json_schema":
+			config.ResponseJsonSchema = value
 		}
 	}
-	// Structured-output options (response_mime_type, response_json_schema)
-	// are intentionally unhandled here; they belong to the structured-JSON
-	// result issue.
 	return config, nil
 }
 
