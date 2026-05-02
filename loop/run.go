@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -38,11 +39,12 @@ type RunResult struct {
 // requesting tools, the provider errors, the context is canceled, or
 // MaxTurns is reached.
 //
-// Tool execution in this implementation is intentionally minimal: tools are
-// matched by name and called with the raw assistant arguments. Argument
-// normalization, error-as-tool-result conversion, and ordering guarantees
-// belong to the deterministic sequential execution path landing in a
-// follow-up issue.
+// Tool execution is sequential and deterministic: requested tool calls are
+// executed in the order they appear in the assistant message, their result
+// messages are appended in that same order, and unknown tools, invalid JSON
+// arguments, missing executors, and executor errors all become tool-result
+// messages with IsError=true so the model can see and react instead of the
+// loop crashing.
 func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if req.Provider == nil {
 		return RunResult{}, errors.New("loop: provider is required")
@@ -105,19 +107,18 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 				ToolName:   call.Name,
 			})
 
-			toolMessage, err := executeBasicTool(ctx, req.Tools, call)
-			if err != nil {
-				return fail(err)
-			}
+			normalizedCall, toolResult := executeToolCall(ctx, req.Tools, call)
+			toolMessage := toolResultMessage(normalizedCall, toolResult)
 
 			messages = append(messages, toolMessage)
 			newMessages = append(newMessages, toolMessage)
 
 			emit(Event{
 				Type:       EventToolEnd,
-				ToolCall:   toolCallPtr(call),
-				ToolCallID: call.ID,
-				ToolName:   call.Name,
+				ToolCall:   toolCallPtr(normalizedCall),
+				ToolCallID: normalizedCall.ID,
+				ToolName:   normalizedCall.Name,
+				ToolResult: toolResultPtr(toolResult),
 				Message:    messagePtr(toolMessage),
 			})
 		}
@@ -128,32 +129,86 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return fail(fmt.Errorf("loop: maximum turns exceeded (%d)", maxTurns))
 }
 
-// executeBasicTool resolves a tool by name and invokes its executor with the
-// raw assistant arguments. Errors propagate; richer error-as-tool-result
-// behavior lands in the deterministic sequential execution issue.
-func executeBasicTool(ctx context.Context, tools []Tool, call ToolCall) (Message, error) {
+// executeToolCall normalizes a single tool call's arguments and invokes its
+// executor. Unknown tools, missing executors, invalid JSON arguments, and
+// executor errors all return a ToolResult with IsError=true so the loop can
+// surface them to the model instead of failing the whole run.
+//
+// The first return value is the (possibly argument-normalized) tool call
+// that should be referenced by the resulting tool message.
+func executeToolCall(ctx context.Context, tools []Tool, call ToolCall) (ToolCall, ToolResult) {
+	normalizedCall, err := normalizeToolCallArguments(call)
+	if err != nil {
+		return call, errorToolResult(fmt.Sprintf("invalid arguments for tool %q: %v", call.Name, err))
+	}
+
 	for _, tool := range tools {
-		if tool.Name != call.Name {
+		if tool.Name != normalizedCall.Name {
 			continue
 		}
 		if tool.Execute == nil {
-			return Message{}, fmt.Errorf("loop: tool %q has no executor", call.Name)
+			return normalizedCall, errorToolResult(fmt.Sprintf("tool %q has no executor", normalizedCall.Name))
 		}
-		result, err := tool.Execute(ctx, call)
+		result, err := tool.Execute(ctx, normalizedCall)
 		if err != nil {
-			return Message{}, fmt.Errorf("loop: tool %q execute: %w", call.Name, err)
+			return normalizedCall, errorToolResult(err.Error())
 		}
-		return Message{
-			Role:       MessageRoleTool,
-			Content:    cloneContent(result.Content),
-			ToolCallID: call.ID,
-			ToolName:   call.Name,
-			IsError:    result.IsError,
-			CreatedAt:  time.Now().UTC(),
-			Metadata:   cloneMetadata(result.Metadata),
-		}, nil
+		return normalizedCall, result
 	}
-	return Message{}, fmt.Errorf("loop: unknown tool %q", call.Name)
+	return normalizedCall, errorToolResult(fmt.Sprintf("unknown tool %q", normalizedCall.Name))
+}
+
+// normalizeToolCallArguments enforces that arguments are a JSON object and
+// substitutes "{}" for empty arguments. The returned call always has a
+// non-empty Arguments slice.
+func normalizeToolCallArguments(call ToolCall) (ToolCall, error) {
+	if len(call.Arguments) == 0 {
+		call.Arguments = json.RawMessage(`{}`)
+		return call, nil
+	}
+
+	var args map[string]any
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return call, err
+	}
+	if args == nil {
+		return call, errors.New("arguments must be a JSON object")
+	}
+
+	normalized, err := json.Marshal(args)
+	if err != nil {
+		return call, err
+	}
+	call.Arguments = normalized
+	return call, nil
+}
+
+func errorToolResult(text string) ToolResult {
+	return ToolResult{
+		Content: []ContentPart{{Type: ContentTypeText, Text: text}},
+		IsError: true,
+	}
+}
+
+func toolResultMessage(call ToolCall, result ToolResult) Message {
+	return Message{
+		Role:       MessageRoleTool,
+		Content:    cloneContent(result.Content),
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		IsError:    result.IsError,
+		CreatedAt:  time.Now().UTC(),
+		Metadata:   cloneMetadata(result.Metadata),
+	}
+}
+
+func toolResultPtr(result ToolResult) *ToolResult {
+	cloned := ToolResult{
+		Content:  cloneContent(result.Content),
+		IsError:  result.IsError,
+		Metadata: cloneMetadata(result.Metadata),
+	}
+	return &cloned
 }
 
 func runAssistantTurn(ctx context.Context, req RunRequest, messages []Message, emit func(Event)) (Message, error) {
