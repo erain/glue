@@ -1,10 +1,12 @@
 // Package glue provides the public API for defining and running agents.
 //
-// It is intentionally thin over the lower-level loop package. It owns
-// user-facing concepts such as agents, sessions, skills, roles, and stores.
-// The runtime mechanics — provider event consumption, tool execution, and
-// transcript management — live in the sibling [glue/loop] package.
+// It is intentionally thin over the lower-level loop package. Users
+// construct an [Agent] with [NewAgent], open a named [Session] with
+// [Agent.Session], and drive turns with [Session.Prompt]. Provider
+// implementations live in subpackages (initially providers/gemini), and
+// session persistence is provided by stores subpackages (initially
+// stores/file).
 //
-// This file is the package marker for the bootstrap scaffold. Concrete types
-// (Agent, Session, Tool, etc.) are added by later issues.
+// Normalized message and event types are re-exported here so that callers
+// only need to import "glue".
 package glue
