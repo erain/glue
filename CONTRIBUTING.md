@@ -101,3 +101,7 @@ copy-pasted. Each issue still requires its own real review and verification.
   tracker.
 - The CI workflow (issue #22) is the canonical verification surface; mirror
   its commands locally before opening a PR.
+- `scripts/check-tracker.sh` audits the "no close without merged PR" rule.
+  Run it locally after bulk operations or before merging a PR that closes
+  an issue. See [`docs/issue-automation.md`](docs/issue-automation.md) for
+  the full automation surface.
