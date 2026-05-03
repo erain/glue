@@ -255,6 +255,13 @@ The CLI streams text deltas to stdout, persists sessions through
 `roles/` discovery work from the invocation directory. Errors return a
 non-zero exit code; missing `GEMINI_API_KEY` produces a clear message.
 
+## Adding a provider
+
+Glue's `Provider` interface is small. See
+[`docs/provider-guide.md`](docs/provider-guide.md) for the contract and
+common pitfalls, and [`examples/echo-provider`](examples/echo-provider)
+for the shortest possible runnable implementation.
+
 ## Roadmap
 
 P2 covers parallel tool execution, context compaction, an opt-in shell/
