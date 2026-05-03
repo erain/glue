@@ -23,12 +23,17 @@ of truth for implementation order and status after the initial bootstrap.
 
 ## Non-Goals For P0/P1
 
-- No sandboxing, shell execution, container runtime, or remote connector.
+- No sandboxing, shell execution, container runtime, or remote connector
+  in the core `glue` package. Shell and filesystem tools land in a
+  dedicated extension package per [`adr/0003-shell-filesystem-tools.md`](adr/0003-shell-filesystem-tools.md);
+  the core stays free of POSIX coupling.
 - No dynamic Go plugin loading.
 - No MCP integration.
 - No HTTP server or deploy target.
-- No automatic context compaction.
-- No parallel tool execution until the sequential loop is well tested.
+- (P0/P1 only) No automatic context compaction; opt-in compaction lands
+  in P2 — see [`adr/0002-context-compaction.md`](adr/0002-context-compaction.md).
+- (P0/P1 only) No parallel tool execution; opt-in `RunRequest.Parallel`
+  lands in P2 (#17).
 
 ## Package Boundaries
 
