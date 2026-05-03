@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"glue"
-	"glue/providers/gemini"
+	"github.com/erain/glue"
+	"github.com/erain/glue/providers/gemini"
 )
 
 func TestLocalTimeToolHappyPath(t *testing.T) {

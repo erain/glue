@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"glue/loop"
+	"github.com/erain/glue/loop"
 
 	"google.golang.org/genai"
 )

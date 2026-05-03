@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"glue/loop"
+	"github.com/erain/glue/loop"
 
 	"google.golang.org/genai"
 )

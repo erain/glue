@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"glue"
+	"github.com/erain/glue"
 )
 
 type scriptedProvider struct {

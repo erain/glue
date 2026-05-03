@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"glue/loop"
+	"github.com/erain/glue/loop"
 
 	"google.golang.org/genai"
 )

@@ -18,9 +18,9 @@ import (
 	"os"
 	"strings"
 
-	"glue"
-	"glue/providers/gemini"
-	filestore "glue/stores/file"
+	"github.com/erain/glue"
+	"github.com/erain/glue/providers/gemini"
+	filestore "github.com/erain/glue/stores/file"
 )
 
 const defaultModel = "gemini-2.5-flash"

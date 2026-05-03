@@ -1,6 +1,6 @@
-module glue
+module github.com/erain/glue
 
-go 1.24.5
+go 1.24
 
 require google.golang.org/genai v1.55.0
 

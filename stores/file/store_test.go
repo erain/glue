@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"glue"
+	"github.com/erain/glue"
 )
 
 func newTempStore(t *testing.T) *Store {

@@ -8,5 +8,5 @@
 // stores/file).
 //
 // Normalized message and event types are re-exported here so that callers
-// only need to import "glue".
+// only need to import "github.com/erain/glue".
 package glue

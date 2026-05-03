@@ -29,8 +29,8 @@ No network access; nothing is gated.
 import (
     "context"
 
-    "glue"
-    echo "glue/examples/echo-provider"
+    "github.com/erain/glue"
+    echo "github.com/erain/glue/examples/echo-provider"
 )
 
 agent := glue.NewAgent(glue.AgentOptions{Provider: echo.New()})

@@ -1,6 +1,6 @@
 package glue
 
-import "glue/loop"
+import "github.com/erain/glue/loop"
 
 // Re-export the loop package's normalized types as part of the public API so
 // callers only need to import `glue`.
