@@ -35,6 +35,14 @@ type AgentOptions struct {
 	Skills       map[string]Skill
 	Roles        []Role
 	Role         string
+
+	// Compactor, if non-nil and CompactionThreshold > 0, is invoked
+	// before every prompt whenever the in-memory transcript has more
+	// than CompactionThreshold messages. The compactor's output replaces
+	// the in-memory transcript before [loop.Run] is called and is
+	// persisted by the next save.
+	Compactor           Compactor
+	CompactionThreshold int
 }
 
 // Agent owns shared configuration and an in-memory session map.
@@ -48,6 +56,9 @@ type Agent struct {
 	store        Store
 	workDir      string
 	role         string
+
+	compactor           Compactor
+	compactionThreshold int
 
 	agentsMD      string
 	skills        map[string]Skill
@@ -69,12 +80,14 @@ func NewAgent(options AgentOptions) *Agent {
 		tools:        cloneTools(options.Tools),
 		options:      cloneMap(options.Options),
 		maxTurns:     options.MaxTurns,
-		store:        options.Store,
-		workDir:      options.WorkDir,
-		skills:       cloneSkills(options.Skills),
-		roles:        rolesFromSlice(options.Roles),
-		role:         options.Role,
-		sessions:     make(map[string]*Session),
+		store:               options.Store,
+		workDir:             options.WorkDir,
+		skills:              cloneSkills(options.Skills),
+		roles:               rolesFromSlice(options.Roles),
+		role:                options.Role,
+		compactor:           options.Compactor,
+		compactionThreshold: options.CompactionThreshold,
+		sessions:            make(map[string]*Session),
 	}
 }
 
