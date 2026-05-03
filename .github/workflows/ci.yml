@@ -31,3 +31,32 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  live:
+    name: live (gemini)
+    needs: test
+    # Run on pushes to main and on PRs that originate from this repo.
+    # PRs from forks cannot access secrets, so skip them entirely
+    # rather than have the job fail.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Live Gemini smoke
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY not configured; skipping live tests."
+            exit 0
+          fi
+          go test ./providers/gemini -run Live -count=1
+          go test ./examples/local-agent -run Live -count=1
