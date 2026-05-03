@@ -105,6 +105,38 @@ without removing one. If a future milestone has many similar issues
 calls out), a thin wrapper around `gh issue create` is a one-evening
 job; document it here when it exists.
 
+## CI: live Gemini job
+
+The CI workflow has two jobs:
+
+- **`test`** (always runs): `go build` + `go vet` + `go test ./...` on every
+  PR and push to `main`. This is the merge gate.
+- **`live (gemini)`** (runs after `test` succeeds, only on this repo's own
+  PRs and on `main` pushes): runs the gated live tests
+  `go test ./providers/gemini -run Live -count=1` and
+  `go test ./examples/local-agent -run Live -count=1` against the real
+  Gemini API. Reads the API key from the `GEMINI_API_KEY` repo secret.
+
+Forked PRs cannot read secrets, so the live job is guarded by
+
+```yaml
+if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+```
+
+and is simply not scheduled for fork PRs (rather than running and failing).
+For internal PRs where the secret is unset for any reason, the job's first
+step prints a notice and exits 0 — the existing tests already use
+`t.Skip` for the same path, so the result is a green no-op.
+
+Rotating the key:
+
+```sh
+gh secret set GEMINI_API_KEY --repo erain/glue
+```
+
+The live job costs a few tokens per run (≈2 seconds wall time). It is
+informational, not a merge gate — `test` is the only required check.
+
 ## Why so little automation
 
 Glue's discipline is "one issue per PR" with a human-readable closing
