@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"glue"
+	"github.com/erain/glue"
 )
 
 func TestEchoProviderRoundTripThroughAgent(t *testing.T) {

@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"glue"
+	"github.com/erain/glue"
 )
 
 // Store persists Glue sessions as local JSON files.

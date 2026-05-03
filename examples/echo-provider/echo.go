@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"glue"
+	"github.com/erain/glue"
 )
 
 // Provider is a Glue provider that echoes the user's last text back.

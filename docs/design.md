@@ -37,7 +37,7 @@ of truth for implementation order and status after the initial bootstrap.
 
 ## Package Boundaries
 
-The initial module path is `glue`.
+The module path is `github.com/erain/glue`.
 
 - `glue`: public library surface. Owns `Agent`, `Session`, options, tools,
   skills, roles, and store interfaces.

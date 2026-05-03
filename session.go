@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"glue/loop"
+	"github.com/erain/glue/loop"
 )
 
 // Session is an in-memory conversation with an [Agent]. Sessions are

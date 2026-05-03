@@ -26,11 +26,12 @@ skills, roles, and a CLI runner are tracked under P1 in the project plan.
 ## Install
 
 ```sh
-go get glue
+go get github.com/erain/glue
 ```
 
-The module path is `glue`; subpackages are `glue/loop`, `glue/providers/gemini`,
-and `glue/stores/file`.
+The module path is `github.com/erain/glue`; subpackages are
+`github.com/erain/glue/loop`, `github.com/erain/glue/providers/gemini`, and
+`github.com/erain/glue/stores/file`.
 
 ## Quickstart: Gemini
 
@@ -50,8 +51,8 @@ import (
 	"fmt"
 	"log"
 
-	"glue"
-	"glue/providers/gemini"
+	"github.com/erain/glue"
+	"github.com/erain/glue/providers/gemini"
 )
 
 func main() {
