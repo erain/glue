@@ -125,6 +125,10 @@ jobs:
       - name: Live OpenRouter smoke
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Pin a deterministic free model with a consistently-available
+          # upstream (Novita). Popular routes (google/gemma-4-*:free,
+          # minimax-m2.5:free) are over-subscribed and 429 frequently.
+          OPENROUTER_LIVE_MODEL: inclusionai/ling-2.6-1t:free
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
             echo "OPENROUTER_API_KEY not configured; skipping live tests."
