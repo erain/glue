@@ -285,17 +285,30 @@ Real agents built on the harness live under `agents/` (peer of the harness
 itself), not `examples/` (which holds tutorial-grade demos only).
 
 - [`agents/glue-review`](agents/glue-review) — a free, local pre-push branch
-  reviewer. Reads the diff against `main`, deep-reads files when context
-  demands it, and emits structured review notes. Defaults to NVIDIA's free
-  Kimi K2.6; flags swap to OpenRouter or Gemini. This is the recommended
-  starting point for seeing what a real Glue agent looks like, and the bot
-  that reviews PRs in this repo.
+  reviewer **(stable: `v1`)**. Reads the diff against `main`, deep-reads
+  files when context demands it, posts inline review comments on the diff
+  via the GitHub PR Reviews API, and falls back to a sticky markdown
+  comment when entries don't parse cleanly. Defaults to NVIDIA's free
+  Kimi K2.6; flags swap to OpenRouter or Gemini.
+
+  As a CLI:
 
   ```sh
   export NVIDIA_API_KEY=nvapi-...
   go run ./agents/glue-review              # review current branch vs main
   go run ./agents/glue-review --provider openrouter
   ```
+
+  As a GitHub Action — drop into any repo:
+
+  ```yaml
+  - uses: erain/glue/agents/glue-review@v1
+    with:
+      nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+  ```
+
+  See [`agents/glue-review/CHANGELOG.md`](agents/glue-review/CHANGELOG.md)
+  for surface guarantees and release history.
 
 ## Examples
 
