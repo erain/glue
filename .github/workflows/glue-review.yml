@@ -1,12 +1,13 @@
 name: glue-review
 
-# Dogfoods agents/glue-review on every PR opened against this repo.
-# - Posts/updates a sticky comment (find-by-marker, edit-or-create).
-# - Soft-fails: if the agent or upstream model errors, the comment becomes
-#   a "review unavailable, re-run to retry" message instead of failing CI.
-# - Fork PRs do not receive secrets on `pull_request`; the workflow detects
-#   that and skips quietly. A `/glue-review` comment trigger (#64) will
-#   cover the fork-PR path in a follow-up.
+# Dogfoods agents/glue-review on every PR opened against this repo by
+# consuming the same composite Action external repos use. The Action
+# itself lives at agents/glue-review/action.yml — see that file for the
+# full input/output contract.
+#
+# Fork PRs do not receive secrets on `pull_request`; the workflow detects
+# that and skips quietly. The `/glue-review` comment trigger (#64) will
+# cover the fork-PR path in a follow-up.
 
 on:
   pull_request:
@@ -17,7 +18,6 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # One review per PR at a time; pushing a new commit cancels the prior run.
   group: glue-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
@@ -34,16 +34,10 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          # Pin to the resolved head SHA to neutralize any push-after-trigger
-          # race; fetch-depth: 0 is required for `git diff origin/<base>...HEAD`.
+          # Pin to the resolved head SHA to neutralize push-after-trigger races;
+          # fetch-depth: 0 is required for `git diff origin/<base>...HEAD`.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: stable
-          cache: true
 
       - name: Gate on provider key
         id: gate
@@ -51,7 +45,7 @@ jobs:
           KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
           if [ -z "$KEY" ]; then
-            echo "NVIDIA_API_KEY is not set in this run (fork PR or missing secret); skipping review."
+            echo "NVIDIA_API_KEY not set (fork PR or missing secret); skipping review."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -64,7 +58,6 @@ jobs:
           base="origin/${{ github.event.pull_request.base.ref }}"
           changed=$(git diff --name-only "$base"...HEAD || true)
           if [ -z "$changed" ]; then
-            echo "No changed files reported; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -73,108 +66,19 @@ jobs:
             echo "All changed files are docs/markdown; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Code changes detected; running review."
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build glue-review
-        if: steps.gate.outputs.skip == 'false' && steps.scope.outputs.skip == 'false'
-        run: go build -o /tmp/glue-review ./agents/glue-review
-
       - name: Run glue-review
         if: steps.gate.outputs.skip == 'false' && steps.scope.outputs.skip == 'false'
-        id: review
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        # Capture both streams. continue-on-error so a model 429 doesn't fail
-        # the workflow — the comment step posts a soft-fail message instead.
-        continue-on-error: true
-        run: |
-          set +e
-          /tmp/glue-review \
-            --provider nvidia \
-            --model moonshotai/kimi-k2.6 \
-            --base "origin/${{ github.event.pull_request.base.ref }}" \
-            --max-turns 12 \
-            --id "pr-${{ github.event.pull_request.number }}" \
-            --store ".glue/ci-review-sessions" \
-            > /tmp/glue-review.md 2> /tmp/glue-review.err
-          rc=$?
-          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
-          echo "review bytes: $(wc -c < /tmp/glue-review.md)"
-          echo "----stderr----"
-          tail -c 4096 /tmp/glue-review.err || true
-
-      - name: Post or update sticky comment
-        if: steps.gate.outputs.skip == 'false' && steps.scope.outputs.skip == 'false'
-        uses: actions/github-script@v7
+        uses: ./agents/glue-review
         with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            // Marker is hidden in the comment HTML so we can find this bot's
-            // comment on re-runs. Bump the version when we change the comment
-            // shape so old comments don't get edited into a new format.
-            const marker = '<!-- glue-review:v1:do-not-edit -->';
-
-            const exitCode = '${{ steps.review.outputs.exit_code }}';
-            const reviewPath = '/tmp/glue-review.md';
-            const errPath = '/tmp/glue-review.err';
-
-            const safeRead = p => fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
-            const reviewMd = safeRead(reviewPath).trim();
-            const errLog = safeRead(errPath).trim();
-
-            const ok = exitCode === '0' && reviewMd.length > 0;
-
-            const footer = [
-              '',
-              '---',
-              '*🤖 Posted by [glue-review](https://github.com/erain/glue/tree/main/agents/glue-review).',
-              'Powered by NVIDIA Kimi K2.6 via the free build.nvidia.com API.',
-              'Add `[skip-review]` to the PR body to suppress.*',
-            ].join('\n');
-
-            let body;
-            if (ok) {
-              body = `${marker}\n${reviewMd}${footer}`;
-            } else {
-              const errSnippet = errLog ? errLog.slice(-3500) : '(no stderr captured)';
-              body = [
-                marker,
-                '⚠️ **glue-review could not produce a review.**',
-                '',
-                `Exit code: \`${exitCode}\`. Re-run the workflow to retry.`,
-                '',
-                '<details><summary>Failure log (last 3.5 KiB of stderr)</summary>',
-                '',
-                '```',
-                errSnippet,
-                '```',
-                '',
-                '</details>',
-                footer,
-              ].join('\n');
-            }
-
-            const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-
-            // Find existing sticky.
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner, repo, issue_number, per_page: 100,
-            });
-            const existing = comments.find(c => c.body && c.body.includes(marker));
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: existing.id, body,
-              });
-              core.info(`Updated sticky comment ${existing.id}`);
-            } else {
-              const created = await github.rest.issues.createComment({
-                owner, repo, issue_number, body,
-              });
-              core.info(`Created sticky comment ${created.data.id}`);
-            }
+          provider: nvidia
+          model: moonshotai/kimi-k2.6
+          base-ref: ${{ github.event.pull_request.base.ref }}
+          max-turns: '12'
+          nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+          # `glue-ref` defaults to the action's ref. For local-path uses
+          # there is no action ref, so pin to main; consumers of the
+          # remote Action get the action's own ref automatically.
+          glue-ref: main
