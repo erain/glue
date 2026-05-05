@@ -103,3 +103,31 @@ jobs:
             exit 0
           fi
           go test ./providers/nvidia -run Live -count=1 -timeout 300s
+
+  live-openrouter:
+    name: live (openrouter)
+    needs: test
+    # Always-on (free): openrouter/free auto-routes to a free underlying
+    # model so we get real OpenAI-compat coverage on every push/PR.
+    # Skips quietly on fork PRs (no secret).
+    if: github.event_name != 'workflow_dispatch' || inputs.run_live
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Live OpenRouter smoke
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "OPENROUTER_API_KEY not configured; skipping live tests."
+            exit 0
+          fi
+          go test ./providers/openrouter -run Live -count=1 -timeout 300s
