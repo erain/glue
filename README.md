@@ -79,6 +79,34 @@ func main() {
 The session keeps an in-memory transcript, so a second `session.Prompt(...)`
 continues the conversation. File-backed sessions land in P1.
 
+## Quickstart: NVIDIA build (Kimi K2 and friends)
+
+The `providers/nvidia` package speaks the OpenAI-compatible API exposed at
+[`build.nvidia.com`](https://build.nvidia.com), so any model listed there
+(Kimi K2 family, Llama, Qwen, etc.) can be driven through Glue without a
+separate SDK.
+
+```sh
+export NVIDIA_API_KEY=nvapi-...
+```
+
+```go
+import (
+	"github.com/erain/glue"
+	"github.com/erain/glue/providers/nvidia"
+)
+
+agent := glue.NewAgent(glue.AgentOptions{
+	Provider: nvidia.New(nvidia.Options{}),
+	Model:    "moonshotai/kimi-k2.6",
+})
+```
+
+The model id matches the `org/name` path on build.nvidia.com (e.g.
+`moonshotai/kimi-k2.6`, `meta/llama-3.3-70b-instruct`). Cold-start latency
+on Kimi K2 can reach tens of seconds for the first chunk; configure your
+HTTP client and context timeouts accordingly.
+
 ### Streaming events
 
 `Session.Subscribe` registers a session-scoped handler that fires on every

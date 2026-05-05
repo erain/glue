@@ -45,6 +45,9 @@ The module path is `github.com/erain/glue`.
   consumption, tool execution, transcript append behavior, and loop events.
 - `providers/gemini`: Gemini provider implementation using
   `google.golang.org/genai`.
+- `providers/nvidia`: OpenAI-compatible provider for the NVIDIA build
+  inference API (`integrate.api.nvidia.com`), implemented over `net/http`
+  with no third-party SDK dependency.
 - `stores/file`: file-backed JSON session store with atomic writes.
 - `cmd/glue`: local CLI runner built on top of the public library.
 
@@ -53,6 +56,7 @@ The dependency direction is intentionally narrow:
 ```text
 cmd/glue -> glue -> loop
 glue    -> providers/gemini only through explicit user construction
+glue    -> providers/nvidia only through explicit user construction
 glue    -> stores/file only through explicit user construction
 loop    -> no dependency on glue, providers, stores, CLI, or docs
 ```
