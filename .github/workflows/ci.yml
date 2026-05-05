@@ -135,3 +135,7 @@ jobs:
             exit 0
           fi
           go test ./providers/openrouter -run Live -count=1 -timeout 300s
+          # agents/glue-review/fixture_test.go exercises the agent end-to-end
+          # against the same free model. Gated on OPENROUTER_API_KEY too, so
+          # they share a job without burning two CI minutes.
+          go test ./agents/glue-review -run TestFixtureReplay -count=1 -timeout 600s

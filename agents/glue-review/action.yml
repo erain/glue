@@ -183,7 +183,7 @@ runs:
         # but greys out old reviews in the UI.
         prior_ids=$(
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            --jq "[.[] | select(.body and (.body | contains(\"<!-- glue-review:v1:do-not-edit -->\"))) | select(.state != \"DISMISSED\") | .id] | .[]" \
+            --jq "[.[] | select(.body and (.body | contains(\"<!-- glue-review:promptv1:do-not-edit -->\"))) | select(.state != \"DISMISSED\") | .id] | .[]" \
         )
         for id in $prior_ids; do
           gh api -X PUT "repos/$REPO/pulls/$PR_NUMBER/reviews/$id/dismissals" \
@@ -195,7 +195,7 @@ runs:
         # narrative readable when the inline comments are scrolled past.
         # The marker still goes into the body so the dismissal lookup
         # above finds future iterations.
-        marker='<!-- glue-review:v1:do-not-edit -->'
+        marker='<!-- glue-review:promptv1:do-not-edit -->'
         body_path="${RUNNER_TEMP}/review-body.md"
         {
           printf '%s\n' "$marker"
@@ -248,7 +248,7 @@ runs:
         # Marker is hidden in the comment HTML so we can find this bot's
         # comment on re-runs. Bump the version when the comment shape
         # changes so old comments don't get edited into a new format.
-        MARKER='<!-- glue-review:v1:do-not-edit -->'
+        MARKER='<!-- glue-review:promptv1:do-not-edit -->'
         FOOTER=$'\n---\n*🤖 Posted by [glue-review](https://github.com/erain/glue/tree/main/agents/glue-review).*'
 
         # Build the comment body in a temp file so we never have to embed

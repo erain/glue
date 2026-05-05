@@ -87,6 +87,35 @@ swap code into the run.
 This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.github/workflows/glue-review.yml)
 and [.github/workflows/glue-review-comment.yml](../../.github/workflows/glue-review-comment.yml).
 
+## Prompt versioning
+
+The system prompt lives at [`prompts/v1.md`](prompts/v1.md), embedded
+into the binary via `//go:embed`. Bump to a new file (`prompts/v2.md`,
+etc.) when iterating on the review style; pass `--prompt-version v2` to
+opt in. The default version is set in `prompt.go`.
+
+The sticky comment / PR Review marker carries the prompt version
+(`<!-- glue-review:promptv1:do-not-edit -->`) so a prompt-shape change
+starts fresh comments instead of editing old ones into a different
+format.
+
+## Fixture replay tests
+
+`fixture_test.go` defines small synthetic-repo scenarios (`panic-stub`,
+`subtle-bug`, `cosmetic-only`). Running the test suite with
+`OPENROUTER_API_KEY` (or `NVIDIA_API_KEY` / `GEMINI_API_KEY`) set
+replays each scenario through a real free model and asserts structural
+invariants — section presence, severity tags on the right files, no
+fabricated paths. Add a new fixture when locking in a prompt behavior:
+
+```go
+{
+    name: "your-scenario",
+    seed: func(t *testing.T, repo string) { /* set up the repo */ },
+    expect: func(t *testing.T, review string) { /* invariants */ },
+}
+```
+
 ## What it does
 
 Given a Git working directory, the agent:
