@@ -17,7 +17,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -51,32 +53,39 @@ Output format (Markdown, in this order, omit empty sections):
 One sentence on what this branch does.
 
 ## Issues
-Bugs, regressions, or correctness problems. Include file:line references when possible. Prefix each with severity: [critical] [major] [minor].
+Bugs, regressions, or correctness problems. Each entry MUST start with a severity tag and a file:line citation in this exact shape so a tool can route them as inline review comments:
+
+- [critical|major|minor] path/to/file.ext:LINE — description
+
+Use the line number from the new (post-change) side of the diff. If you genuinely cannot pin a line, use :0 (the entry will land in the bulk review body instead of inline).
 
 ## Suggestions
-Style, design, or maintainability improvements. Be specific; cite file paths.
+Style, design, or maintainability improvements. Same prefix format as Issues:
+
+- [minor|major] path/to/file.ext:LINE — description
 
 ## Looks good
-Things the change got right that are worth calling out (only when meaningful — do not pad).
+Free-form bullets. Only when meaningful — do not pad.
 
 ## Open questions
-Things you cannot decide from the diff alone and want the author to clarify.
+Things you cannot decide from the diff alone and want the author to clarify. Free-form bullets.
 
-Be direct. Cite file paths. Never invent code that is not in the diff.`
+Be direct. Never invent code that is not in the diff. Never reference files that are not changed by the diff in Issues or Suggestions.`
 
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
 type config struct {
-	base     string
-	provider string
-	model    string
-	id       string
-	store    string
-	work     string
-	maxTurns int
-	prompt   string
+	base       string
+	provider   string
+	model      string
+	id         string
+	store      string
+	work       string
+	maxTurns   int
+	prompt     string
+	inlineJSON string
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -114,13 +123,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// When --inline-json is set we tee stdout into a buffer so we can
+	// parse the final review without re-running anything. The existing
+	// streaming-to-stdout behavior is preserved verbatim.
+	var captured bytes.Buffer
+	textSink := io.Writer(stdout)
+	if cfg.inlineJSON != "" {
+		textSink = io.MultiWriter(stdout, &captured)
+	}
+
 	wrote := false
 	_, err = session.Prompt(ctx, cfg.prompt,
 		glue.WithEvents(func(e glue.Event) {
 			switch e.Type {
 			case glue.EventTextDelta:
 				if e.Delta != "" {
-					fmt.Fprint(stdout, e.Delta)
+					fmt.Fprint(textSink, e.Delta)
 					wrote = true
 				}
 			case glue.EventToolStart:
@@ -131,11 +149,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}),
 	)
 	if wrote {
-		fmt.Fprintln(stdout)
+		fmt.Fprintln(textSink)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+
+	if cfg.inlineJSON != "" {
+		entries := parseInlineComments(captured.String())
+		raw, mErr := json.MarshalIndent(entries, "", "  ")
+		if mErr != nil {
+			fmt.Fprintf(stderr, "marshal inline JSON: %v\n", mErr)
+			return 1
+		}
+		if wErr := os.WriteFile(cfg.inlineJSON, raw, 0o644); wErr != nil {
+			fmt.Fprintf(stderr, "write inline JSON: %v\n", wErr)
+			return 1
+		}
 	}
 	return 0
 }
@@ -152,6 +183,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	work := flags.String("work", ".", "working directory (must be inside the Git repo)")
 	maxTurns := flags.Int("max-turns", 16, "loop budget — caps total assistant turns")
 	prompt := flags.String("prompt", "", "override the default review prompt")
+	inlineJSON := flags.String("inline-json", "", "if set, write parsed inline-comment entries to this path as JSON (one array of {path,line,severity,body}); the final markdown still goes to stdout")
 
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: glue-review [flags]")
@@ -166,14 +198,15 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	}
 
 	cfg := config{
-		base:     *base,
-		provider: strings.ToLower(strings.TrimSpace(*provider)),
-		model:    *model,
-		id:       *id,
-		store:    *store,
-		work:     *work,
-		maxTurns: *maxTurns,
-		prompt:   *prompt,
+		base:       *base,
+		provider:   strings.ToLower(strings.TrimSpace(*provider)),
+		model:      *model,
+		id:         *id,
+		store:      *store,
+		work:       *work,
+		maxTurns:   *maxTurns,
+		prompt:     *prompt,
+		inlineJSON: *inlineJSON,
 	}
 	if cfg.prompt == "" {
 		cfg.prompt = fmt.Sprintf("Review the current Git branch against base ref %q. Use the tools to gather context, then output the final review only.", cfg.base)

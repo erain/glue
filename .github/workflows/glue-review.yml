@@ -78,7 +78,3 @@ jobs:
           base-ref: ${{ github.event.pull_request.base.ref }}
           max-turns: '12'
           nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
-          # `glue-ref` defaults to the action's ref. For local-path uses
-          # there is no action ref, so pin to main; consumers of the
-          # remote Action get the action's own ref automatically.
-          glue-ref: main

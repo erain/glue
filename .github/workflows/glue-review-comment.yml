@@ -84,7 +84,6 @@ jobs:
           max-turns: '12'
           pr-number: ${{ github.event.issue.number }}
           nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
-          glue-ref: main
 
       - name: "React :rocket: on success"
         if: steps.review.outputs.exit-code == '0'

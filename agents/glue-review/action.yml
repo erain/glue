@@ -57,13 +57,6 @@ inputs:
     description: Go toolchain version for `setup-go`.
     required: false
     default: stable
-  glue-ref:
-    description: |
-      Tag, branch, or SHA in github.com/erain/glue to install
-      glue-review from. Defaults to the action's own ref so consumers
-      pin once and the binary follows.
-    required: false
-    default: ${{ github.action_ref || 'main' }}
   pr-number:
     description: |
       PR number to comment on. Defaults to
@@ -101,11 +94,17 @@ runs:
 
     - name: Install glue-review
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        # Pin the binary to the action's ref so the consumer's `uses:`
-        # version controls the binary version too.
-        go install "github.com/erain/glue/agents/glue-review@${{ inputs.glue-ref }}"
-        echo "GOBIN=$(go env GOPATH)/bin" >> "$GITHUB_ENV"
+        # Build from the Action's own source tree. For `uses:` references
+        # GitHub fetches the requested ref into ${{ github.action_path }},
+        # so the binary matches the consumer's pinned action ref exactly.
+        # No separate go install — that would fetch a possibly-different
+        # version of the same source from the module cache.
+        cd "$ACTION_PATH"
+        go build -o "${RUNNER_TEMP}/glue-review" .
+        echo "GLUE_REVIEW_BIN=${RUNNER_TEMP}/glue-review" >> "$GITHUB_ENV"
 
     - name: Run glue-review
       id: run
@@ -118,7 +117,8 @@ runs:
         set +e
         review_path="${RUNNER_TEMP}/glue-review.md"
         err_path="${RUNNER_TEMP}/glue-review.err"
-        bin="$(go env GOPATH)/bin/glue-review"
+        inline_path="${RUNNER_TEMP}/glue-review-inline.json"
+        bin="$GLUE_REVIEW_BIN"
 
         args=(
           --provider "${{ inputs.provider }}"
@@ -126,6 +126,7 @@ runs:
           --max-turns "${{ inputs.max-turns }}"
           --id "pr-${{ inputs.pr-number }}"
           --store ".glue/action-sessions"
+          --inline-json "$inline_path"
         )
         if [ -n "${{ inputs.model }}" ]; then
           args+=(--model "${{ inputs.model }}")
@@ -136,13 +137,103 @@ runs:
 
         echo "review-path=$review_path" >> "$GITHUB_OUTPUT"
         echo "err-path=$err_path"       >> "$GITHUB_OUTPUT"
+        echo "inline-path=$inline_path" >> "$GITHUB_OUTPUT"
         echo "exit-code=$rc"            >> "$GITHUB_OUTPUT"
         echo "review bytes: $(wc -c < "$review_path")"
+        echo "inline-json bytes: $(wc -c < "$inline_path" 2>/dev/null || echo 0)"
         echo "----stderr (last 4k)----"
         tail -c 4096 "$err_path" || true
 
+    - name: Post inline review (when parseable)
+      id: review_post
+      if: steps.run.outputs.exit-code == '0'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REVIEW_PATH: ${{ steps.run.outputs.review-path }}
+        INLINE_PATH: ${{ steps.run.outputs.inline-path }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        REPO: ${{ github.repository }}
+      run: |
+        # Phase 3b (#65): when the agent emitted at least one parseable
+        # `[severity] path:line` entry inside Issues/Suggestions, post
+        # them as inline comments on the diff via the PR Reviews API.
+        # If nothing parseable came out (or the inline file is missing),
+        # we fall through to the bulk sticky-comment path below.
+        if [ ! -s "$INLINE_PATH" ]; then
+          echo "no inline file; falling back to sticky comment"
+          echo "posted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        count=$(jq 'length' "$INLINE_PATH" 2>/dev/null || echo 0)
+        if [ "$count" = "0" ]; then
+          echo "inline file empty; falling back to sticky comment"
+          echo "posted=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Resolve PR head SHA — required by the Reviews API.
+        head_sha=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+
+        # Dismiss any prior inline reviews from this bot before posting a
+        # new one. Match by the v1 marker we inject into every review body
+        # so re-runs replace, not stack. Dismissing keeps the audit trail
+        # but greys out old reviews in the UI.
+        prior_ids=$(
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            --jq "[.[] | select(.body and (.body | contains(\"<!-- glue-review:v1:do-not-edit -->\"))) | select(.state != \"DISMISSED\") | .id] | .[]" \
+        )
+        for id in $prior_ids; do
+          gh api -X PUT "repos/$REPO/pulls/$PR_NUMBER/reviews/$id/dismissals" \
+            -f message="Superseded by a newer glue-review run." >/dev/null || true
+        done
+
+        # Build the review payload. The body is the full markdown minus
+        # nothing — leaving Issues/Suggestions in place keeps the
+        # narrative readable when the inline comments are scrolled past.
+        # The marker still goes into the body so the dismissal lookup
+        # above finds future iterations.
+        marker='<!-- glue-review:v1:do-not-edit -->'
+        body_path="${RUNNER_TEMP}/review-body.md"
+        {
+          printf '%s\n' "$marker"
+          cat "$REVIEW_PATH"
+          printf '\n\n---\n*🤖 Posted by [glue-review](https://github.com/erain/glue/tree/main/agents/glue-review).*'
+        } > "$body_path"
+
+        # PR Reviews API expects comments as `{path, line, side, body}`.
+        # Severity is folded into the body so reviewers see it inline.
+        comments_path="${RUNNER_TEMP}/review-comments.json"
+        jq '[.[] | {
+          path:    .path,
+          line:    .line,
+          side:    "RIGHT",
+          body:    "**[\(.severity)]** \(.body)"
+        }]' "$INLINE_PATH" > "$comments_path"
+
+        # Build the full review payload as JSON so newlines / quotes survive.
+        payload_path="${RUNNER_TEMP}/review-payload.json"
+        jq -n --arg commit_id "$head_sha" \
+              --rawfile body "$body_path" \
+              --slurpfile comments "$comments_path" \
+              '{commit_id: $commit_id, body: $body, event: "COMMENT", comments: $comments[0]}' \
+          > "$payload_path"
+
+        # Post. If the API rejects (e.g., a path:line not in the diff),
+        # capture the error and fall back to the sticky path.
+        if url=$(gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            --input "$payload_path" --jq '.html_url'); then
+          echo "Posted inline review: $url"
+          echo "posted=true"  >> "$GITHUB_OUTPUT"
+          echo "review-url=$url" >> "$GITHUB_OUTPUT"
+        else
+          echo "Inline review POST failed; will fall back to sticky comment."
+          echo "posted=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Post or update sticky comment
       id: post
+      if: steps.review_post.outputs.posted != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
