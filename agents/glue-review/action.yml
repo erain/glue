@@ -59,6 +59,14 @@ inputs:
     description: Go toolchain version for `setup-go`.
     required: false
     default: stable
+  extra-blocked-paths:
+    description: |
+      Comma-separated path patterns the read_file tool will refuse to
+      open, in addition to the built-in defaults (`.env`, `id_rsa*`,
+      `*.pem`, `credentials.json`, etc.). Use to extend the blocklist
+      with repo-specific secret-shaped files. Cannot subtract defaults.
+    required: false
+    default: ''
   pr-number:
     description: |
       PR number to comment on. Defaults to
@@ -132,6 +140,9 @@ runs:
         )
         if [ -n "${{ inputs.model }}" ]; then
           args+=(--model "${{ inputs.model }}")
+        fi
+        if [ -n "${{ inputs.extra-blocked-paths }}" ]; then
+          args+=(--blocked-paths "${{ inputs.extra-blocked-paths }}")
         fi
 
         "$bin" "${args[@]}" > "$review_path" 2> "$err_path"

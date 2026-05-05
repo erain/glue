@@ -53,6 +53,7 @@ type config struct {
 	prompt        string
 	inlineJSON    string
 	promptVersion string
+	blockedPaths  []string
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -160,7 +161,7 @@ func runOnce(ctx context.Context, cfg config, p providerEntry, into io.Writer, s
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     prov,
 		Model:        model,
-		Tools:        reviewTools(cfg.work),
+		Tools:        reviewTools(cfg.work, cfg.blockedPaths),
 		SystemPrompt: systemPrompt,
 		Store:        filestore.New(cfg.store),
 		WorkDir:      cfg.work,
@@ -205,6 +206,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	prompt := flags.String("prompt", "", "override the default review prompt")
 	inlineJSON := flags.String("inline-json", "", "if set, write parsed inline-comment entries to this path as JSON (one array of {path,line,severity,body}); the final markdown still goes to stdout")
 	promptVersion := flags.String("prompt-version", defaultPromptVersion, fmt.Sprintf("system-prompt version to load (available: %s)", strings.Join(availablePromptVersions(), ", ")))
+	blockedPaths := flags.String("blocked-paths", "", "comma-separated extra path patterns the read_file tool will refuse to open (extends the built-in blocklist of secret-shaped files; cannot subtract defaults)")
 
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: glue-review [flags]")
@@ -229,6 +231,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 		prompt:        *prompt,
 		inlineJSON:    *inlineJSON,
 		promptVersion: strings.TrimSpace(*promptVersion),
+		blockedPaths:  splitCommaList(*blockedPaths),
 	}
 	if cfg.prompt == "" {
 		cfg.prompt = fmt.Sprintf("Review the current Git branch against base ref %q. Use the tools to gather context, then output the final review only.", cfg.base)

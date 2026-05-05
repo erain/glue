@@ -87,6 +87,27 @@ swap code into the run.
 This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.github/workflows/glue-review.yml)
 and [.github/workflows/glue-review-comment.yml](../../.github/workflows/glue-review-comment.yml).
 
+## Sensitive-file blocklist
+
+`read_file` refuses to open paths that match any of a built-in
+secret-shaped pattern list — `.env*`, `id_rsa*`, `*.pem`, `*.key`,
+`credentials.json`, `service-account*.json`, `secret.*`, `secrets.*`,
+files inside `.aws`/`.gcloud`/`.azure`, and others (full list in
+[blocklist.go](blocklist.go)). The match runs before the file is
+opened, so blocked paths can never reach the model's context window
+or the public review comment.
+
+Extend the blocklist with repo-specific patterns:
+
+- CLI: `--blocked-paths "*.token,internal/secrets/*"`
+- Action input: `extra-blocked-paths: "*.token,internal/secrets/*"`
+
+Patterns use Go's `filepath.Match` glob syntax (`*`, `?`, character
+classes). They are matched against the relative path, the basename, and
+each path component (case-insensitive), so `infra/secrets/foo.yaml` is
+caught by the pattern `secrets`. You cannot subtract a default — only
+add.
+
 ## Prompt versioning
 
 The system prompt lives at [`prompts/v1.md`](prompts/v1.md), embedded

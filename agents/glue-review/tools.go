@@ -22,14 +22,20 @@ import (
 // up the model's context window.
 //
 // All file paths are resolved relative to workDir and rejected if they
-// escape it (".." traversal, absolute paths). The git tools shell out
-// to the system `git` binary so we don't pull in a Git library just for
-// `diff` / `log`.
-func reviewTools(workDir string) []glue.Tool {
+// escape it (".." traversal, absolute paths). Read paths are also
+// matched against a blocklist so the agent cannot quote secret-shaped
+// files (`.env`, `id_rsa`, `*.pem`, ...) into a public review comment;
+// see blocklist.go for the default pattern list. `extraBlocked` is a
+// caller-supplied extension to the defaults — it does not replace them.
+//
+// The git tools shell out to the system `git` binary so we don't pull
+// in a Git library just for `diff` / `log`.
+func reviewTools(workDir string, extraBlocked []string) []glue.Tool {
+	blocked := mergeBlocklist(extraBlocked)
 	return []glue.Tool{
 		gitDiffBranchTool(workDir),
 		gitLogBranchTool(workDir),
-		readFileTool(workDir),
+		readFileTool(workDir, blocked),
 	}
 }
 
@@ -121,11 +127,11 @@ func gitLogBranchTool(workDir string) glue.Tool {
 	}
 }
 
-func readFileTool(workDir string) glue.Tool {
+func readFileTool(workDir string, blockedPatterns []string) glue.Tool {
 	return glue.Tool{
 		ToolSpec: glue.ToolSpec{
 			Name:        "read_file",
-			Description: "Read a UTF-8 text file from the working directory. Returns the file content, truncated if larger than max_bytes. Use this to inspect files mentioned in the diff when surrounding context is needed.",
+			Description: "Read a UTF-8 text file from the working directory. Returns the file content, truncated if larger than max_bytes. Use this to inspect files mentioned in the diff when surrounding context is needed. Refuses to open secret-shaped files (.env, id_rsa, *.pem, credentials.json, etc.).",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -142,6 +148,13 @@ func readFileTool(workDir string) glue.Tool {
 			}
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
 				return glue.ToolResult{}, err
+			}
+			// Blocklist check happens BEFORE traversal resolution so the
+			// model sees a stable error message regardless of whether
+			// the file even exists. We also re-check the resolved path
+			// below to defend against e.g. symlink-to-secret tricks.
+			if blocked, pat := pathBlocked(args.Path, blockedPatterns); blocked {
+				return errorResult(fmt.Errorf("path %q is blocked by sensitive-file pattern %q; do not retry", args.Path, pat)), nil
 			}
 			resolved, err := safeJoin(workDir, args.Path)
 			if err != nil {

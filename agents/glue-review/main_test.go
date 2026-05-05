@@ -17,7 +17,7 @@ import (
 
 func TestReviewToolsRegistered(t *testing.T) {
 	t.Parallel()
-	tools := reviewTools(".")
+	tools := reviewTools(".", nil)
 	wantNames := []string{"git_diff_branch", "git_log_branch", "read_file"}
 	if len(tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(tools), len(wantNames))
@@ -159,7 +159,7 @@ func TestGitToolsAgainstFakeRepo(t *testing.T) {
 		t.Fatalf("log missing commit: %s", res.Content[0].Text)
 	}
 
-	read := readFileTool(repo)
+	read := readFileTool(repo, nil)
 	res, err = read.Execute(ctx, glue.ToolCall{Name: read.Name, Arguments: json.RawMessage(`{"path":"hello.txt"}`)})
 	if err != nil {
 		t.Fatalf("read Execute: %v", err)

@@ -167,7 +167,11 @@ func runHermeticGit(t *testing.T, repo string, gitArgs ...string) {
 
 func writeFile(t *testing.T, repo, name, body string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+	full := filepath.Join(repo, name)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(full), err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
 }
