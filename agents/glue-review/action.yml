@@ -13,8 +13,10 @@ branding:
 inputs:
   provider:
     description: |
-      Provider name: `nvidia`, `openrouter`, or `gemini`. Defaults to
-      `nvidia` for the strongest free model (Kimi K2.6).
+      Provider list. Single name (e.g. `nvidia`) or comma-separated for
+      failover (e.g. `nvidia,openrouter,gemini`). Each provider is tried
+      in order; the first whose API key is set in env AND whose call
+      succeeds wins. Default `nvidia` keeps single-provider behavior.
     required: false
     default: nvidia
   model:

@@ -78,12 +78,13 @@ jobs:
         uses: ./agents/glue-review
         continue-on-error: true
         with:
-          provider: nvidia
-          model: moonshotai/kimi-k2.6
+          provider: nvidia,openrouter,gemini
           base-ref: ${{ steps.pr.outputs.base_ref }}
           max-turns: '12'
           pr-number: ${{ github.event.issue.number }}
           nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
 
       - name: "React :rocket: on success"
         if: steps.review.outputs.exit-code == '0'
