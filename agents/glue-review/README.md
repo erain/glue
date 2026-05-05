@@ -21,7 +21,7 @@ entire diff into one prompt.
 ## Quickstart
 
 ```sh
-go install github.com/erain/glue/examples/glue-review@latest
+go install github.com/erain/glue/agents/glue-review@latest
 
 # Default: NVIDIA build + moonshotai/kimi-k2.6 (the strongest free model).
 export NVIDIA_API_KEY=nvapi-...

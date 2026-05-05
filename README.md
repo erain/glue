@@ -279,22 +279,27 @@ smoke test:
 GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ```
 
-## Examples
+## Agents
 
-- [`examples/glue-review`](examples/glue-review) — a free, local pre-push
-  branch reviewer. Reads the diff against `main`, deep-reads files when
-  context demands it, and emits structured review notes. Defaults to
-  NVIDIA's free Kimi K2.6; flags swap to OpenRouter or Gemini. This is
-  the recommended starting point if you want to see what a real Glue
-  agent looks like.
+Real agents built on the harness live under `agents/` (peer of the harness
+itself), not `examples/` (which holds tutorial-grade demos only).
+
+- [`agents/glue-review`](agents/glue-review) — a free, local pre-push branch
+  reviewer. Reads the diff against `main`, deep-reads files when context
+  demands it, and emits structured review notes. Defaults to NVIDIA's free
+  Kimi K2.6; flags swap to OpenRouter or Gemini. This is the recommended
+  starting point for seeing what a real Glue agent looks like, and the bot
+  that reviews PRs in this repo.
 
   ```sh
   export NVIDIA_API_KEY=nvapi-...
-  go run ./examples/glue-review            # review current branch vs main
-  go run ./examples/glue-review --provider openrouter
+  go run ./agents/glue-review              # review current branch vs main
+  go run ./agents/glue-review --provider openrouter
   ```
 
-- [`examples/local-agent`](examples/local-agent) is a smaller Gemini-backed
+## Examples
+
+- [`examples/local-agent`](examples/local-agent) is a small Gemini-backed
   tutorial CLI that registers a `local_time` tool, streams text to stdout,
   and persists sessions through `stores/file`. It's the shortest path from
   zero to "Glue agent that calls a Go function":
