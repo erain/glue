@@ -4,6 +4,35 @@ A free, local pre-push branch reviewer built on the Glue agent harness. Run
 it before opening a PR and get structured review notes from a real LLM, no
 cloud account required beyond a free API key.
 
+## Use it as a GitHub Action
+
+```yaml
+# .github/workflows/glue-review.yml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: erain/glue/agents/glue-review@main  # pin to a tag in production
+        with:
+          nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+```
+
+That posts a sticky review comment on every PR. Use `provider: openrouter` or
+`provider: gemini` (with the matching `*-api-key` input) to swap backends.
+
+Inputs and outputs are documented in [`action.yml`](action.yml). Re-runs
+update the existing sticky comment instead of stacking duplicates.
+
 ## What it does
 
 Given a Git working directory, the agent:

@@ -1,0 +1,200 @@
+name: glue-review
+description: |
+  Free, local pre-PR branch reviewer. Reads the diff against a base ref,
+  deep-reads files when context demands it, and posts (or updates) a
+  sticky review comment via GitHub's Issues API.
+author: erain
+
+# Branding for Marketplace listings (effective once published).
+branding:
+  icon: 'check-circle'
+  color: 'purple'
+
+inputs:
+  provider:
+    description: |
+      Provider name: `nvidia`, `openrouter`, or `gemini`. Defaults to
+      `nvidia` for the strongest free model (Kimi K2.6).
+    required: false
+    default: nvidia
+  model:
+    description: |
+      Model id. When empty, uses the provider-specific default
+      (NVIDIA: moonshotai/kimi-k2.6, OpenRouter:
+      inclusionai/ling-2.6-1t:free, Gemini: gemini-2.5-flash).
+    required: false
+    default: ''
+  base-ref:
+    description: |
+      Ref to diff against. Default is the PR's base branch
+      (`github.base_ref`). Override for non-PR contexts.
+    required: false
+    default: ${{ github.base_ref }}
+  max-turns:
+    description: Loop budget (cap on assistant turns).
+    required: false
+    default: '12'
+  github-token:
+    description: |
+      Token used to post the sticky comment. Default is the workflow's
+      automatic GITHUB_TOKEN; override with a PAT if you need cross-repo
+      commenting.
+    required: false
+    default: ${{ github.token }}
+  nvidia-api-key:
+    description: NVIDIA build API key (used when provider=nvidia).
+    required: false
+    default: ''
+  openrouter-api-key:
+    description: OpenRouter API key (used when provider=openrouter).
+    required: false
+    default: ''
+  gemini-api-key:
+    description: Gemini API key (used when provider=gemini).
+    required: false
+    default: ''
+  go-version:
+    description: Go toolchain version for `setup-go`.
+    required: false
+    default: stable
+  glue-ref:
+    description: |
+      Tag, branch, or SHA in github.com/erain/glue to install
+      glue-review from. Defaults to the action's own ref so consumers
+      pin once and the binary follows.
+    required: false
+    default: ${{ github.action_ref || 'main' }}
+  pr-number:
+    description: |
+      PR number to comment on. Defaults to
+      `github.event.pull_request.number` so the action just works in
+      `pull_request` workflows; override when triggering from
+      `issue_comment` or `workflow_dispatch`.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+
+outputs:
+  review-markdown-path:
+    description: |
+      Path on the runner filesystem where the raw review markdown was
+      written; useful for follow-up steps that want to post-process the
+      review (extract sections, lint structure, etc.).
+    value: ${{ steps.run.outputs.review-path }}
+  comment-url:
+    description: API URL of the sticky comment that was created or updated.
+    value: ${{ steps.post.outputs.comment-url }}
+  exit-code:
+    description: |
+      Exit code from the agent invocation. Non-zero indicates the
+      sticky comment carries a soft-fail message rather than a real
+      review.
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+
+    - name: Install glue-review
+      shell: bash
+      run: |
+        # Pin the binary to the action's ref so the consumer's `uses:`
+        # version controls the binary version too.
+        go install "github.com/erain/glue/agents/glue-review@${{ inputs.glue-ref }}"
+        echo "GOBIN=$(go env GOPATH)/bin" >> "$GITHUB_ENV"
+
+    - name: Run glue-review
+      id: run
+      shell: bash
+      env:
+        NVIDIA_API_KEY: ${{ inputs.nvidia-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+      run: |
+        set +e
+        review_path="${RUNNER_TEMP}/glue-review.md"
+        err_path="${RUNNER_TEMP}/glue-review.err"
+        bin="$(go env GOPATH)/bin/glue-review"
+
+        args=(
+          --provider "${{ inputs.provider }}"
+          --base "origin/${{ inputs.base-ref }}"
+          --max-turns "${{ inputs.max-turns }}"
+          --id "pr-${{ inputs.pr-number }}"
+          --store ".glue/action-sessions"
+        )
+        if [ -n "${{ inputs.model }}" ]; then
+          args+=(--model "${{ inputs.model }}")
+        fi
+
+        "$bin" "${args[@]}" > "$review_path" 2> "$err_path"
+        rc=$?
+
+        echo "review-path=$review_path" >> "$GITHUB_OUTPUT"
+        echo "err-path=$err_path"       >> "$GITHUB_OUTPUT"
+        echo "exit-code=$rc"            >> "$GITHUB_OUTPUT"
+        echo "review bytes: $(wc -c < "$review_path")"
+        echo "----stderr (last 4k)----"
+        tail -c 4096 "$err_path" || true
+
+    - name: Post or update sticky comment
+      id: post
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REVIEW_PATH: ${{ steps.run.outputs.review-path }}
+        ERR_PATH: ${{ steps.run.outputs.err-path }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        REPO: ${{ github.repository }}
+      run: |
+        # Marker is hidden in the comment HTML so we can find this bot's
+        # comment on re-runs. Bump the version when the comment shape
+        # changes so old comments don't get edited into a new format.
+        MARKER='<!-- glue-review:v1:do-not-edit -->'
+        FOOTER=$'\n---\n*🤖 Posted by [glue-review](https://github.com/erain/glue/tree/main/agents/glue-review).*'
+
+        # Build the comment body in a temp file so we never have to embed
+        # heredocs inside this YAML block (block-scalar indentation makes
+        # heredocs awkward). gh api -F body=@file reads the file as-is.
+        BODY_PATH="${RUNNER_TEMP}/glue-review-body.md"
+
+        if [ "$EXIT_CODE" = "0" ] && [ -s "$REVIEW_PATH" ]; then
+          {
+            printf '%s\n' "$MARKER"
+            cat "$REVIEW_PATH"
+            printf '%s' "$FOOTER"
+          } > "$BODY_PATH"
+        else
+          {
+            printf '%s\n' "$MARKER"
+            printf '%s\n\n' '⚠️ **glue-review could not produce a review.**'
+            printf 'Exit code: `%s`. Re-run the workflow to retry.\n\n' "$EXIT_CODE"
+            printf '<details><summary>Failure log (last 3.5 KiB of stderr)</summary>\n\n'
+            printf '```\n'
+            tail -c 3500 "$ERR_PATH" 2>/dev/null || echo '(no stderr captured)'
+            printf '\n```\n\n</details>'
+            printf '%s' "$FOOTER"
+          } > "$BODY_PATH"
+        fi
+
+        existing_id=$(
+          gh api --paginate \
+            "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq "[.[] | select(.body | contains(\"$MARKER\"))] | first | .id"
+        )
+
+        if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
+          url=$(gh api -X PATCH "repos/$REPO/issues/comments/$existing_id" \
+            -F body="@$BODY_PATH" --jq '.url')
+          echo "Updated comment $existing_id"
+        else
+          url=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+            -F body="@$BODY_PATH" --jq '.url')
+          echo "Created new sticky comment"
+        fi
+        echo "comment-url=$url" >> "$GITHUB_OUTPUT"
