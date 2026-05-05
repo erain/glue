@@ -87,6 +87,26 @@ swap code into the run.
 This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.github/workflows/glue-review.yml)
 and [.github/workflows/glue-review-comment.yml](../../.github/workflows/glue-review-comment.yml).
 
+## Path filters
+
+Restrict the diff the agent sees with Git pathspec globs:
+
+- CLI: `--paths "src/**,*.go" --paths-ignore "vendor/**,*.gen.go"`
+- Action inputs: `paths` / `paths-ignore` (comma-separated).
+
+When `paths` is empty, every changed file is in scope. `paths-ignore`
+applies after `paths`. Excludes-only is fine — the agent injects an
+implicit `*` include so "everything except testdata" works as expected.
+
+## Custom prompts
+
+- `--prompt "..."` (CLI) / `prompt:` (Action input) replaces the user
+  message sent to the agent. Use for one-off focused runs ("only check
+  for SQL injection", "only review the migration files").
+- `--prompt-version v1` selects which built-in system prompt to load.
+  Only `v1` ships today; the version is embedded in sticky comment
+  markers so future prompt-shape revisions don't mangle existing comments.
+
 ## Sensitive-file blocklist
 
 `read_file` refuses to open paths that match any of a built-in

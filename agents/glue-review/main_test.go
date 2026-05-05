@@ -17,7 +17,7 @@ import (
 
 func TestReviewToolsRegistered(t *testing.T) {
 	t.Parallel()
-	tools := reviewTools(".", nil)
+	tools := reviewTools(".", nil, nil, nil)
 	wantNames := []string{"git_diff_branch", "git_log_branch", "read_file"}
 	if len(tools) != len(wantNames) {
 		t.Fatalf("got %d tools, want %d", len(tools), len(wantNames))
@@ -138,7 +138,7 @@ func TestGitToolsAgainstFakeRepo(t *testing.T) {
 
 	ctx := context.Background()
 
-	diff := gitDiffBranchTool(repo)
+	diff := gitDiffBranchTool(repo, nil)
 	res, err := diff.Execute(ctx, glue.ToolCall{Name: diff.Name, Arguments: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("diff Execute: %v", err)
