@@ -70,10 +70,14 @@ jobs:
   live-nvidia:
     name: live (nvidia)
     needs: test
-    # Manual-only: same rationale as live (gemini). Kept as a sibling job
-    # rather than a matrix cell so each provider's secret, latency profile,
-    # and failure surface independently.
-    if: github.event_name == 'workflow_dispatch' && inputs.run_live
+    # Always-on: build.nvidia.com is free for dev, so we exercise the live
+    # provider on every push/PR to catch wire-protocol regressions early.
+    # On a manual workflow_dispatch with run_live=false we still skip, so
+    # the dispatch toggle remains useful when you explicitly want the test
+    # job's other resources without hitting the API. Fork PRs without the
+    # secret skip quietly via the runtime guard below. Promote to a
+    # required status check once we have a few weeks of green history.
+    if: github.event_name != 'workflow_dispatch' || inputs.run_live
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
