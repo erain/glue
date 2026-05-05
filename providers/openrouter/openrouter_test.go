@@ -429,28 +429,35 @@ func TestLiveSmoke(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 
-	var text strings.Builder
+	var text, thinking strings.Builder
 	var done *loop.Message
 	deadline := time.After(240 * time.Second)
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("live smoke timed out; partial=%q", text.String())
+			t.Fatalf("live smoke timed out; text=%q thinking-len=%d", text.String(), thinking.Len())
 		case event, ok := <-ch:
 			if !ok {
 				if done == nil {
-					t.Fatalf("channel closed without Done event; partial=%q", text.String())
+					t.Fatalf("channel closed without Done event; text=%q", text.String())
 				}
-				if strings.TrimSpace(text.String()) == "" {
-					t.Fatalf("expected non-empty assistant text; got %q", text.String())
+				// openrouter/free is non-deterministic across requests — some
+				// upstream models emit only `reasoning` content with no
+				// user-visible `content`. Accept either, since the smoke is
+				// asserting wire-protocol parsing, not model output shape.
+				if strings.TrimSpace(text.String()) == "" && thinking.Len() == 0 {
+					t.Fatalf("expected non-empty text or thinking; got neither (done=%+v)", done)
 				}
 				upstream, _ := done.Metadata["upstream_provider"].(string)
-				t.Logf("%s reply: %q (upstream=%s usage=%+v)", model, text.String(), upstream, done.Usage)
+				t.Logf("%s reply: %q (upstream=%s thinking-len=%d usage=%+v)",
+					model, text.String(), upstream, thinking.Len(), done.Usage)
 				return
 			}
 			switch event.Type {
 			case loop.ProviderEventTextDelta:
 				text.WriteString(event.Delta)
+			case loop.ProviderEventThinkingDelta:
+				thinking.WriteString(event.Delta)
 			case loop.ProviderEventDone:
 				done = event.Message
 			case loop.ProviderEventError:
