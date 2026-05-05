@@ -111,31 +111,28 @@ The CI workflow has two jobs:
 
 - **`test`** (always runs): `go build` + `go vet` + `go test ./...` on every
   PR and push to `main`. This is the merge gate.
-- **`live (gemini)`** (runs after `test` succeeds, only on this repo's own
-  PRs and on `main` pushes): runs the gated live tests
-  `go test ./providers/gemini -run Live -count=1` and
+- **`live (gemini)`** (manual only, via `workflow_dispatch`): runs the gated
+  live tests `go test ./providers/gemini -run Live -count=1` and
   `go test ./examples/local-agent -run Live -count=1` against the real
   Gemini API. Reads the API key from the `GEMINI_API_KEY` repo secret.
 
-Forked PRs cannot read secrets, so the live job is guarded by
+The live job does not run on push or PR — it would burn API tokens on
+every commit for a check that is not a merge gate. Trigger it manually
+when you want CI-side confirmation:
 
-```yaml
-if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+```sh
+gh workflow run ci.yml --ref <branch>
 ```
 
-and is simply not scheduled for fork PRs (rather than running and failing).
-For internal PRs where the secret is unset for any reason, the job's first
-step prints a notice and exits 0 — the existing tests already use
-`t.Skip` for the same path, so the result is a green no-op.
+or use the "Run workflow" button on the Actions tab. For routine
+verification, run the same `go test -run Live` commands locally with
+`GEMINI_API_KEY` exported.
 
 Rotating the key:
 
 ```sh
 gh secret set GEMINI_API_KEY --repo erain/glue
 ```
-
-The live job costs a few tokens per run (≈2 seconds wall time). It is
-informational, not a merge gate — `test` is the only required check.
 
 ## Why so little automation
 

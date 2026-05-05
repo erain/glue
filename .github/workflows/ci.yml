@@ -5,6 +5,12 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: "Run live provider tests (consumes API tokens)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -35,10 +41,10 @@ jobs:
   live:
     name: live (gemini)
     needs: test
-    # Run on pushes to main and on PRs that originate from this repo.
-    # PRs from forks cannot access secrets, so skip them entirely
-    # rather than have the job fail.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # Manual-only: triggered via the "Run workflow" button (workflow_dispatch)
+    # to avoid spending API tokens on every push/PR. Run locally for routine
+    # verification; dispatch in GitHub when you want CI-side confirmation.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
