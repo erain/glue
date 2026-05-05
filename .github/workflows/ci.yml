@@ -66,3 +66,36 @@ jobs:
           fi
           go test ./providers/gemini -run Live -count=1
           go test ./examples/local-agent -run Live -count=1
+
+  live-nvidia:
+    name: live (nvidia)
+    needs: test
+    # Manual-only: same rationale as live (gemini). Kept as a sibling job
+    # rather than a matrix cell so each provider's secret, latency profile,
+    # and failure surface independently.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Live NVIDIA smoke
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          # Use Llama 3.3 70B in CI: faster first-byte and more stable than
+          # Kimi K2.6, while exercising the same OpenAI-compatible wire
+          # protocol the provider implements. Local devs default to
+          # moonshotai/kimi-k2.6 unless they override NVIDIA_LIVE_MODEL.
+          NVIDIA_LIVE_MODEL: meta/llama-3.3-70b-instruct
+        run: |
+          if [ -z "$NVIDIA_API_KEY" ]; then
+            echo "NVIDIA_API_KEY not configured; skipping live tests."
+            exit 0
+          fi
+          go test ./providers/nvidia -run Live -count=1 -timeout 300s
