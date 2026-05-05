@@ -279,17 +279,30 @@ smoke test:
 GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ```
 
-## Example
+## Examples
 
-[`examples/local-agent`](examples/local-agent) is a small Gemini-backed CLI
-that registers a `local_time` tool, streams the assistant text to stdout,
-and persists sessions through `stores/file`. It's the shortest path from
-zero to "Glue agent that calls a Go function":
+- [`examples/glue-review`](examples/glue-review) — a free, local pre-push
+  branch reviewer. Reads the diff against `main`, deep-reads files when
+  context demands it, and emits structured review notes. Defaults to
+  NVIDIA's free Kimi K2.6; flags swap to OpenRouter or Gemini. This is
+  the recommended starting point if you want to see what a real Glue
+  agent looks like.
 
-```sh
-export GEMINI_API_KEY=...
-go run ./examples/local-agent --prompt "Use local_time for America/Toronto." --id demo
-```
+  ```sh
+  export NVIDIA_API_KEY=nvapi-...
+  go run ./examples/glue-review            # review current branch vs main
+  go run ./examples/glue-review --provider openrouter
+  ```
+
+- [`examples/local-agent`](examples/local-agent) is a smaller Gemini-backed
+  tutorial CLI that registers a `local_time` tool, streams text to stdout,
+  and persists sessions through `stores/file`. It's the shortest path from
+  zero to "Glue agent that calls a Go function":
+
+  ```sh
+  export GEMINI_API_KEY=...
+  go run ./examples/local-agent --prompt "Use local_time for America/Toronto." --id demo
+  ```
 
 ## CLI
 
