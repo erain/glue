@@ -107,6 +107,35 @@ The model id matches the `org/name` path on build.nvidia.com (e.g.
 on Kimi K2 can reach tens of seconds for the first chunk; configure your
 HTTP client and context timeouts accordingly.
 
+## Quickstart: OpenRouter
+
+The `providers/openrouter` package speaks the OpenAI-compatible API at
+[`openrouter.ai`](https://openrouter.ai), which aggregates many upstream
+model providers behind a single endpoint. The meta-route `openrouter/free`
+auto-picks a free underlying model — handy for tests and examples.
+
+```sh
+export OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+```go
+import (
+	"github.com/erain/glue"
+	"github.com/erain/glue/providers/openrouter"
+)
+
+agent := glue.NewAgent(glue.AgentOptions{
+	Provider: openrouter.New(openrouter.Options{}),
+	Model:    "openrouter/free",
+})
+```
+
+The provider sends `HTTP-Referer` and `X-Title` attribution headers by
+default; override them via `Options.Headers` for your own application.
+OpenRouter emits SSE comment-line keep-alives during cold routing — the
+provider drops them silently — so first-byte latency may be a few seconds
+even when the underlying model is fast.
+
 ### Streaming events
 
 `Session.Subscribe` registers a session-scoped handler that fires on every

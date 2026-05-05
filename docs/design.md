@@ -48,6 +48,10 @@ The module path is `github.com/erain/glue`.
 - `providers/nvidia`: OpenAI-compatible provider for the NVIDIA build
   inference API (`integrate.api.nvidia.com`), implemented over `net/http`
   with no third-party SDK dependency.
+- `providers/openrouter`: OpenAI-compatible provider for OpenRouter
+  (`openrouter.ai/api/v1`), aggregator of many upstream models. Sends
+  attribution headers (`HTTP-Referer`, `X-Title`) and tolerates
+  comment-line SSE keep-alives during cold routing.
 - `stores/file`: file-backed JSON session store with atomic writes.
 - `cmd/glue`: local CLI runner built on top of the public library.
 
@@ -57,6 +61,7 @@ The dependency direction is intentionally narrow:
 cmd/glue -> glue -> loop
 glue    -> providers/gemini only through explicit user construction
 glue    -> providers/nvidia only through explicit user construction
+glue    -> providers/openrouter only through explicit user construction
 glue    -> stores/file only through explicit user construction
 loop    -> no dependency on glue, providers, stores, CLI, or docs
 ```
