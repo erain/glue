@@ -380,7 +380,7 @@ func TestLiveSmoke(t *testing.T) {
 				if strings.TrimSpace(text.String()) == "" {
 					t.Fatalf("expected non-empty assistant text; got %q", text.String())
 				}
-				t.Logf("kimi-k2.6 reply: %q (usage=%+v)", text.String(), done.Usage)
+				t.Logf("%s reply: %q (usage=%+v)", model, text.String(), done.Usage)
 				return
 			}
 			switch event.Type {
