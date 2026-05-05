@@ -107,6 +107,19 @@ implicit `*` include so "everything except testdata" works as expected.
   Only `v1` ships today; the version is embedded in sticky comment
   markers so future prompt-shape revisions don't mangle existing comments.
 
+## Citation validation
+
+After the model emits its review, glue-review re-fetches the diff and
+validates each parsed `[severity] path:line` citation against the new
+side of the diff. Entries pointing at files not in the diff, or at line
+numbers outside any added/context hunk, are dropped and logged to
+stderr; they never reach the inline review on the PR.
+
+This protects against the most common LLM failure mode for code review:
+fabricating a plausibly-shaped file:line citation that doesn't exist in
+the change. The bulk markdown body is left as-is — citation drops only
+affect inline annotations, where a wrong location is a hard UX failure.
+
 ## Sensitive-file blocklist
 
 `read_file` refuses to open paths that match any of a built-in

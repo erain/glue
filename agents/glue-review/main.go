@@ -129,6 +129,25 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	if cfg.inlineJSON != "" {
 		entries := parseInlineComments(successCaptured.String())
+		// Citation validation: re-fetch the diff once and drop any
+		// inline comments whose path:line is not reachable on the new
+		// side. Defends against the model fabricating plausibly-shaped
+		// file:line citations — a real failure mode we observed with
+		// Kimi K2.6 on PR #72. Validation is best-effort: a diff parse
+		// error degrades to "skip validation" rather than failing the
+		// whole run, so a flaky git invocation cannot red the workflow.
+		if diff, dErr := fetchValidationDiff(ctx, cfg); dErr == nil {
+			lineMap := parseDiffLineMap(diff)
+			kept, dropped := validateInlineComments(entries, lineMap)
+			if len(dropped) > 0 {
+				fmt.Fprintf(stderr, "[validate] dropping %d/%d inline comments with unverifiable file:line citations\n",
+					len(dropped), len(entries))
+				fmt.Fprint(stderr, describeDropped(dropped, lineMap))
+			}
+			entries = kept
+		} else {
+			fmt.Fprintf(stderr, "[validate] skipped: %v\n", dErr)
+		}
 		raw, mErr := json.MarshalIndent(entries, "", "  ")
 		if mErr != nil {
 			fmt.Fprintf(stderr, "marshal inline JSON: %v\n", mErr)
@@ -140,6 +159,24 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// fetchValidationDiff re-runs the same `git diff` the agent saw, so
+// the validation step can match inline comments against the same set
+// of new-side line numbers the model was looking at. Honors --paths
+// and --paths-ignore so out-of-scope files are excluded from
+// validation as well as from the agent's input.
+func fetchValidationDiff(ctx context.Context, cfg config) (string, error) {
+	// cfg.base may already include `origin/` (CI passes it that way) or
+	// be a bare branch name (local dev). Use it verbatim — Git resolves
+	// either form against `HEAD`.
+	gitArgs := []string{"diff", "--no-color", cfg.base + "...HEAD"}
+	pathspec := buildPathspec(cfg.paths, cfg.pathsIgnore)
+	if len(pathspec) > 0 {
+		gitArgs = append(gitArgs, "--")
+		gitArgs = append(gitArgs, pathspec...)
+	}
+	return runGit(ctx, cfg.work, gitArgs...)
 }
 
 // runOnce executes one Prompt against a specific provider, buffering
