@@ -39,16 +39,18 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Gate on provider key
+      - name: Gate on any provider key
         id: gate
         env:
-          KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -z "$KEY" ]; then
-            echo "NVIDIA_API_KEY not set (fork PR or missing secret); skipping review."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
+          if [ -n "$NVIDIA_KEY" ] || [ -n "$OPENROUTER_KEY" ] || [ -n "$GEMINI_KEY" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No provider key set (fork PR or no secrets configured); skipping review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Skip docs-only PRs
@@ -73,8 +75,13 @@ jobs:
         if: steps.gate.outputs.skip == 'false' && steps.scope.outputs.skip == 'false'
         uses: ./agents/glue-review
         with:
-          provider: nvidia
-          model: moonshotai/kimi-k2.6
+          # Failover order: NVIDIA Kimi K2.6 first (strongest free model);
+          # OpenRouter Ling next (deterministic free); Gemini last as a
+          # paid-tier fallback. Each provider is tried only when its key
+          # is set in the env, so missing keys are silent skips.
+          provider: nvidia,openrouter,gemini
           base-ref: ${{ github.event.pull_request.base.ref }}
           max-turns: '12'
           nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
