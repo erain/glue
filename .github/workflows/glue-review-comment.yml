@@ -1,0 +1,107 @@
+name: glue-review (comment trigger)
+
+# Lets a maintainer trigger glue-review on any PR — including PRs from
+# forks, where the regular `pull_request` workflow has no access to
+# secrets — by commenting `/glue-review` on the PR.
+#
+# Why a separate workflow: `issue_comment` runs in the base-repo
+# context with full secret access, but only fires on comments. This is
+# the GitHub-canonical pattern for "let a trusted human ask the bot to
+# look at this fork PR." It does NOT run automatically on every fork
+# PR — that would let randos burn API credits.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: glue-review-comment-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review (comment-triggered)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/glue-review') &&
+      (
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'COLLABORATOR'
+      )
+
+    steps:
+      - name: "React :eyes: on trigger comment"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            -f content=eyes >/dev/null || true
+
+      - name: Resolve PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Fetch the PR explicitly — the issue_comment payload knows it's
+          # a PR but doesn't carry the PR head ref / SHA. Resolving here
+          # also pins the SHA at trigger time so a fork pushing right
+          # after the comment can't swap code from under us.
+          json=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          head_sha=$(echo "$json" | jq -r '.head.sha')
+          base_ref=$(echo "$json" | jq -r '.base.ref')
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "could not resolve PR head SHA" >&2
+            exit 1
+          fi
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #$PR_NUMBER: head=$head_sha base=$base_ref"
+
+      - name: Checkout pinned head SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Run glue-review
+        id: review
+        uses: ./agents/glue-review
+        continue-on-error: true
+        with:
+          provider: nvidia
+          model: moonshotai/kimi-k2.6
+          base-ref: ${{ steps.pr.outputs.base_ref }}
+          max-turns: '12'
+          pr-number: ${{ github.event.issue.number }}
+          nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+          glue-ref: main
+
+      - name: "React :rocket: on success"
+        if: steps.review.outputs.exit-code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            -f content=rocket >/dev/null || true
+
+      - name: "React :x: on failure"
+        if: steps.review.outputs.exit-code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            -f content=-1 >/dev/null || true
