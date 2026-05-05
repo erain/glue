@@ -22,10 +22,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: erain/glue/agents/glue-review@main  # pin to a tag in production
+      - uses: erain/glue/agents/glue-review@v1   # or @v1.0.0 for strict pinning
         with:
           nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
 ```
+
+Releases follow semver in the `v1.x` series; see
+[CHANGELOG.md](CHANGELOG.md) for what shipped when. The `v1` floating
+tag advances on every backwards-compatible release.
 
 That posts a sticky review comment on every PR. Use `provider: openrouter` or
 `provider: gemini` (with the matching `*-api-key` input) to swap backends.
@@ -169,6 +173,17 @@ fabricated paths. Add a new fixture when locking in a prompt behavior:
     expect: func(t *testing.T, review string) { /* invariants */ },
 }
 ```
+
+## What it looks like on a PR
+
+The bot posts inline review comments on the diff plus a top-level
+review body. Severity tags (`[critical]` / `[major]` / `[minor]`) are
+preserved on each line so reviewers can scan triage at a glance.
+
+> *(A screenshot of a real review will land here once the next
+> non-trivial PR runs through the v1 Action — see the live samples
+> on merged PRs in this repo's history under the `glue-review`
+> author for the current shape.)*
 
 ## What it does
 
