@@ -33,6 +33,60 @@ That posts a sticky review comment on every PR. Use `provider: openrouter` or
 Inputs and outputs are documented in [`action.yml`](action.yml). Re-runs
 update the existing sticky comment instead of stacking duplicates.
 
+### Fork PRs (production setup)
+
+GitHub does not pass repository secrets to `pull_request` workflows from
+forks, for security reasons. The `pull_request`-triggered workflow above
+will skip any fork PR — by design, since otherwise a fork could exfiltrate
+the LLM API key just by opening a PR.
+
+The standard fix is a **second workflow** triggered by an `issue_comment`
+that a maintainer types on the PR:
+
+```yaml
+# .github/workflows/glue-review-comment.yml
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/glue-review') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+               github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - id: pr
+        env: { GH_TOKEN: ${{ github.token }} }
+        run: |
+          json=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}")
+          echo "head_sha=$(echo "$json" | jq -r .head.sha)" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(echo "$json" | jq -r .base.ref)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}  # pin SHA at trigger time
+          fetch-depth: 0
+      - uses: erain/glue/agents/glue-review@main
+        with:
+          base-ref: ${{ steps.pr.outputs.base_ref }}
+          pr-number: ${{ github.event.issue.number }}
+          nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+```
+
+`issue_comment` runs in the **base-repo context** with full secret access,
+but only fires when a maintainer (`OWNER`/`MEMBER`/`COLLABORATOR`) comments
+`/glue-review` on the PR. Untrusted commenters are filtered out by
+`author_association`. The head SHA is resolved at trigger time and pinned
+on checkout so a fork pushing immediately after the trigger comment cannot
+swap code into the run.
+
+This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.github/workflows/glue-review.yml)
+and [.github/workflows/glue-review-comment.yml](../../.github/workflows/glue-review-comment.yml).
+
 ## What it does
 
 Given a Git working directory, the agent:
