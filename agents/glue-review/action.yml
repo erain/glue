@@ -59,6 +59,33 @@ inputs:
     description: Go toolchain version for `setup-go`.
     required: false
     default: stable
+  paths:
+    description: |
+      Comma-separated Git pathspec globs. Only files matching at least
+      one pattern are reviewed. When empty, all changed files are in
+      scope. Example: `src/**,*.go`.
+    required: false
+    default: ''
+  paths-ignore:
+    description: |
+      Comma-separated Git pathspec globs to exclude from review;
+      applied after `paths`. Example: `vendor/**,*.gen.go,testdata/**`.
+    required: false
+    default: ''
+  prompt:
+    description: |
+      User prompt to send to the agent. Overrides the built-in
+      "review the current branch" prompt — useful for one-off focused
+      reviews ("only check for SQL injection", etc.).
+    required: false
+    default: ''
+  prompt-version:
+    description: |
+      System-prompt version to load (the canonical reviewer
+      instructions). Only `v1` ships today; future revisions will be
+      additive.
+    required: false
+    default: ''
   extra-blocked-paths:
     description: |
       Comma-separated path patterns the read_file tool will refuse to
@@ -143,6 +170,18 @@ runs:
         fi
         if [ -n "${{ inputs.extra-blocked-paths }}" ]; then
           args+=(--blocked-paths "${{ inputs.extra-blocked-paths }}")
+        fi
+        if [ -n "${{ inputs.paths }}" ]; then
+          args+=(--paths "${{ inputs.paths }}")
+        fi
+        if [ -n "${{ inputs.paths-ignore }}" ]; then
+          args+=(--paths-ignore "${{ inputs.paths-ignore }}")
+        fi
+        if [ -n "${{ inputs.prompt }}" ]; then
+          args+=(--prompt "${{ inputs.prompt }}")
+        fi
+        if [ -n "${{ inputs.prompt-version }}" ]; then
+          args+=(--prompt-version "${{ inputs.prompt-version }}")
         fi
 
         "$bin" "${args[@]}" > "$review_path" 2> "$err_path"

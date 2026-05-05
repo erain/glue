@@ -30,13 +30,41 @@ import (
 //
 // The git tools shell out to the system `git` binary so we don't pull
 // in a Git library just for `diff` / `log`.
-func reviewTools(workDir string, extraBlocked []string) []glue.Tool {
+func reviewTools(workDir string, extraBlocked, paths, pathsIgnore []string) []glue.Tool {
 	blocked := mergeBlocklist(extraBlocked)
+	pathspec := buildPathspec(paths, pathsIgnore)
 	return []glue.Tool{
-		gitDiffBranchTool(workDir),
+		gitDiffBranchTool(workDir, pathspec),
 		gitLogBranchTool(workDir),
 		readFileTool(workDir, blocked),
 	}
+}
+
+// buildPathspec converts include / exclude glob lists into Git pathspec
+// arguments. The Git CLI accepts:
+//
+//   - bare patterns as include filters (e.g. `*.go`, `cmd/...`)
+//   - `:(exclude)pattern` or `:!pattern` as exclude filters
+//
+// Excludes only take effect after at least one include pattern is
+// present, so when callers pass only excludes we add `*` as an explicit
+// catch-all include — matching the intuitive "review everything except X"
+// semantics.
+func buildPathspec(paths, pathsIgnore []string) []string {
+	if len(paths) == 0 && len(pathsIgnore) == 0 {
+		return nil
+	}
+	out := []string{}
+	for _, p := range paths {
+		out = append(out, p)
+	}
+	if len(out) == 0 && len(pathsIgnore) > 0 {
+		out = append(out, "*")
+	}
+	for _, p := range pathsIgnore {
+		out = append(out, ":(exclude)"+p)
+	}
+	return out
 }
 
 const (
@@ -45,11 +73,11 @@ const (
 	defaultReadMaxBytes = 80 * 1024
 )
 
-func gitDiffBranchTool(workDir string) glue.Tool {
+func gitDiffBranchTool(workDir string, pathspec []string) glue.Tool {
 	return glue.Tool{
 		ToolSpec: glue.ToolSpec{
 			Name:        "git_diff_branch",
-			Description: "Show the diff of the current branch versus a base ref (default 'main'). Includes file additions, deletions, and modifications. Use this first to scope the review.",
+			Description: "Show the diff of the current branch versus a base ref (default 'main'). Includes file additions, deletions, and modifications. The diff may be pre-filtered by deployment-supplied path globs — only files in scope appear. Use this first to scope the review.",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -74,7 +102,12 @@ func gitDiffBranchTool(workDir string) glue.Tool {
 			if max <= 0 {
 				max = defaultDiffMaxBytes
 			}
-			out, err := runGit(ctx, workDir, "diff", "--no-color", base+"...HEAD")
+			gitArgs := []string{"diff", "--no-color", base + "...HEAD"}
+			if len(pathspec) > 0 {
+				gitArgs = append(gitArgs, "--")
+				gitArgs = append(gitArgs, pathspec...)
+			}
+			out, err := runGit(ctx, workDir, gitArgs...)
 			if err != nil {
 				return errorResult(err), nil
 			}
