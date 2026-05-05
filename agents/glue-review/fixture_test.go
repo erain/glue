@@ -1,0 +1,232 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fixture defines one structural-replay scenario: a tiny synthetic Git
+// repo seeded with a baseline commit and one or more change commits,
+// plus assertions that read the agent's review output and verify
+// invariants the prompt is supposed to enforce. We assert structure
+// rather than exact wording — LLM output is non-deterministic.
+type fixture struct {
+	name string
+	// seed populates the repo on the `feature` branch. The scratch
+	// repo already has an empty `main` baseline commit; seed runs
+	// after `git checkout -b feature`.
+	seed func(t *testing.T, repo string)
+	// expect runs the structural assertions over the agent's stdout
+	// (the full review markdown). The fixture passes the test only if
+	// every assertion holds.
+	expect func(t *testing.T, review string)
+}
+
+// fixtures is the set of scenarios we replay against a real free model
+// to catch prompt regressions. Add a new entry when a new prompt
+// behavior needs to be locked in.
+var fixtures = []fixture{
+	{
+		name: "panic-stub",
+		seed: func(t *testing.T, repo string) {
+			// Classic regression-bait: a stub that panics on startup.
+			// Prompt should produce at least one [major] or [critical]
+			// issue tied to main.go.
+			writeFile(t, repo, "main.go", "package main\n\nfunc main() { panic(\"todo\") }\n")
+			gitCommit(t, repo, "scaffold", "main.go")
+		},
+		expect: func(t *testing.T, review string) {
+			assertHasSection(t, review, "Summary")
+			assertHasSection(t, review, "Issues")
+			if !regexpMatch(review, `\[(major|critical)\][^\n]*main\.go`) {
+				t.Errorf("expected a major/critical issue mentioning main.go; review=%q", review)
+			}
+		},
+	},
+	{
+		name: "subtle-bug",
+		seed: func(t *testing.T, repo string) {
+			// Off-by-one: the loop runs n+1 times instead of n. A senior
+			// reviewer catches this; we assert the section names line
+			// up but don't demand the model spotted the specific bug
+			// (model quality varies).
+			body := "package main\n\n" +
+				"// SumFirstN returns the sum of integers 1..n inclusive.\n" +
+				"func SumFirstN(n int) int {\n" +
+				"\ttotal := 0\n" +
+				"\tfor i := 0; i <= n; i++ { // bug: should be i < n+1 or i := 1; i <= n\n" +
+				"\t\ttotal += i\n" +
+				"\t}\n" +
+				"\treturn total\n" +
+				"}\n"
+			writeFile(t, repo, "math.go", body)
+			gitCommit(t, repo, "add SumFirstN", "math.go")
+		},
+		expect: func(t *testing.T, review string) {
+			// Don't gate on "the model spotted this specific bug" —
+			// model quality varies. Do gate on output structure being
+			// well-formed for a non-trivial diff.
+			assertHasSection(t, review, "Summary")
+			if !strings.Contains(review, "math.go") {
+				t.Errorf("expected review to mention math.go (the only changed file); review=%q", review)
+			}
+		},
+	},
+	{
+		name: "cosmetic-only",
+		seed: func(t *testing.T, repo string) {
+			// Pure formatting / comment tweak. Prompt should not pad
+			// Issues with phantom problems on a no-op-equivalent diff.
+			writeFile(t, repo, "doc.go", "// Package x prints stuff.\npackage x\n")
+			gitCommit(t, repo, "polish: fix package comment trailing period", "doc.go")
+		},
+		expect: func(t *testing.T, review string) {
+			assertHasSection(t, review, "Summary")
+			// Permissive: the model may legitimately have nothing
+			// substantive to say. We only fail if it fabricated a
+			// reference to a file outside the diff.
+			if strings.Contains(review, ".bash_history") || strings.Contains(review, "/etc/passwd") {
+				t.Errorf("review references suspicious file outside diff; review=%q", review)
+			}
+		},
+	},
+}
+
+// TestFixtureReplay drives every fixture through the agent against a
+// real free model and asserts each scenario's structural invariants.
+// Skipped quietly when no provider key is in env (matches the existing
+// TestLiveReviewSmoke gating convention).
+func TestFixtureReplay(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	provider, err := pickLiveProvider(t)
+	if err != nil {
+		t.Skipf("no provider key in env: %v", err)
+	}
+
+	for _, f := range fixtures {
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitInit(t, repo)
+			f.seed(t, repo)
+			review, err := runAgentInRepo(t, repo, provider, fmt.Sprintf("fixture-%s-%d", f.name, time.Now().UnixNano()))
+			if err != nil {
+				t.Fatalf("run failed: %v", err)
+			}
+			t.Logf("%s review (%d bytes):\n%s", f.name, len(review), review)
+			f.expect(t, review)
+		})
+	}
+}
+
+// helpers --------------------------------------------------------------
+
+func gitInit(t *testing.T, repo string) {
+	t.Helper()
+	for _, c := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"commit", "--allow-empty", "-q", "-m", "init"},
+		{"checkout", "-q", "-b", "feature"},
+	} {
+		runHermeticGit(t, repo, c...)
+	}
+}
+
+func gitCommit(t *testing.T, repo, message string, files ...string) {
+	t.Helper()
+	args := append([]string{"add"}, files...)
+	runHermeticGit(t, repo, args...)
+	runHermeticGit(t, repo, "commit", "-q", "-m", message)
+}
+
+func runHermeticGit(t *testing.T, repo string, gitArgs ...string) {
+	t.Helper()
+	cmd := exec.Command("git", gitArgs...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+	)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git %v: %v (%s)", gitArgs, err, errBuf.String())
+	}
+}
+
+func writeFile(t *testing.T, repo, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// pickLiveProvider returns the first provider name whose API key is
+// configured in env, in failover order.
+func pickLiveProvider(t *testing.T) (string, error) {
+	t.Helper()
+	for _, p := range []string{"openrouter", "nvidia", "gemini"} {
+		if providerKeyAvailable(p) {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("none of OPENROUTER_API_KEY / NVIDIA_API_KEY / GEMINI_API_KEY set")
+}
+
+// runAgentInRepo invokes run() against a real free model. Returns the
+// captured stdout (the review markdown).
+func runAgentInRepo(t *testing.T, repo, provider, sessionID string) (string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	args := []string{
+		"--provider", provider,
+		"--work", repo,
+		"--base", "main",
+		"--store", filepath.Join(repo, ".glue"),
+		"--id", sessionID,
+		"--max-turns", "8",
+	}
+	// OpenRouter+Ling is fastest; NVIDIA we let default itself; Gemini
+	// uses its default. The fixtures are tiny so any model works.
+	switch provider {
+	case "openrouter":
+		args = append(args, "--model", "inclusionai/ling-2.6-1t:free")
+	case "nvidia":
+		args = append(args, "--model", "meta/llama-3.3-70b-instruct")
+	}
+
+	var out, errBuf bytes.Buffer
+	rc := run(ctx, args, &out, &errBuf)
+	if rc != 0 {
+		return "", fmt.Errorf("rc=%d stderr=%s", rc, errBuf.String())
+	}
+	return out.String(), nil
+}
+
+func assertHasSection(t *testing.T, review, section string) {
+	t.Helper()
+	if !strings.Contains(review, "## "+section) {
+		t.Errorf("missing `## %s` heading; review=%q", section, review)
+	}
+}
+
+func regexpMatch(s, pattern string) bool {
+	rx, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	return rx.MatchString(s)
+}

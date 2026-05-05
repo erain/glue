@@ -34,58 +34,25 @@ import (
 	filestore "github.com/erain/glue/stores/file"
 )
 
-// systemPrompt frames the agent as a senior code reviewer. It tells the
-// model how to use the tools — start with the diff and log, then read
-// files only when context demands it — and what shape the final review
-// should take. Keep this prompt short: the model already understands the
-// review task, the lift here is to constrain the output format.
-const systemPrompt = `You are a senior software engineer reviewing a Git branch before it is pushed for review.
-
-Workflow:
-1. Call git_diff_branch first to see the full diff against the base branch.
-2. Call git_log_branch to see the commit history; this often explains intent.
-3. For files where the diff alone is not enough context (large refactors, new files, subtle invariants), call read_file on specific paths to look at the surrounding code. Skim purposefully — do not read every file.
-4. Emit a single, final review. Do not chat between tool calls.
-
-Output format (Markdown, in this order, omit empty sections):
-
-## Summary
-One sentence on what this branch does.
-
-## Issues
-Bugs, regressions, or correctness problems. Each entry MUST start with a severity tag and a file:line citation in this exact shape so a tool can route them as inline review comments:
-
-- [critical|major|minor] path/to/file.ext:LINE — description
-
-Use the line number from the new (post-change) side of the diff. If you genuinely cannot pin a line, use :0 (the entry will land in the bulk review body instead of inline).
-
-## Suggestions
-Style, design, or maintainability improvements. Same prefix format as Issues:
-
-- [minor|major] path/to/file.ext:LINE — description
-
-## Looks good
-Free-form bullets. Only when meaningful — do not pad.
-
-## Open questions
-Things you cannot decide from the diff alone and want the author to clarify. Free-form bullets.
-
-Be direct. Never invent code that is not in the diff. Never reference files that are not changed by the diff in Issues or Suggestions.`
+// The system prompt is loaded from embedded prompts/<version>.md files
+// at run time so we can A/B and roll back prompt revisions without a
+// rebuild. See prompt.go for the loader.
 
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
 type config struct {
-	base       string
-	provider   string
-	model      string
-	id         string
-	store      string
-	work       string
-	maxTurns   int
-	prompt     string
-	inlineJSON string
+	base          string
+	provider      string
+	model         string
+	id            string
+	store         string
+	work          string
+	maxTurns      int
+	prompt        string
+	inlineJSON    string
+	promptVersion string
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -185,6 +152,11 @@ func runOnce(ctx context.Context, cfg config, p providerEntry, into io.Writer, s
 		model = defaultModel
 	}
 
+	systemPrompt, err := systemPromptFor(cfg.promptVersion)
+	if err != nil {
+		return err
+	}
+
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     prov,
 		Model:        model,
@@ -232,6 +204,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	maxTurns := flags.Int("max-turns", 16, "loop budget — caps total assistant turns")
 	prompt := flags.String("prompt", "", "override the default review prompt")
 	inlineJSON := flags.String("inline-json", "", "if set, write parsed inline-comment entries to this path as JSON (one array of {path,line,severity,body}); the final markdown still goes to stdout")
+	promptVersion := flags.String("prompt-version", defaultPromptVersion, fmt.Sprintf("system-prompt version to load (available: %s)", strings.Join(availablePromptVersions(), ", ")))
 
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: glue-review [flags]")
@@ -246,15 +219,16 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	}
 
 	cfg := config{
-		base:       *base,
-		provider:   strings.TrimSpace(*provider),
-		model:      *model,
-		id:         *id,
-		store:      *store,
-		work:       *work,
-		maxTurns:   *maxTurns,
-		prompt:     *prompt,
-		inlineJSON: *inlineJSON,
+		base:          *base,
+		provider:      strings.TrimSpace(*provider),
+		model:         *model,
+		id:            *id,
+		store:         *store,
+		work:          *work,
+		maxTurns:      *maxTurns,
+		prompt:        *prompt,
+		inlineJSON:    *inlineJSON,
+		promptVersion: strings.TrimSpace(*promptVersion),
 	}
 	if cfg.prompt == "" {
 		cfg.prompt = fmt.Sprintf("Review the current Git branch against base ref %q. Use the tools to gather context, then output the final review only.", cfg.base)
