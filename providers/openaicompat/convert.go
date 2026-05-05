@@ -1,4 +1,4 @@
-package openrouter
+package openaicompat
 
 import (
 	"encoding/json"
@@ -133,7 +133,7 @@ func convertMessage(message loop.Message) (*chatMessage, error) {
 				// schema; drop on replay rather than fail.
 			case loop.ContentTypeToolCall:
 				if part.ToolCall == nil {
-					return nil, fmt.Errorf("openrouter: tool call content missing payload")
+					return nil, fmt.Errorf("openaicompat: tool call content missing payload")
 				}
 				args := string(part.ToolCall.Arguments)
 				if args == "" {
@@ -148,9 +148,9 @@ func convertMessage(message loop.Message) (*chatMessage, error) {
 					},
 				})
 			case loop.ContentTypeImage:
-				return nil, fmt.Errorf("openrouter: image content not yet supported")
+				return nil, fmt.Errorf("openaicompat: image content not yet supported")
 			default:
-				return nil, fmt.Errorf("openrouter: unsupported content type %q", part.Type)
+				return nil, fmt.Errorf("openaicompat: unsupported content type %q", part.Type)
 			}
 		}
 		out.Content = text
@@ -160,7 +160,7 @@ func convertMessage(message loop.Message) (*chatMessage, error) {
 		return &out, nil
 	case loop.MessageRoleTool:
 		if message.ToolCallID == "" {
-			return nil, fmt.Errorf("openrouter: tool message missing tool_call_id")
+			return nil, fmt.Errorf("openaicompat: tool message missing tool_call_id")
 		}
 		return &chatMessage{
 			Role:       "tool",
@@ -168,7 +168,7 @@ func convertMessage(message loop.Message) (*chatMessage, error) {
 			Content:    joinText(message.Content),
 		}, nil
 	default:
-		return nil, fmt.Errorf("openrouter: unsupported message role %q", message.Role)
+		return nil, fmt.Errorf("openaicompat: unsupported message role %q", message.Role)
 	}
 }
 
@@ -197,7 +197,7 @@ func convertTools(tools []loop.ToolSpec) ([]chatTool, error) {
 			// upstream API does not reject the entire request.
 			var probe any
 			if err := json.Unmarshal(tool.Parameters, &probe); err != nil {
-				return nil, fmt.Errorf("openrouter: tool %q parameters: %w", tool.Name, err)
+				return nil, fmt.Errorf("openaicompat: tool %q parameters: %w", tool.Name, err)
 			}
 			spec.Parameters = append(json.RawMessage(nil), tool.Parameters...)
 		}
@@ -215,25 +215,25 @@ func applyOptions(body *chatRequest, options map[string]any) error {
 		case "temperature":
 			f, ok := numberAsFloat64(value)
 			if !ok {
-				return fmt.Errorf("openrouter: temperature must be numeric")
+				return fmt.Errorf("openaicompat: temperature must be numeric")
 			}
 			body.Temperature = &f
 		case "top_p":
 			f, ok := numberAsFloat64(value)
 			if !ok {
-				return fmt.Errorf("openrouter: top_p must be numeric")
+				return fmt.Errorf("openaicompat: top_p must be numeric")
 			}
 			body.TopP = &f
 		case "max_tokens", "max_output_tokens":
 			n, ok := numberAsInt(value)
 			if !ok {
-				return fmt.Errorf("openrouter: %s must be numeric", key)
+				return fmt.Errorf("openaicompat: %s must be numeric", key)
 			}
 			body.MaxTokens = &n
 		case "response_format":
 			raw, err := json.Marshal(value)
 			if err != nil {
-				return fmt.Errorf("openrouter: response_format: %w", err)
+				return fmt.Errorf("openaicompat: response_format: %w", err)
 			}
 			body.ResponseFormat = raw
 		default:

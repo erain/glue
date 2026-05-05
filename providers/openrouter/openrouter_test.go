@@ -2,7 +2,6 @@ package openrouter
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,396 +13,76 @@ import (
 	"github.com/erain/glue/loop"
 )
 
-func captureProviderEvents(t *testing.T, ch <-chan loop.ProviderEvent) []loop.ProviderEvent {
-	t.Helper()
-	var out []loop.ProviderEvent
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatalf("timed out reading provider events; got %d so far", len(out))
-		case event, ok := <-ch:
-			if !ok {
-				return out
-			}
-			out = append(out, event)
-		}
-	}
-}
+// openrouter.New is a thin wrapper over providers/openaicompat. Shared
+// streaming/convert/SSE behaviors are covered in that package's tests;
+// these tests focus on vendor-specific concerns: the default attribution
+// headers and the live integration against openrouter.ai.
 
-type fakeServer struct {
-	*httptest.Server
-	lastBody    []byte
-	lastHeaders http.Header
-}
-
-func newFakeServer(t *testing.T, body string) *fakeServer {
-	t.Helper()
-	fs := &fakeServer{}
-	fs.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		fs.lastBody = raw
-		fs.lastHeaders = r.Header.Clone()
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, body)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}))
-	t.Cleanup(fs.Close)
-	return fs
-}
-
-func newProvider(t *testing.T, server *httptest.Server) *Provider {
-	t.Helper()
-	return New(Options{
-		APIKey:     "test-key",
-		BaseURL:    server.URL,
-		HTTPClient: server.Client(),
-	})
-}
-
-func TestStreamEmitsTextDeltasAndDone(t *testing.T) {
-	body := strings.Join([]string{
-		`: OPENROUTER PROCESSING`,
-		``,
-		`data: {"id":"abc","model":"openrouter/free","provider":"OpenAI","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"abc","model":"openrouter/free","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"abc","model":"openrouter/free","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
-		``,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-	server := newFakeServer(t, body)
-
-	provider := newProvider(t, server.Server)
-	ch, err := provider.Stream(context.Background(), loop.ProviderRequest{
-		Model:    "openrouter/free",
-		Messages: []loop.Message{{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "hi"}}}},
-	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+func TestNewSetsDefaults(t *testing.T) {
+	if defaultBaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("defaultBaseURL drift: %s", defaultBaseURL)
 	}
-	events := captureProviderEvents(t, ch)
-
-	var deltas []string
-	var done *loop.Message
-	for _, e := range events {
-		switch e.Type {
-		case loop.ProviderEventTextDelta:
-			deltas = append(deltas, e.Delta)
-		case loop.ProviderEventDone:
-			done = e.Message
-		case loop.ProviderEventError:
-			t.Fatalf("unexpected error event: %s", e.Error)
-		}
-	}
-	if got, want := strings.Join(deltas, ""), "Hello world"; got != want {
-		t.Fatalf("text delta concat: got %q want %q", got, want)
-	}
-	if done == nil {
-		t.Fatalf("missing Done event")
-	}
-	if done.StopReason != loop.StopReasonStop {
-		t.Fatalf("StopReason: got %q want stop", done.StopReason)
-	}
-	if done.Usage == nil || done.Usage.InputTokens != 3 || done.Usage.OutputTokens != 2 {
-		t.Fatalf("Usage: got %+v", done.Usage)
-	}
-	if done.Metadata["upstream_provider"] != "OpenAI" {
-		t.Fatalf("upstream_provider metadata: %+v", done.Metadata)
-	}
-}
-
-func TestStreamMapsReasoningDelta(t *testing.T) {
-	body := strings.Join([]string{
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"reasoning":"thinking..."},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}]}`,
-		``,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-	server := newFakeServer(t, body)
-
-	ch, err := newProvider(t, server.Server).Stream(context.Background(), loop.ProviderRequest{Model: "x"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := captureProviderEvents(t, ch)
-
-	var thinking string
-	for _, e := range events {
-		if e.Type == loop.ProviderEventThinkingDelta {
-			thinking += e.Delta
-		}
-	}
-	if thinking != "thinking..." {
-		t.Fatalf("thinking delta: got %q", thinking)
-	}
-}
-
-func TestStreamFiltersCommentLines(t *testing.T) {
-	// Three comment lines interleaved with two real chunks. The provider
-	// should treat every ":..." line as a no-op keep-alive.
-	body := strings.Join([]string{
-		`: OPENROUTER PROCESSING`,
-		``,
-		`: keep-alive`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
-		``,
-		`: another comment`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
-		``,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-	server := newFakeServer(t, body)
-
-	ch, err := newProvider(t, server.Server).Stream(context.Background(), loop.ProviderRequest{Model: "x"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := captureProviderEvents(t, ch)
-
-	for _, e := range events {
-		if e.Type == loop.ProviderEventError {
-			t.Fatalf("comment line raised error: %s", e.Error)
-		}
-	}
-}
-
-func TestStreamAccumulatesToolCalls(t *testing.T) {
-	body := strings.Join([]string{
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"add"}}]},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":"}}]},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1,\"b\":2}"}}]},"finish_reason":null}]}`,
-		``,
-		`data: {"id":"a","model":"x","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-		``,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-	server := newFakeServer(t, body)
-
-	ch, err := newProvider(t, server.Server).Stream(context.Background(), loop.ProviderRequest{Model: "x"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := captureProviderEvents(t, ch)
-
-	var toolCalls []*loop.ToolCall
-	var done *loop.Message
-	for _, e := range events {
-		if e.Type == loop.ProviderEventToolCall {
-			toolCalls = append(toolCalls, e.ToolCall)
-		}
-		if e.Type == loop.ProviderEventDone {
-			done = e.Message
-		}
-	}
-	if len(toolCalls) != 1 {
-		t.Fatalf("tool calls: got %d want 1", len(toolCalls))
-	}
-	tc := toolCalls[0]
-	if tc.ID != "call_1" || tc.Name != "add" {
-		t.Fatalf("tool call identity: %+v", tc)
-	}
-	var args struct{ A, B int }
-	if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.A != 1 || args.B != 2 {
-		t.Fatalf("tool args: %s err=%v", string(tc.Arguments), err)
-	}
-	if done == nil || done.StopReason != loop.StopReasonToolUse {
-		t.Fatalf("StopReason: got %+v", done)
-	}
-}
-
-func TestStreamPropagatesHTTPError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, `{"error":"bad key"}`)
-	}))
-	t.Cleanup(server.Close)
-
-	provider := New(Options{APIKey: "x", BaseURL: server.URL, HTTPClient: server.Client()})
-	_, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "x"})
-	if err == nil || !strings.Contains(err.Error(), "401") {
-		t.Fatalf("expected 401 error, got %v", err)
-	}
-}
-
-func TestStreamMissingModel(t *testing.T) {
-	provider := New(Options{APIKey: "x"})
-	_, err := provider.Stream(context.Background(), loop.ProviderRequest{})
-	if err == nil || !strings.Contains(err.Error(), "model") {
-		t.Fatalf("expected model error, got %v", err)
-	}
-}
-
-func TestStreamMissingAPIKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
-	provider := New(Options{})
-	_, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "x"})
-	if err == nil || !strings.Contains(err.Error(), "API key") {
-		t.Fatalf("expected API key error, got %v", err)
+	if apiKeyEnv != "OPENROUTER_API_KEY" {
+		t.Fatalf("apiKeyEnv drift: %s", apiKeyEnv)
 	}
 }
 
 func TestRequestSendsAttributionHeaders(t *testing.T) {
-	server := newFakeServer(t, "data: [DONE]\n\n")
-	provider := newProvider(t, server.Server)
-	ch, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "x"})
+	server, headers := newCapturingServer(t)
+	provider := New(Options{APIKey: "k", BaseURL: server.URL, HTTPClient: server.Client()})
+	ch, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "m"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	captureProviderEvents(t, ch)
+	drain(ch)
 
-	if got := server.lastHeaders.Get("HTTP-Referer"); got != defaultRefererURL {
+	if got := headers().Get("HTTP-Referer"); got != defaultRefererURL {
 		t.Fatalf("HTTP-Referer: got %q want %q", got, defaultRefererURL)
 	}
-	if got := server.lastHeaders.Get("X-Title"); got != defaultTitle {
+	if got := headers().Get("X-Title"); got != defaultTitle {
 		t.Fatalf("X-Title: got %q want %q", got, defaultTitle)
-	}
-	if got := server.lastHeaders.Get("Authorization"); got != "Bearer test-key" {
-		t.Fatalf("Authorization: got %q", got)
 	}
 }
 
 func TestUserHeadersOverrideDefaults(t *testing.T) {
-	server := newFakeServer(t, "data: [DONE]\n\n")
+	server, headers := newCapturingServer(t)
 	provider := New(Options{
-		APIKey:     "test-key",
+		APIKey:     "k",
 		BaseURL:    server.URL,
 		HTTPClient: server.Client(),
 		Headers:    map[string]string{"X-Title": "my-app"},
 	})
-	ch, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "x"})
+	ch, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "m"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	captureProviderEvents(t, ch)
-	if got := server.lastHeaders.Get("X-Title"); got != "my-app" {
+	drain(ch)
+
+	if got := headers().Get("X-Title"); got != "my-app" {
 		t.Fatalf("X-Title override: got %q", got)
 	}
-	if got := server.lastHeaders.Get("HTTP-Referer"); got != defaultRefererURL {
+	if got := headers().Get("HTTP-Referer"); got != defaultRefererURL {
 		t.Fatalf("HTTP-Referer should keep default: got %q", got)
 	}
 }
 
-func TestRequestBodyIncludesMessagesAndTools(t *testing.T) {
-	server := newFakeServer(t, "data: [DONE]\n\n")
-	provider := newProvider(t, server.Server)
-	ch, err := provider.Stream(context.Background(), loop.ProviderRequest{
-		Model:        "x",
-		SystemPrompt: "be concise",
-		Messages: []loop.Message{
-			{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "hi"}}},
-		},
-		Tools: []loop.ToolSpec{{
-			Name:        "add",
-			Description: "add two ints",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"a":{"type":"integer"}}}`),
-		}},
-		Options: map[string]any{"temperature": 0.4, "max_tokens": 16},
-	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	captureProviderEvents(t, ch)
-
-	var got map[string]any
-	if err := json.Unmarshal(server.lastBody, &got); err != nil {
-		t.Fatalf("decode body: %v\n%s", err, string(server.lastBody))
-	}
-	if got["model"] != "x" || got["stream"] != true {
-		t.Fatalf("model/stream: %+v", got)
-	}
-	messages, _ := got["messages"].([]any)
-	if len(messages) != 2 {
-		t.Fatalf("expected system + user message, got %d", len(messages))
-	}
-	system, _ := messages[0].(map[string]any)
-	if system["role"] != "system" || system["content"] != "be concise" {
-		t.Fatalf("system message: %+v", system)
-	}
-	tools, _ := got["tools"].([]any)
-	if len(tools) != 1 {
-		t.Fatalf("tools: %+v", tools)
-	}
-}
-
-func TestStreamCancelStopsCleanly(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `data: {"id":"a","model":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`+"\n\n")
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		<-r.Context().Done()
-	}))
-	t.Cleanup(server.Close)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	provider := New(Options{APIKey: "x", BaseURL: server.URL, HTTPClient: server.Client()})
-	ch, err := provider.Stream(ctx, loop.ProviderRequest{Model: "x"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	var sawText bool
-	for {
-		select {
-		case e, ok := <-ch:
-			if !ok {
-				if !sawText {
-					t.Fatalf("channel closed before any event")
-				}
-				return
-			}
-			if e.Type == loop.ProviderEventTextDelta {
-				sawText = true
-				cancel()
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("provider did not close channel after cancel")
-		}
-	}
-}
-
-func TestDefaultBaseURL(t *testing.T) {
-	if defaultBaseURL != "https://openrouter.ai/api/v1" {
-		t.Fatalf("defaultBaseURL drift: %s", defaultBaseURL)
-	}
-}
-
-func TestMapFinishReason(t *testing.T) {
-	cases := map[string]loop.StopReason{
-		"":               loop.StopReasonStop,
-		"stop":           loop.StopReasonStop,
-		"length":         loop.StopReasonLength,
-		"tool_calls":     loop.StopReasonToolUse,
-		"content_filter": loop.StopReasonError,
-	}
-	for input, want := range cases {
-		if got := mapFinishReason(input); got != want {
-			t.Fatalf("mapFinishReason(%q) = %q, want %q", input, got, want)
-		}
+func TestStreamUsesAPIKeyEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	provider := New(Options{})
+	_, err := provider.Stream(context.Background(), loop.ProviderRequest{Model: "m"})
+	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Fatalf("expected OPENROUTER_API_KEY hint in error, got %v", err)
 	}
 }
 
 // TestLiveSmoke runs against the real OpenRouter endpoint when
-// OPENROUTER_API_KEY is set. Defaults to the openrouter/free meta-route
-// so the test doesn't burn paid tokens. Skipped quietly otherwise.
+// OPENROUTER_API_KEY is set. Defaults to inclusionai/ling-2.6-1t:free —
+// a deterministic free model whose upstream (Novita) is consistently
+// available. Better-known free routes (google/gemma-4-*:free,
+// minimax/minimax-m2.5:free) are over-subscribed and frequently 429 at
+// the upstream. Local devs can swap to the openrouter/free meta-route
+// (which auto-routes around 429s but is non-deterministic) via
+// OPENROUTER_LIVE_MODEL.
 func TestLiveSmoke(t *testing.T) {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -411,7 +90,7 @@ func TestLiveSmoke(t *testing.T) {
 	}
 	model := os.Getenv("OPENROUTER_LIVE_MODEL")
 	if model == "" {
-		model = "openrouter/free"
+		model = "inclusionai/ling-2.6-1t:free"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
@@ -441,10 +120,10 @@ func TestLiveSmoke(t *testing.T) {
 				if done == nil {
 					t.Fatalf("channel closed without Done event; text=%q", text.String())
 				}
-				// openrouter/free is non-deterministic across requests — some
-				// upstream models emit only `reasoning` content with no
-				// user-visible `content`. Accept either, since the smoke is
-				// asserting wire-protocol parsing, not model output shape.
+				// Default model (inclusionai/ling-2.6-1t:free) emits visible
+				// text. When OPENROUTER_LIVE_MODEL points at the
+				// non-deterministic openrouter/free meta-route, some upstreams
+				// emit only reasoning — accept thinking as a fallback.
 				if strings.TrimSpace(text.String()) == "" && thinking.Len() == 0 {
 					t.Fatalf("expected non-empty text or thinking; got neither (done=%+v)", done)
 				}
@@ -464,5 +143,25 @@ func TestLiveSmoke(t *testing.T) {
 				t.Fatalf("provider error: %s", event.Error)
 			}
 		}
+	}
+}
+
+// helpers --------------------------------------------------------------
+
+func newCapturingServer(t *testing.T) (*httptest.Server, func() http.Header) {
+	t.Helper()
+	var captured http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	return server, func() http.Header { return captured }
+}
+
+func drain(ch <-chan loop.ProviderEvent) {
+	for range ch {
 	}
 }
