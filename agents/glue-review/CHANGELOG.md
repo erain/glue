@@ -4,6 +4,34 @@ This file tracks releases of the `glue-review` agent and its GitHub
 Action. It is independent from the parent `github.com/erain/glue`
 library, which versions separately.
 
+## v1.1.0 — 2026-05-06
+
+Backwards-compatible feature release. Existing v1.0.0 deployments
+continue to work without changes.
+
+### Added
+
+- **Inline AI-fix prompts.** Each `[severity] path:line` entry now
+  includes a `Fix: <agent prompt>` clause. The Action renders it as a
+  `<details><summary>💡 AI prompt to fix</summary>` collapsible inside
+  every inline review comment, so reviewers can copy the prompt
+  directly into Claude / Cursor / their coding agent of choice.
+  Inspired by the [fluent-bit project's review style](https://github.com/fluent/fluent-bit/pull/11778#pullrequestreview-4236889315).
+- **Prompt v2** — the default prompt version is now `v2`, which
+  requires the `Fix:` clause. The legacy `v1` prompt remains in
+  source; pin via `--prompt-version v1` (or the matching Action input)
+  to opt back in if a deployment relies on the v1 output shape.
+- `InlineComment.fix` JSON field. Empty when the model produced a v1-
+  style entry without a Fix clause; populated for v2+ entries.
+
+### Unchanged
+
+- Action input/output surface — additive only.
+- Sticky comment / PR Review marker shape — the Fix collapsible is
+  optional content within the existing inline-comment shape.
+- v1 prompt output continues to flow through the parser and
+  validator unchanged.
+
 ## v1.0.0 — 2026-05-05
 
 First stable release. The Action's input/output surface is now

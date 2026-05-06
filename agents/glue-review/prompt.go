@@ -19,7 +19,13 @@ var systemPromptsFS embed.FS
 // defaultPromptVersion picks the prompt loaded when --prompt-version is
 // empty. Bump only when you want every consumer to see the new prompt
 // without an explicit opt-in.
-const defaultPromptVersion = "v1"
+//
+// History:
+//   - v1 — initial prompt (1.0 release).
+//   - v2 — adds `Fix: <ai prompt>` at the end of every Issues /
+//     Suggestions entry, so the Action can render a copy-pastable
+//     coding-agent prompt next to each inline comment.
+const defaultPromptVersion = "v2"
 
 // systemPromptFor returns the embedded prompt for the requested
 // version. An unknown version returns an error listing the available

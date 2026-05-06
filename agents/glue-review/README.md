@@ -145,6 +145,38 @@ each path component (case-insensitive), so `infra/secrets/foo.yaml` is
 caught by the pattern `secrets`. You cannot subtract a default — only
 add.
 
+## AI fix prompts (v1.1+)
+
+Each inline review comment carries a copy-pastable instruction
+targeted at a coding agent, rendered as a `<details>` collapsible:
+
+```markdown
+**[major]** Off-by-one error in loop bound
+
+<details><summary>💡 AI prompt to fix</summary>
+
+```
+In math.go, change the loop in SumFirstN from `for i := 0; i <= n;
+i++` to `for i := 1; i <= n; i++` so it sums 1..n inclusive.
+```
+
+</details>
+```
+
+Reviewers copy the inner block into Claude / Cursor / Aider / etc. to
+dispatch the fix without retyping. Pattern inspired by
+[fluent-bit's review style](https://github.com/fluent/fluent-bit/pull/11778#pullrequestreview-4236889315).
+
+To turn off (revert to plain inline comments without the
+collapsible), pin the prompt to v1:
+
+```yaml
+- uses: erain/glue/agents/glue-review@v1
+  with:
+    prompt-version: v1
+    nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+```
+
 ## Prompt versioning
 
 The system prompt lives at [`prompts/v1.md`](prompts/v1.md), embedded

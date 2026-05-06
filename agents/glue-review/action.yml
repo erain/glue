@@ -228,9 +228,16 @@ runs:
         head_sha=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
 
         # Dismiss any prior inline reviews from this bot before posting a
-        # new one. Match by the v1 marker we inject into every review body
+        # new one. Match by the marker we inject into every review body
         # so re-runs replace, not stack. Dismissing keeps the audit trail
         # but greys out old reviews in the UI.
+        #
+        # NOTE on the `promptv1` token in the marker: this is a stable
+        # bot-identity tag, not a strict prompt-version tracker. We
+        # only bump it when the COMMENT SHAPE changes in a way that
+        # would mangle an in-place edit. The Fix: collapsible added in
+        # prompt v2 is additive (optional content inside the existing
+        # comment shape), so the marker stays at v1.
         prior_ids=$(
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             --jq "[.[] | select(.body and (.body | contains(\"<!-- glue-review:promptv1:do-not-edit -->\"))) | select(.state != \"DISMISSED\") | .id] | .[]" \
@@ -255,12 +262,22 @@ runs:
 
         # PR Reviews API expects comments as `{path, line, side, body}`.
         # Severity is folded into the body so reviewers see it inline.
+        # When the agent produced a Fix: clause (prompt v2+), it is
+        # rendered as a <details> collapsible carrying a copy-pastable
+        # AI-coding-agent prompt — letting the reviewer dispatch a fix
+        # with one click. Entries without a Fix: clause render exactly
+        # as before, so v1 inline-comment payloads stay valid.
         comments_path="${RUNNER_TEMP}/review-comments.json"
         jq '[.[] | {
-          path:    .path,
-          line:    .line,
-          side:    "RIGHT",
-          body:    "**[\(.severity)]** \(.body)"
+          path: .path,
+          line: .line,
+          side: "RIGHT",
+          body: (
+            "**[\(.severity)]** \(.body)" +
+            (if (.fix // "") == "" then ""
+             else "\n\n<details><summary>💡 AI prompt to fix</summary>\n\n```\n\(.fix)\n```\n\n</details>"
+             end)
+          )
         }]' "$INLINE_PATH" > "$comments_path"
 
         # Build the full review payload as JSON so newlines / quotes survive.
@@ -271,17 +288,39 @@ runs:
               '{commit_id: $commit_id, body: $body, event: "COMMENT", comments: $comments[0]}' \
           > "$payload_path"
 
-        # Post. If the API rejects (e.g., a path:line not in the diff),
-        # capture the error and fall back to the sticky path.
-        if url=$(gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            --input "$payload_path" --jq '.html_url'); then
-          echo "Posted inline review: $url"
-          echo "posted=true"  >> "$GITHUB_OUTPUT"
-          echo "review-url=$url" >> "$GITHUB_OUTPUT"
-        else
-          echo "Inline review POST failed; will fall back to sticky comment."
-          echo "posted=false" >> "$GITHUB_OUTPUT"
-        fi
+        # Post. The PR Reviews API occasionally returns 422 with a
+        # generic "An internal error occurred, please try again."
+        # message that has nothing to do with the payload. Retry up
+        # to 3 times with backoff before falling back to the sticky
+        # comment path. The full API response is dumped on the final
+        # failure so the workflow log is debuggable without re-running.
+        api_resp_path="${RUNNER_TEMP}/review-api-response.json"
+        attempt=0
+        max_attempts=3
+        while : ; do
+          attempt=$((attempt + 1))
+          if gh api -X POST "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+               --input "$payload_path" > "$api_resp_path" 2>&1; then
+            url=$(jq -r '.html_url' "$api_resp_path")
+            echo "Posted inline review: $url (attempt $attempt)"
+            echo "posted=true"     >> "$GITHUB_OUTPUT"
+            echo "review-url=$url" >> "$GITHUB_OUTPUT"
+            break
+          fi
+          if [ "$attempt" -ge "$max_attempts" ]; then
+            echo "Inline review POST failed after $attempt attempts; falling back to sticky comment."
+            echo "----API response (last 4k)----"
+            tail -c 4096 "$api_resp_path" || true
+            echo
+            echo "----submitted comments (first 20)----"
+            jq '.[0:20] | map({path, line, side, body_chars: (.body | length)})' "$comments_path" || true
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            break
+          fi
+          echo "Inline review POST failed on attempt $attempt; retrying in $((attempt * 2))s…"
+          tail -c 512 "$api_resp_path" || true
+          sleep $((attempt * 2))
+        done
 
     - name: Post or update sticky comment
       id: post
