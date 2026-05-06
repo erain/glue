@@ -8,11 +8,20 @@ import (
 
 // InlineComment is one line-level review entry that the calling Action
 // can submit via the GitHub Pull Request Reviews API.
+//
+// Fix is optional and populated when the model included a
+// `Fix: <ai prompt>` clause after the body (prompt v2+). The Action
+// renders it as a collapsible "AI prompt to fix" block in the inline
+// comment so reviewers can copy-paste it into a coding agent. v1
+// prompts emit no Fix and the field stays empty — the Action skips
+// the collapsible in that case, so behavior is fully backwards-
+// compatible with v1 inline-comment payloads on disk.
 type InlineComment struct {
 	Path     string `json:"path"`
 	Line     int    `json:"line"`
 	Severity string `json:"severity"`
 	Body     string `json:"body"`
+	Fix      string `json:"fix,omitempty"`
 }
 
 // inlineEntryRE matches a single Issues / Suggestions list entry the
@@ -58,11 +67,13 @@ func parseInlineComments(markdown string) []InlineComment {
 			if err != nil || line <= 0 {
 				continue
 			}
+			b, fix := splitBodyAndFix(strings.TrimSpace(m[4]))
 			out = append(out, InlineComment{
 				Severity: m[1],
 				Path:     m[2],
 				Line:     line,
-				Body:     strings.TrimSpace(m[4]),
+				Body:     b,
+				Fix:      fix,
 			})
 		}
 	}
@@ -108,4 +119,30 @@ func matchHeading(line string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(trimmed[3:]), true
+}
+
+// fixDelimiterRE matches the ` Fix: ` separator the prompt v2 instructs
+// the model to inject between the description and the AI agent prompt.
+// Tolerates leading whitespace and case variation (`fix:`, `FIX:`),
+// since model output drifts on case-sensitive markers.
+var fixDelimiterRE = regexp.MustCompile(`(?i)[. ]\s*\bfix\s*:\s*`)
+
+// splitBodyAndFix separates `description. Fix: agent prompt` into its
+// two parts. Returns (body, "") when no Fix clause is present, so v1
+// prompts continue to flow through unchanged.
+//
+// Uses the LAST match of the Fix delimiter, since the description
+// itself can legitimately contain words like "fix" (e.g., "the fix
+// should be obvious"). The model's `Fix:` clause is by convention the
+// last clause in the entry, so the last match is the right one.
+func splitBodyAndFix(s string) (body, fix string) {
+	locs := fixDelimiterRE.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
+		return strings.TrimSpace(s), ""
+	}
+	loc := locs[len(locs)-1]
+	body = strings.TrimSpace(s[:loc[0]+1])
+	fix = strings.TrimSpace(s[loc[1]:])
+	body = strings.TrimRight(body, ".")
+	return strings.TrimSpace(body), fix
 }
