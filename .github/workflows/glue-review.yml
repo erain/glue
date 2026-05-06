@@ -5,13 +5,22 @@ name: glue-review
 # itself lives at agents/glue-review/action.yml — see that file for the
 # full input/output contract.
 #
-# Fork PRs do not receive secrets on `pull_request`; the workflow detects
-# that and skips quietly. The `/glue-review` comment trigger (#64) will
-# cover the fork-PR path in a follow-up.
+# Trigger philosophy: review once per PR on the cumulative state, not
+# on every push. `synchronize` is intentionally NOT in the type list —
+# pushing a new commit does not auto-trigger a fresh review. To
+# re-review after iterating, a maintainer comments `/glue-review`,
+# which fires the sibling glue-review-comment.yml workflow. This
+# matches how human senior reviewers work (review when the PR is
+# ready; refresh on request) and avoids burning provider quota on
+# every intermediate push.
+#
+# Fork PRs do not receive secrets on `pull_request`; the workflow
+# detects that and skips quietly. The `/glue-review` comment trigger
+# covers the fork-PR path.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
 
 permissions:
   contents: read
