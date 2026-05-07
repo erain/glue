@@ -5,8 +5,9 @@
 Glue is a Go agent harness for building local and programmable agents,
 inspired by [Flue](https://github.com/withastro/flue) and
 [pi-mono](https://github.com/badlogic/pi-mono). It is built around a reusable
-provider-agnostic agent loop, a code-first `Agent` / `Session` API, and an
-initial Gemini provider.
+provider-agnostic agent loop, a code-first `Agent` / `Session` API, and
+pluggable providers — Gemini, plus OpenAI-compatible NVIDIA build and
+OpenRouter out of the box.
 
 GitHub issues are the source of truth for the roadmap and implementation
 order:
@@ -18,10 +19,31 @@ order:
 
 ## Status
 
-P0 is complete: normalized loop types, reusable agent loop with deterministic
-sequential tool execution, public `Agent` / `Session` API, and a Gemini text
-streaming provider. Function calling, file-backed sessions, structured JSON,
-skills, roles, and a CLI runner are tracked under P1 in the project plan.
+The harness is feature-complete for the `0.x` series and is in active
+use behind the `agents/glue-review` agent (stable at `v1.1.0`). The
+library itself remains pre-1.0 — the public `Agent` / `Session` surface
+is stable in practice, but minor versions may still break API.
+Shipped today:
+
+- Normalized loop types and the provider-agnostic agent loop in `loop/`,
+  with deterministic sequential tool execution, opt-in
+  `RunRequest.Parallel`, and `StopReasonMaxTurns` for budget-exhaustion
+  detection.
+- Public `Agent` / `Session` API: per-prompt event streaming with
+  `WithStreamWriter` / `WithToolLogger`, structured JSON output
+  (`PromptJSON`), Markdown-driven skills/roles/`AGENTS.md` discovery,
+  opt-in `Compactor` interface, typed `NewTool[T]` helper.
+- Providers: `gemini` (Google `genai` SDK), `nvidia` and `openrouter`
+  (OpenAI-compatible, sharing the `providers/openaicompat` core), a
+  driver-style registry under `providers/`, and `glue.WithFailover`.
+- Storage: file-backed session store at `stores/file`. Tools: shared
+  `tools/fs` and `tools/git` extension packages. CLI: `cmd/glue` runner
+  plus `cli.RegisterStandardFlags` for downstream agents. Versioned
+  prompts via `prompts.NewCatalog`.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for library-level notes and
+[`agents/glue-review/CHANGELOG.md`](agents/glue-review/CHANGELOG.md) for
+the agent's release history.
 
 ## Install
 
@@ -29,9 +51,15 @@ skills, roles, and a CLI runner are tracked under P1 in the project plan.
 go get github.com/erain/glue
 ```
 
-The module path is `github.com/erain/glue`; subpackages are
-`github.com/erain/glue/loop`, `github.com/erain/glue/providers/gemini`, and
-`github.com/erain/glue/stores/file`.
+The module path is `github.com/erain/glue`. Subpackages:
+`github.com/erain/glue/loop` (reusable agent loop),
+`github.com/erain/glue/providers/{gemini,nvidia,openrouter}` (with the
+shared OpenAI-compatible core in `providers/openaicompat` and the
+driver-style registry in `providers/`),
+`github.com/erain/glue/stores/file` (file-backed session store),
+`github.com/erain/glue/tools/{fs,git}` (extension tool packages),
+`github.com/erain/glue/prompts` (versioned-prompt catalog), and
+`github.com/erain/glue/cli` (shared standard flags).
 
 ## Quickstart: Gemini
 
@@ -77,7 +105,8 @@ func main() {
 ```
 
 The session keeps an in-memory transcript, so a second `session.Prompt(...)`
-continues the conversation. File-backed sessions land in P1.
+continues the conversation. Pass `AgentOptions.Store` (e.g.
+[`stores/file`](stores/file)) to persist transcripts across processes.
 
 ## Quickstart: NVIDIA build (Kimi K2 and friends)
 
@@ -404,12 +433,15 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 Real agents built on the harness live under `agents/` (peer of the harness
 itself), not `examples/` (which holds tutorial-grade demos only).
 
-- [`agents/glue-review`](agents/glue-review) — a free, local pre-push branch
-  reviewer **(stable: `v1`)**. Reads the diff against `main`, deep-reads
-  files when context demands it, posts inline review comments on the diff
-  via the GitHub PR Reviews API, and falls back to a sticky markdown
-  comment when entries don't parse cleanly. Defaults to NVIDIA's free
-  Kimi K2.6; flags swap to OpenRouter or Gemini.
+- [`agents/glue-review`](agents/glue-review) — a free, local pre-push
+  branch reviewer **(stable: `v1.1.0`, floating tag `v1`)**. Reads the
+  diff against `main`, deep-reads files when context demands it, posts
+  inline review comments on the diff via the GitHub PR Reviews API
+  (each comment carries a copy-pasteable `AI prompt to fix` block as of
+  `v1.1.0`), and falls back to a sticky markdown comment when entries
+  don't parse cleanly. Defaults to NVIDIA's free Kimi K2.6; flags swap
+  to OpenRouter or Gemini, with automatic provider failover and a
+  fixture-replay mode for prompt regression tests.
 
   As a CLI:
 
@@ -493,7 +525,18 @@ for the shortest possible runnable implementation.
 
 ## Roadmap
 
-P2 covers parallel tool execution, context compaction, an opt-in shell/
-filesystem tool design, a provider plugin guide, and the GitHub issue
-automation workflow. See [docs/project-plan.md](docs/project-plan.md) and
-the project tracker (#1).
+P0–P2 are shipped: the reusable loop, public `Agent` / `Session` API,
+file-backed sessions, structured JSON, skills, roles, the CLI runner,
+parallel tool execution, opt-in context compaction, the shell/filesystem
+tool extension packages (`tools/fs`, `tools/git` per
+[`docs/adr/0003-shell-filesystem-tools.md`](docs/adr/0003-shell-filesystem-tools.md)),
+the provider plugin guide ([`docs/provider-guide.md`](docs/provider-guide.md)),
+and the GitHub issue automation workflow
+([`docs/issue-automation.md`](docs/issue-automation.md)). The current
+focus is hardening through dogfooding `agents/glue-review` and closing
+the agent-ergonomics wishlist (typed tools, provider failover, prompt
+catalog, stream writer, standard flags) plus the broader gaps in
+[`docs/flue-gap-analysis.md`](docs/flue-gap-analysis.md): multi-target
+deployment, sandbox connectors, subagent orchestration, MCP. See
+[`docs/project-plan.md`](docs/project-plan.md) and the project tracker
+(#1) for the next recommended issue.

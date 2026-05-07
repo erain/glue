@@ -94,10 +94,37 @@ session.
 
 ## Current Status
 
-P0 is complete. The repository contains the design docs, project plan, ADR 0001,
-CONTRIBUTING, a CI workflow, the Go module + package scaffold, normalized loop
-types, the reusable agent loop with deterministic sequential tool execution,
-the public `glue.Agent` / `glue.Session` API, the Gemini text streaming
-provider, and a README quickstart. P1 starts with #10 (Gemini function calling)
-and continues through file-backed sessions, structured JSON, skills, roles,
-and the CLI runner. See the pinned tracker for the next recommended issue.
+P0, P1, and P2 are complete. In addition to the P0 foundation (design
+docs, ADR 0001, CI workflow, normalized loop types, public `glue.Agent`
+/ `glue.Session` API, Gemini text streaming, README quickstart), the
+following has shipped:
+
+- P1 — Gemini function calling, file-backed session store at
+  `stores/file`, structured JSON output (`PromptJSON` /
+  `WithJSONSchema`), Markdown skills and `AGENTS.md` discovery, roles
+  with frontmatter and effective-model precedence, the `cmd/glue` CLI
+  runner, and the `examples/local-agent` tutorial.
+- P2 — opt-in parallel tool execution (`RunRequest.Parallel`), opt-in
+  `Compactor` interface with the `KeepRecentMessages` policy
+  ([ADR 0002](adr/0002-context-compaction.md)), the shell/filesystem
+  tool extension packages `tools/fs` and `tools/git`
+  ([ADR 0003](adr/0003-shell-filesystem-tools.md)), the provider
+  plugin guide at [`provider-guide.md`](provider-guide.md), and the
+  GitHub issue automation workflow at
+  [`issue-automation.md`](issue-automation.md).
+- Beyond the original plan — additional providers (`providers/nvidia`,
+  `providers/openrouter`) sharing the `providers/openaicompat` core, a
+  driver-style provider registry under `providers/` plus
+  `glue.WithFailover`, `StopReasonMaxTurns`, the typed `glue.NewTool[T]`
+  helper, `glue.WithStreamWriter` / `WithToolLogger`, the
+  `glue/prompts` versioned-prompt catalog, the `glue/cli` standard
+  flags helper, live CI smoke jobs gated on API keys, and a real
+  downstream agent at [`agents/glue-review`](../agents/glue-review)
+  (stable at `v1.1.0`).
+
+The next focus is hardening through dogfooding `agents/glue-review`,
+migrating the agent off its hand-coded copies of the helpers shipped
+above, and closing gaps surfaced in
+[`flue-gap-analysis.md`](flue-gap-analysis.md): multi-target deployment,
+sandbox connectors, subagent orchestration, and MCP tooling. See the
+pinned tracker for the next recommended issue.
