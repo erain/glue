@@ -3,14 +3,34 @@ package nvidia
 import (
 	"net/http"
 
+	"github.com/erain/glue/loop"
+	"github.com/erain/glue/providers"
 	"github.com/erain/glue/providers/openaicompat"
 )
+
+// EnvKey is the environment variable the provider reads when Options.APIKey
+// is empty. Exposed so the providers registry and downstream agents can
+// probe key availability without hard-coding the name.
+const EnvKey = "NVIDIA_API_KEY"
+
+// DefaultModel is the registry-level default model for this provider.
+// Kimi K2.6 on NVIDIA build is currently the strongest free model
+// exposed through build.nvidia.com.
+const DefaultModel = "moonshotai/kimi-k2.6"
 
 const (
 	providerName   = "nvidia"
 	defaultBaseURL = "https://integrate.api.nvidia.com/v1"
-	apiKeyEnv      = "NVIDIA_API_KEY"
+	apiKeyEnv      = EnvKey
 )
+
+func init() {
+	providers.Register(providerName, providers.Factory{
+		New:          func() loop.Provider { return New(Options{}) },
+		DefaultModel: DefaultModel,
+		EnvKey:       EnvKey,
+	})
+}
 
 // Options configures the NVIDIA provider.
 //
