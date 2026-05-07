@@ -49,6 +49,7 @@ const (
 	StopReasonToolUse  = loop.StopReasonToolUse
 	StopReasonError    = loop.StopReasonError
 	StopReasonCanceled = loop.StopReasonCanceled
+	StopReasonMaxTurns = loop.StopReasonMaxTurns
 )
 
 // EventType constants re-exported from package loop.

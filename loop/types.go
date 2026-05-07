@@ -34,6 +34,13 @@ const (
 	StopReasonToolUse  StopReason = "tool_use"
 	StopReasonError    StopReason = "error"
 	StopReasonCanceled StopReason = "canceled"
+	// StopReasonMaxTurns marks the last assistant message in a run
+	// that exited because the loop turn budget (RunRequest.MaxTurns)
+	// was exhausted while the assistant still had pending tool calls.
+	// Distinguishes "we ran out of budget" from "the model finished"
+	// (Stop) and from provider-side truncation (Length), so agents can
+	// retry with a higher budget cleanly.
+	StopReasonMaxTurns StopReason = "max_turns"
 )
 
 // ContentPart is a provider-neutral message content block.
