@@ -84,6 +84,8 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		emit(Event{Type: EventLoopEnd, Messages: cloneMessages(newMessages)})
 	}()
 
+	lastAssistantMsg := -1
+	lastAssistantNew := -1
 	for turn := 0; turn < maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return fail(err)
@@ -97,6 +99,8 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 		messages = append(messages, assistant)
 		newMessages = append(newMessages, assistant)
+		lastAssistantMsg = len(messages) - 1
+		lastAssistantNew = len(newMessages) - 1
 
 		toolCalls := collectToolCalls(assistant)
 		if len(toolCalls) == 0 {
@@ -118,6 +122,15 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
 	}
 
+	// Budget exhausted with pending tool calls. Tag the last assistant
+	// message so callers can distinguish "ran out of turns" from a
+	// natural stop (StopReasonStop) or provider truncation (Length).
+	if lastAssistantMsg >= 0 {
+		messages[lastAssistantMsg].StopReason = StopReasonMaxTurns
+	}
+	if lastAssistantNew >= 0 {
+		newMessages[lastAssistantNew].StopReason = StopReasonMaxTurns
+	}
 	return fail(fmt.Errorf("loop: maximum turns exceeded (%d)", maxTurns))
 }
 

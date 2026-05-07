@@ -139,6 +139,14 @@ The loop must support:
 - context cancellation
 - event streaming for CLI output
 
+When the loop exits because the turn budget (`RunRequest.MaxTurns`) is
+exhausted while the assistant still has pending tool calls, it returns
+the partial transcript with the last assistant message tagged
+`StopReason = StopReasonMaxTurns`. Callers can use this to distinguish
+budget exhaustion from a natural stop or provider truncation —
+e.g. retry the prompt with a higher budget rather than treating it as a
+model error.
+
 ## Public Library API
 
 The public API is code-first. A user defines an agent in Go code, configures a

@@ -277,6 +277,86 @@ func TestRunMaxTurnsDefaultIs32(t *testing.T) {
 	}
 }
 
+func TestRunMaxTurnsTagsLastAssistantStopReason(t *testing.T) {
+	t.Parallel()
+
+	turns := make([][]ProviderEvent, 5)
+	for i := range turns {
+		turns[i] = []ProviderEvent{
+			{Type: ProviderEventStart},
+			{Type: ProviderEventToolCall, ToolCall: &ToolCall{ID: "x", Name: "noop", Arguments: json.RawMessage(`{}`)}},
+			{Type: ProviderEventDone},
+		}
+	}
+	noop := Tool{
+		ToolSpec: ToolSpec{Name: "noop"},
+		Execute:  func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil },
+	}
+	result, err := Run(context.Background(), RunRequest{
+		Provider: &fakeProvider{turns: turns},
+		Tools:    []Tool{noop},
+		MaxTurns: 2,
+	})
+	if err == nil {
+		t.Fatal("expected max-turns error")
+	}
+
+	// The last assistant message in the partial transcript must carry
+	// StopReasonMaxTurns so retry-with-higher-budget logic can detect
+	// budget exhaustion specifically.
+	var lastAssistant *Message
+	for i := len(result.Messages) - 1; i >= 0; i-- {
+		if result.Messages[i].Role == MessageRoleAssistant {
+			m := result.Messages[i]
+			lastAssistant = &m
+			break
+		}
+	}
+	if lastAssistant == nil {
+		t.Fatal("expected at least one assistant message in the partial transcript")
+	}
+	if lastAssistant.StopReason != StopReasonMaxTurns {
+		t.Fatalf("last assistant stop_reason = %q, want %q", lastAssistant.StopReason, StopReasonMaxTurns)
+	}
+
+	// Same check on NewMessages.
+	var lastNew *Message
+	for i := len(result.NewMessages) - 1; i >= 0; i-- {
+		if result.NewMessages[i].Role == MessageRoleAssistant {
+			m := result.NewMessages[i]
+			lastNew = &m
+			break
+		}
+	}
+	if lastNew == nil || lastNew.StopReason != StopReasonMaxTurns {
+		t.Fatalf("NewMessages last assistant stop_reason = %v, want %q", lastNew, StopReasonMaxTurns)
+	}
+}
+
+func TestRunNaturalStopUsesStopReasonStop(t *testing.T) {
+	t.Parallel()
+
+	// One turn, no tool calls — this is the natural-finish path; the
+	// last assistant message must remain StopReasonStop so callers can
+	// distinguish it from budget exhaustion.
+	turns := [][]ProviderEvent{{
+		{Type: ProviderEventStart},
+		{Type: ProviderEventTextDelta, Delta: "hi"},
+		{Type: ProviderEventDone},
+	}}
+	result, err := Run(context.Background(), RunRequest{
+		Provider: &fakeProvider{turns: turns},
+		MaxTurns: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := result.NewMessages[len(result.NewMessages)-1]
+	if last.StopReason != StopReasonStop {
+		t.Fatalf("natural stop reason = %q, want %q", last.StopReason, StopReasonStop)
+	}
+}
+
 func TestRunEmitsEventsInOrder(t *testing.T) {
 	t.Parallel()
 
