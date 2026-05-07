@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (design-only; no implementation in this ADR).
+Accepted. Implemented in #89 — read-side filesystem and git helpers
+ship as `tools/fs` (`SafeJoin`, `Truncate`, `Blocklist`, `ReadFileTool`)
+and `tools/git` (`RunGit`, `BuildPathspec`, `DiffBranchTool`,
+`LogBranchTool`). Write-side filesystem and arbitrary shell execution
+remain out of scope until a follow-up ADR designs the safety boundary.
 
 ## Context
 
