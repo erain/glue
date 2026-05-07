@@ -73,9 +73,14 @@ const (
 	defaultReadMaxBytes = 80 * 1024
 )
 
+type gitDiffArgs struct {
+	Base     string `json:"base"`
+	MaxBytes int    `json:"max_bytes"`
+}
+
 func gitDiffBranchTool(workDir string, pathspec []string) glue.Tool {
-	return glue.Tool{
-		ToolSpec: glue.ToolSpec{
+	return glue.NewTool[gitDiffArgs](
+		glue.ToolSpec{
 			Name:        "git_diff_branch",
 			Description: "Show the diff of the current branch versus a base ref (default 'main'). Includes file additions, deletions, and modifications. The diff may be pre-filtered by deployment-supplied path globs — only files in scope appear. Use this first to scope the review.",
 			Parameters: json.RawMessage(`{
@@ -86,19 +91,12 @@ func gitDiffBranchTool(workDir string, pathspec []string) glue.Tool {
   }
 }`),
 		},
-		Execute: func(ctx context.Context, call glue.ToolCall) (glue.ToolResult, error) {
-			var args struct {
-				Base     string `json:"base"`
-				MaxBytes int    `json:"max_bytes"`
-			}
-			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return glue.ToolResult{}, err
-			}
-			base := strings.TrimSpace(args.Base)
+		func(ctx context.Context, a gitDiffArgs) (glue.ToolResult, error) {
+			base := strings.TrimSpace(a.Base)
 			if base == "" {
 				base = "main"
 			}
-			max := args.MaxBytes
+			max := a.MaxBytes
 			if max <= 0 {
 				max = defaultDiffMaxBytes
 			}
@@ -109,16 +107,21 @@ func gitDiffBranchTool(workDir string, pathspec []string) glue.Tool {
 			}
 			out, err := runGit(ctx, workDir, gitArgs...)
 			if err != nil {
-				return errorResult(err), nil
+				return glue.ErrorResult(err), nil
 			}
-			return textResult(truncate(out, max)), nil
+			return glue.TextResult(truncate(out, max)), nil
 		},
-	}
+	)
+}
+
+type gitLogArgs struct {
+	Base  string `json:"base"`
+	Limit int    `json:"limit"`
 }
 
 func gitLogBranchTool(workDir string) glue.Tool {
-	return glue.Tool{
-		ToolSpec: glue.ToolSpec{
+	return glue.NewTool[gitLogArgs](
+		glue.ToolSpec{
 			Name:        "git_log_branch",
 			Description: "Show the commit history of the current branch since a base ref (default 'main'). Useful for reading commit messages to understand author intent.",
 			Parameters: json.RawMessage(`{
@@ -129,19 +132,12 @@ func gitLogBranchTool(workDir string) glue.Tool {
   }
 }`),
 		},
-		Execute: func(ctx context.Context, call glue.ToolCall) (glue.ToolResult, error) {
-			var args struct {
-				Base  string `json:"base"`
-				Limit int    `json:"limit"`
-			}
-			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return glue.ToolResult{}, err
-			}
-			base := strings.TrimSpace(args.Base)
+		func(ctx context.Context, a gitLogArgs) (glue.ToolResult, error) {
+			base := strings.TrimSpace(a.Base)
 			if base == "" {
 				base = "main"
 			}
-			limit := args.Limit
+			limit := a.Limit
 			if limit <= 0 {
 				limit = defaultLogLimit
 			}
@@ -153,16 +149,21 @@ func gitLogBranchTool(workDir string) glue.Tool {
 				base+"..HEAD",
 			)
 			if err != nil {
-				return errorResult(err), nil
+				return glue.ErrorResult(err), nil
 			}
-			return textResult(out), nil
+			return glue.TextResult(out), nil
 		},
-	}
+	)
+}
+
+type readFileArgs struct {
+	Path     string `json:"path"`
+	MaxBytes int    `json:"max_bytes"`
 }
 
 func readFileTool(workDir string, blockedPatterns []string) glue.Tool {
-	return glue.Tool{
-		ToolSpec: glue.ToolSpec{
+	return glue.NewTool[readFileArgs](
+		glue.ToolSpec{
 			Name:        "read_file",
 			Description: "Read a UTF-8 text file from the working directory. Returns the file content, truncated if larger than max_bytes. Use this to inspect files mentioned in the diff when surrounding context is needed. Refuses to open secret-shaped files (.env, id_rsa, *.pem, credentials.json, etc.).",
 			Parameters: json.RawMessage(`{
@@ -174,41 +175,34 @@ func readFileTool(workDir string, blockedPatterns []string) glue.Tool {
   "required": ["path"]
 }`),
 		},
-		Execute: func(_ context.Context, call glue.ToolCall) (glue.ToolResult, error) {
-			var args struct {
-				Path     string `json:"path"`
-				MaxBytes int    `json:"max_bytes"`
-			}
-			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return glue.ToolResult{}, err
-			}
+		func(_ context.Context, a readFileArgs) (glue.ToolResult, error) {
 			// Blocklist check happens BEFORE traversal resolution so the
 			// model sees a stable error message regardless of whether
 			// the file even exists. We also re-check the resolved path
 			// below to defend against e.g. symlink-to-secret tricks.
-			if blocked, pat := pathBlocked(args.Path, blockedPatterns); blocked {
-				return errorResult(fmt.Errorf("path %q is blocked by sensitive-file pattern %q; do not retry", args.Path, pat)), nil
+			if blocked, pat := pathBlocked(a.Path, blockedPatterns); blocked {
+				return glue.ErrorResult(fmt.Errorf("path %q is blocked by sensitive-file pattern %q; do not retry", a.Path, pat)), nil
 			}
-			resolved, err := safeJoin(workDir, args.Path)
+			resolved, err := safeJoin(workDir, a.Path)
 			if err != nil {
-				return errorResult(err), nil
+				return glue.ErrorResult(err), nil
 			}
-			max := args.MaxBytes
+			max := a.MaxBytes
 			if max <= 0 {
 				max = defaultReadMaxBytes
 			}
 			f, err := os.Open(resolved)
 			if err != nil {
-				return errorResult(err), nil
+				return glue.ErrorResult(err), nil
 			}
 			defer f.Close()
 			data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
 			if err != nil {
-				return errorResult(err), nil
+				return glue.ErrorResult(err), nil
 			}
-			return textResult(truncate(string(data), max)), nil
+			return glue.TextResult(truncate(string(data), max)), nil
 		},
-	}
+	)
 }
 
 // runGit shells out to the local git binary in workDir. Output is
@@ -269,15 +263,3 @@ func truncate(s string, max int) string {
 	return s[:max-len(note)] + note
 }
 
-func textResult(text string) glue.ToolResult {
-	return glue.ToolResult{
-		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: text}},
-	}
-}
-
-func errorResult(err error) glue.ToolResult {
-	return glue.ToolResult{
-		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: err.Error()}},
-		IsError: true,
-	}
-}

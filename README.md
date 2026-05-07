@@ -234,6 +234,42 @@ _, err := session.PromptJSON(ctx, "Return a project name and count.", &out)
 `response_json_schema`). V1 validation is JSON decoding into the caller's Go
 type.
 
+### Tools
+
+`glue.NewTool[Args]` decodes `ToolCall.Arguments` into a typed Go value
+before invoking the executor, so most tools no longer need a manual
+`json.Unmarshal`. Pair it with `glue.TextResult` / `glue.ErrorResult` for
+the result side:
+
+```go
+type weatherArgs struct {
+	City string `json:"city"`
+}
+
+weather := glue.NewTool[weatherArgs](
+	glue.ToolSpec{
+		Name:        "weather",
+		Description: "Lookup current weather for a city.",
+		Parameters: json.RawMessage(`{
+  "type": "object",
+  "properties": { "city": { "type": "string" } },
+  "required": ["city"]
+}`),
+	},
+	func(ctx context.Context, a weatherArgs) (glue.ToolResult, error) {
+		report, err := lookup(ctx, a.City)
+		if err != nil {
+			return glue.ErrorResult(err), nil
+		}
+		return glue.TextResult(report), nil
+	},
+)
+```
+
+Malformed arguments surface to the model as an error `ToolResult` rather
+than crashing the loop. Schema generation from `Args` is intentionally
+out of scope; supply `Parameters` explicitly.
+
 ## Testing without Gemini
 
 The `glue.Provider` interface is small, so tests can drive sessions with a
