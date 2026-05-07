@@ -464,6 +464,26 @@ The CLI streams text deltas to stdout, persists sessions through
 `roles/` discovery work from the invocation directory. Errors return a
 non-zero exit code; missing `GEMINI_API_KEY` produces a clear message.
 
+### Standard flags for downstream agents
+
+Agents that ship their own CLI binary share the same six flags
+(`--provider`, `--model`, `--id`, `--store`, `--work`, `--max-turns`).
+`cli.RegisterStandardFlags` wires them onto a `flag.FlagSet` and returns
+a getter:
+
+```go
+import "github.com/erain/glue/cli"
+
+fs := flag.NewFlagSet("my-agent", flag.ContinueOnError)
+get := cli.RegisterStandardFlags(fs, nil) // pass &cli.StandardConfig{...} to override defaults
+fs.Parse(os.Args[1:])
+cfg := get() // cfg.Provider, cfg.Model, cfg.ID, cfg.Store, cfg.Work, cfg.MaxTurns
+```
+
+`--provider` accepts a comma-separated list (e.g. `nvidia,openrouter,gemini`)
+which agents are expected to handle by chaining the providers registry
+with `glue.WithFailover`.
+
 ## Adding a provider
 
 Glue's `Provider` interface is small. See
