@@ -73,9 +73,9 @@ func DiffBranchTool(opts DiffBranchOptions) glue.Tool {
 			if base == "" {
 				base = defaultBase
 			}
-			cap := a.MaxBytes
-			if cap <= 0 {
-				cap = maxBytes
+			limit := a.MaxBytes
+			if limit <= 0 {
+				limit = maxBytes
 			}
 			gitArgs := []string{"diff", "--no-color", base + "...HEAD"}
 			if len(opts.Pathspec) > 0 {
@@ -86,7 +86,7 @@ func DiffBranchTool(opts DiffBranchOptions) glue.Tool {
 			if err != nil {
 				return glue.ErrorResult(err), nil
 			}
-			return glue.TextResult(tfs.Truncate(out, cap)), nil
+			return glue.TextResult(tfs.Truncate(out, limit)), nil
 		},
 	)
 }

@@ -68,20 +68,20 @@ func ReadFileTool(opts ReadFileOptions) glue.Tool {
 			if err != nil {
 				return glue.ErrorResult(err), nil
 			}
-			cap := a.MaxBytes
-			if cap <= 0 {
-				cap = max
+			limit := a.MaxBytes
+			if limit <= 0 {
+				limit = max
 			}
 			f, err := os.Open(resolved)
 			if err != nil {
 				return glue.ErrorResult(err), nil
 			}
 			defer f.Close()
-			data, err := io.ReadAll(io.LimitReader(f, int64(cap)+1))
+			data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 			if err != nil {
 				return glue.ErrorResult(err), nil
 			}
-			return glue.TextResult(Truncate(string(data), cap)), nil
+			return glue.TextResult(Truncate(string(data), limit)), nil
 		},
 	)
 }
