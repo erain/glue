@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -35,7 +36,7 @@ type echoArgs struct {
 
 func TestNewTool_DecodesTypedArgs(t *testing.T) {
 	tool := NewTool[echoArgs](ToolSpec{Name: "echo"}, func(_ context.Context, a echoArgs) (ToolResult, error) {
-		return TextResult(a.Name + "/" + intStr(a.Count)), nil
+		return TextResult(a.Name + "/" + strconv.Itoa(a.Count)), nil
 	})
 
 	res, err := tool.Execute(context.Background(), ToolCall{
@@ -90,21 +91,3 @@ func TestNewTool_MalformedArgsReturnsErrorResult(t *testing.T) {
 	}
 }
 
-func intStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	digits := []byte{}
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	if neg {
-		digits = append([]byte{'-'}, digits...)
-	}
-	return string(digits)
-}
