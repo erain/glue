@@ -166,6 +166,45 @@ result, err := session.Prompt(ctx, "Be concise.",
 )
 ```
 
+### Provider failover
+
+`glue.WithFailover(provs...)` returns a Provider that tries each
+underlying provider in order until one accepts a Stream — useful when
+your CLI agent supports multiple LLM backends and you want it to skip
+providers whose API keys aren't set rather than fail. Pre-filter via
+the small registry under `providers`:
+
+```go
+import (
+	"github.com/erain/glue"
+	"github.com/erain/glue/providers"
+	_ "github.com/erain/glue/providers/gemini"      // registers "gemini"
+	_ "github.com/erain/glue/providers/nvidia"      // registers "nvidia"
+	_ "github.com/erain/glue/providers/openrouter"  // registers "openrouter"
+)
+
+var provs []glue.Provider
+for _, name := range []string{"nvidia", "openrouter", "gemini"} {
+	if !providers.KeyAvailable(name) {
+		continue
+	}
+	p, _, _, err := providers.New(name)
+	if err == nil {
+		provs = append(provs, p)
+	}
+}
+agent := glue.NewAgent(glue.AgentOptions{
+	Provider: glue.WithFailover(provs...),
+	Model:    "", // let each provider use its DefaultModel
+})
+```
+
+`WithFailover` only falls through *before* the first event commits to
+the consumer (Stream error, immediate `ProviderEventError`, or empty
+stream). Once any non-error event is observed, it commits to that
+provider for the rest of the turn. All-providers-failed surfaces as a
+typed `*glue.FailoverError` with per-provider attempts.
+
 ### Roles
 
 A role is a named instruction profile with an optional model override.

@@ -9,11 +9,28 @@ import (
 	"time"
 
 	"github.com/erain/glue/loop"
+	"github.com/erain/glue/providers"
 
 	"google.golang.org/genai"
 )
 
+// EnvKey is the environment variable the provider reads when Options.APIKey
+// is empty. Exposed so the providers registry and downstream agents can
+// probe key availability without hard-coding the name.
+const EnvKey = "GEMINI_API_KEY"
+
+// DefaultModel is the registry-level default model for this provider.
+const DefaultModel = "gemini-2.5-flash"
+
 const providerName = "gemini"
+
+func init() {
+	providers.Register(providerName, providers.Factory{
+		New:          func() loop.Provider { return New(Options{}) },
+		DefaultModel: DefaultModel,
+		EnvKey:       EnvKey,
+	})
+}
 
 // Options configures the Gemini provider.
 //
@@ -86,7 +103,7 @@ func (p *Provider) clientFor(ctx context.Context) (*genai.Client, error) {
 	}
 	apiKey := p.apiKey
 	if apiKey == "" {
-		apiKey = os.Getenv("GEMINI_API_KEY")
+		apiKey = os.Getenv(EnvKey)
 	}
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,

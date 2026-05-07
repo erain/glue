@@ -52,6 +52,11 @@ The module path is `github.com/erain/glue`.
   (`openrouter.ai/api/v1`), aggregator of many upstream models. Sends
   attribution headers (`HTTP-Referer`, `X-Title`) and tolerates
   comment-line SSE keep-alives during cold routing.
+- `providers`: driver-style registry (`Register`, `New`, `Lookup`,
+  `Known`, `KeyAvailable`). Each provider sub-package self-registers
+  via `init()` so importing `_ "github.com/erain/glue/providers/<name>"`
+  makes that name resolvable. Holds factory functions, not constructed
+  providers, so registration is cheap and credential-free.
 - `stores/file`: file-backed JSON session store with atomic writes.
 - `tools/fs`: filesystem tool factories — `SafeJoin`, `Truncate`,
   `Blocklist`, and a ready-to-register `ReadFileTool`. Outside the core

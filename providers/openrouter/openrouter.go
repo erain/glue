@@ -3,13 +3,25 @@ package openrouter
 import (
 	"net/http"
 
+	"github.com/erain/glue/loop"
+	"github.com/erain/glue/providers"
 	"github.com/erain/glue/providers/openaicompat"
 )
+
+// EnvKey is the environment variable the provider reads when Options.APIKey
+// is empty. Exposed so the providers registry and downstream agents can
+// probe key availability without hard-coding the name.
+const EnvKey = "OPENROUTER_API_KEY"
+
+// DefaultModel is the registry-level default model. The free Ling
+// route is fast and unmetered; OpenRouter callers with a paid key
+// typically override via glue.WithModel.
+const DefaultModel = "inclusionai/ling-2.6-1t:free"
 
 const (
 	providerName   = "openrouter"
 	defaultBaseURL = "https://openrouter.ai/api/v1"
-	apiKeyEnv      = "OPENROUTER_API_KEY"
+	apiKeyEnv      = EnvKey
 
 	// Attribution headers OpenRouter recommends for clients so requests
 	// surface the calling project in their analytics. Both are overridable
@@ -17,6 +29,14 @@ const (
 	defaultRefererURL = "https://github.com/erain/glue"
 	defaultTitle      = "glue"
 )
+
+func init() {
+	providers.Register(providerName, providers.Factory{
+		New:          func() loop.Provider { return New(Options{}) },
+		DefaultModel: DefaultModel,
+		EnvKey:       EnvKey,
+	})
+}
 
 // Options configures the OpenRouter provider.
 //
