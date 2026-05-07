@@ -53,6 +53,12 @@ The module path is `github.com/erain/glue`.
   attribution headers (`HTTP-Referer`, `X-Title`) and tolerates
   comment-line SSE keep-alives during cold routing.
 - `stores/file`: file-backed JSON session store with atomic writes.
+- `tools/fs`: filesystem tool factories — `SafeJoin`, `Truncate`,
+  `Blocklist`, and a ready-to-register `ReadFileTool`. Outside the core
+  package per ADR 0003 so the harness stays free of POSIX coupling.
+- `tools/git`: git tool factories — `RunGit`, `BuildPathspec`,
+  `DiffBranchTool`, `LogBranchTool`. Shells out to the system `git`
+  binary; no Git library dependency.
 - `cmd/glue`: local CLI runner built on top of the public library.
 
 The dependency direction is intentionally narrow:
