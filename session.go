@@ -94,6 +94,7 @@ type promptConfig struct {
 	options      map[string]any
 	maxTurns     int
 	emit         func(Event)
+	auxEmits     []func(Event)
 	jsonSchema   any
 	role         string
 	modelSet     bool
@@ -203,6 +204,9 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 		Emit: func(event Event) {
 			if config.emit != nil {
 				config.emit(event)
+			}
+			for _, aux := range config.auxEmits {
+				aux(event)
 			}
 			s.dispatchEvent(event)
 		},

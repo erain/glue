@@ -142,6 +142,23 @@ even when the underlying model is fast.
 loop event for every prompt run on that session. `glue.WithEvents` registers
 a per-prompt handler that fires alongside it.
 
+For the two most common cases — mirror text deltas and log tool starts
+to a writer — use the convenience options:
+
+```go
+_, err := session.Prompt(ctx, "Stream a haiku about glue.",
+	glue.WithStreamWriter(os.Stdout),
+	glue.WithToolLogger(os.Stderr),
+)
+```
+
+`WithStreamWriter` writes `EventTextDelta.Delta` straight to the writer;
+`WithToolLogger` emits `[tool] <name>\n` on `EventToolStart`. Both nil-safe
+and silently drop writer errors. They compose additively with `WithEvents`
+and each other — adding one does not displace any other handler.
+
+For richer formatting, use `WithEvents` directly:
+
 ```go
 unsubscribe := session.Subscribe(func(e glue.Event) {
 	if e.Type == glue.EventTextDelta {
