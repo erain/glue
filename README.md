@@ -273,6 +273,34 @@ formatted JSON, and runs the result through `Session.Prompt`. Unknown skill
 names return a typed error. Skills supplied via `AgentOptions.Skills` win on
 name collision over disk-discovered skills.
 
+### Versioned prompts
+
+`prompts.NewCatalog(fsys, dir, defaultVersion)` wraps an `embed.FS` of
+`<version>.md` files so agents can A/B-test prompts and roll back without
+rebuilding history. Unknown versions return an error that lists every
+available version verbatim — silent fallback would hide A/B test
+misconfiguration.
+
+```go
+import (
+	"embed"
+
+	"github.com/erain/glue/prompts"
+)
+
+//go:embed prompts/*.md
+var promptFS embed.FS
+
+cat, err := prompts.NewCatalog(promptFS, "prompts", "v2")
+if err != nil { /* default version must exist at construction time */ }
+
+systemPrompt, err := cat.Get("v1") // or cat.Get("") for the default
+```
+
+The catalog is read-only and concurrency-safe. Templating and variable
+substitution are intentionally out of scope; rendering is the caller's
+job.
+
 ### Structured JSON results
 
 ```go
