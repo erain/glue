@@ -21,19 +21,26 @@ of truth for implementation order and status after the initial bootstrap.
 - Persist local sessions to files so CLI sessions can resume.
 - Treat documentation and verification as required work for every issue.
 
-## Non-Goals For P0/P1
+## Non-Goals
 
-- No sandboxing, shell execution, container runtime, or remote connector
-  in the core `glue` package. Shell and filesystem tools land in a
-  dedicated extension package per [`adr/0003-shell-filesystem-tools.md`](adr/0003-shell-filesystem-tools.md);
-  the core stays free of POSIX coupling.
+These remain out of scope for the `0.x` series:
+
+- No sandboxing, shell execution, container runtime, or remote
+  connector in the core `glue` package. Read-side filesystem and git
+  helpers ship as `tools/fs` and `tools/git` per
+  [`adr/0003-shell-filesystem-tools.md`](adr/0003-shell-filesystem-tools.md);
+  write-side filesystem and arbitrary shell execution remain out of
+  scope until a follow-up ADR designs the safety boundary.
 - No dynamic Go plugin loading.
 - No MCP integration.
 - No HTTP server or deploy target.
-- (P0/P1 only) No automatic context compaction; opt-in compaction lands
-  in P2 — see [`adr/0002-context-compaction.md`](adr/0002-context-compaction.md).
-- (P0/P1 only) No parallel tool execution; opt-in `RunRequest.Parallel`
-  lands in P2 (#17).
+- No automatic context compaction. The `Compactor` interface and
+  `KeepRecentMessages` policy ship today (see
+  [`adr/0002-context-compaction.md`](adr/0002-context-compaction.md))
+  but are strictly opt-in via `AgentOptions.Compactor` and
+  `AgentOptions.CompactionThreshold`.
+- No implicit parallel tool execution. `RunRequest.Parallel` is opt-in
+  and preserves transcript order (#17, shipped).
 
 ## Package Boundaries
 
@@ -277,7 +284,7 @@ Persisted data includes:
 ## Context Compaction
 
 Long-running sessions can exceed provider context windows. Glue exposes an
-explicit, opt-in [`Compactor`](compactor.go) interface that callers wire
+explicit, opt-in [`Compactor`](../compactor.go) interface that callers wire
 through `AgentOptions.Compactor` and `AgentOptions.CompactionThreshold`.
 The agent runs the compactor before every prompt whenever the in-memory
 transcript has more than the threshold number of messages; the compactor's
