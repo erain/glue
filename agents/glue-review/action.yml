@@ -23,7 +23,7 @@ inputs:
     description: |
       Model id. When empty, uses the provider-specific default
       (NVIDIA: moonshotai/kimi-k2.6, OpenRouter:
-      inclusionai/ling-2.6-1t:free, Gemini: gemini-2.5-flash).
+      inclusionai/ring-2.6-1t:free, Gemini: gemini-2.5-flash).
     required: false
     default: ''
   base-ref:

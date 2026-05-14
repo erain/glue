@@ -76,9 +76,11 @@ func TestStreamUsesAPIKeyEnv(t *testing.T) {
 }
 
 // TestLiveSmoke runs against the real OpenRouter endpoint when
-// OPENROUTER_API_KEY is set. Defaults to inclusionai/ling-2.6-1t:free —
+// OPENROUTER_API_KEY is set. Defaults to inclusionai/ring-2.6-1t:free —
 // a deterministic free model whose upstream (Novita) is consistently
-// available. Better-known free routes (google/gemma-4-*:free,
+// available. (The previous ling-2.6-1t:free pin graduated to paid in
+// May 2026; ring is its successor in the same InclusionAI family.)
+// Better-known free routes (google/gemma-4-*:free,
 // minimax/minimax-m2.5:free) are over-subscribed and frequently 429 at
 // the upstream. Local devs can swap to the openrouter/free meta-route
 // (which auto-routes around 429s but is non-deterministic) via
@@ -90,7 +92,7 @@ func TestLiveSmoke(t *testing.T) {
 	}
 	model := os.Getenv("OPENROUTER_LIVE_MODEL")
 	if model == "" {
-		model = "inclusionai/ling-2.6-1t:free"
+		model = "inclusionai/ring-2.6-1t:free"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
@@ -105,6 +107,9 @@ func TestLiveSmoke(t *testing.T) {
 		Options: map[string]any{"max_tokens": 16, "temperature": 0.0},
 	})
 	if err != nil {
+		if isUpstream429(err.Error()) {
+			t.Skipf("upstream rate-limited (free tier): %v", err)
+		}
 		t.Fatalf("Stream: %v", err)
 	}
 
@@ -120,7 +125,7 @@ func TestLiveSmoke(t *testing.T) {
 				if done == nil {
 					t.Fatalf("channel closed without Done event; text=%q", text.String())
 				}
-				// Default model (inclusionai/ling-2.6-1t:free) emits visible
+				// Default model (inclusionai/ring-2.6-1t:free) emits visible
 				// text. When OPENROUTER_LIVE_MODEL points at the
 				// non-deterministic openrouter/free meta-route, some upstreams
 				// emit only reasoning — accept thinking as a fallback.
@@ -140,6 +145,9 @@ func TestLiveSmoke(t *testing.T) {
 			case loop.ProviderEventDone:
 				done = event.Message
 			case loop.ProviderEventError:
+				if isUpstream429(event.Error) {
+					t.Skipf("upstream rate-limited (free tier): %s", event.Error)
+				}
 				t.Fatalf("provider error: %s", event.Error)
 			}
 		}
@@ -164,4 +172,13 @@ func newCapturingServer(t *testing.T) (*httptest.Server, func() http.Header) {
 func drain(ch <-chan loop.ProviderEvent) {
 	for range ch {
 	}
+}
+
+// isUpstream429 reports whether an error message looks like an OpenRouter
+// upstream rate-limit response. Free routes (e.g. inclusionai/ling-2.6-1t:free)
+// share a 20 req/min quota and 429 frequently; we treat those as a skip so
+// transient upstream limits don't fail CI, while real wire-protocol
+// regressions (other HTTP codes, malformed SSE) still fail loudly.
+func isUpstream429(msg string) bool {
+	return strings.Contains(msg, "http 429") || strings.Contains(msg, "Rate limit exceeded")
 }
