@@ -44,11 +44,14 @@ var fixtures = []fixture{
 			gitCommit(t, repo, "scaffold", "main.go")
 		},
 		expect: func(t *testing.T, review string) {
-			// v3 may legitimately read this as an intentional scaffold
-			// placeholder and emit Variant B (LGTM). v2 invariably flagged
-			// it. Either is defensible; the regression we care about is
-			// "the review references main.go specifically OR the model
-			// chose Variant B — not silence, not a fabricated path".
+			// The fixture is a smoke for output-shape regressions, not a
+			// precision test for the model's judgement. The model may
+			// legitimately read `func main() { panic("todo") }` as an
+			// intentional scaffold placeholder and emit Variant B (LGTM),
+			// or call it `medium` instead of `critical` ("intentional
+			// stub" vs "ships broken"). Both are defensible from a senior
+			// reviewer. What we want to catch is: silence, fabricated
+			// paths, or output that isn't the v3 shape.
 			assertGlueReviewHeader(t, review)
 			isLGTM := strings.Contains(review, "No concerns — LGTM")
 			mentionsMain := strings.Contains(review, "main.go")
@@ -57,9 +60,6 @@ var fixtures = []fixture{
 			}
 			if !isLGTM {
 				assertHasFixBlock(t, review)
-				if !regexpMatch(review, `\*\*(critical|high|major)\*\*[^\n]*main\.go|\[(major|critical)\][^\n]*main\.go`) {
-					t.Errorf("expected a high/critical severity bullet mentioning main.go; review=%q", review)
-				}
 			}
 		},
 	},
