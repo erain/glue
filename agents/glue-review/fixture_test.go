@@ -51,7 +51,7 @@ var fixtures = []fixture{
 			// or call it `medium` instead of `critical` ("intentional
 			// stub" vs "ships broken"). Both are defensible from a senior
 			// reviewer. What we want to catch is: silence, fabricated
-			// paths, or output that isn't the v3 shape.
+			// paths, or output that isn't in the canonical shape.
 			assertGlueReviewHeader(t, review)
 			isLGTM := strings.Contains(review, "No concerns — LGTM")
 			mentionsMain := strings.Contains(review, "main.go")
@@ -246,11 +246,8 @@ func assertHasSection(t *testing.T, review, section string) {
 	}
 }
 
-// assertGlueReviewHeader checks that the v3 single-comment header is
-// present at the start of the review body. v3 collapses the v1/v2
-// multi-section format (`## Summary` / `## Issues` / `## Suggestions` /
-// `## Looks good` / `## Open questions`) into one `## glue-review`
-// headline followed by ≤ 5 severity bullets and a fenced fix block.
+// assertGlueReviewHeader checks that the canonical `## glue-review`
+// header is present at the start of the review body.
 func assertGlueReviewHeader(t *testing.T, review string) {
 	t.Helper()
 	if !strings.Contains(review, "## glue-review") {
@@ -258,7 +255,7 @@ func assertGlueReviewHeader(t *testing.T, review string) {
 	}
 }
 
-// assertHasFixBlock checks that the v3 fenced ```markdown fix-instruction
+// assertHasFixBlock checks that the fenced ```markdown fix-instruction
 // block is present. Required for Variant A (issues found); not required
 // for Variant B (clean) or Variant C (rejected) — caller decides.
 func assertHasFixBlock(t *testing.T, review string) {

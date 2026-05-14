@@ -20,9 +20,9 @@ order:
 ## Status
 
 The harness is feature-complete for the `0.x` series and is in active
-use behind the `agents/glue-review` agent (current release `v2.0.0` —
-[ships a single-comment format optimised for AI coding agents to
-paste-and-go](agents/glue-review/CHANGELOG.md#v200--2026-05-14)). The
+use behind the [`agents/glue-review`](agents/glue-review/README.md)
+reference agent (single GitHub comment per PR with a fenced
+` ```markdown ` fix block downstream coding agents can paste). The
 library itself remains pre-1.0 — the public `Agent` / `Session`
 surface is stable in practice, but minor versions may still break API.
 Shipped today:
@@ -43,9 +43,7 @@ Shipped today:
   plus `cli.RegisterStandardFlags` for downstream agents. Versioned
   prompts via `prompts.NewCatalog`.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for library-level notes and
-[`agents/glue-review/CHANGELOG.md`](agents/glue-review/CHANGELOG.md) for
-the agent's release history.
+See [`CHANGELOG.md`](CHANGELOG.md) for library-level notes.
 
 ## Install
 
@@ -435,34 +433,35 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 Real agents built on the harness live under `agents/` (peer of the harness
 itself), not `examples/` (which holds tutorial-grade demos only).
 
-- [`agents/glue-review`](agents/glue-review) — a free, local pre-push
-  branch reviewer **(stable: `v1.1.0`, floating tag `v1`)**. Reads the
-  diff against `main`, deep-reads files when context demands it, posts
-  inline review comments on the diff via the GitHub PR Reviews API
-  (each comment carries a copy-pasteable `AI prompt to fix` block as of
-  `v1.1.0`), and falls back to a sticky markdown comment when entries
-  don't parse cleanly. Defaults to NVIDIA's free Kimi K2.6; flags swap
-  to OpenRouter or Gemini, with automatic provider failover and a
-  fixture-replay mode for prompt regression tests.
+- [`agents/glue-review`](agents/glue-review) — a free, local
+  pre-push branch reviewer. Reads the diff against `main`, deep-reads
+  files when context demands it, and posts **one** sticky GitHub
+  comment per PR — a short headline, ≤ 5 severity bullets, and a
+  fenced ` ```markdown ` fix-instruction block downstream coding
+  agents (Claude Code, Codex, Cursor, Aider, …) can paste and act on.
+  Defaults to OpenRouter's free `inclusionai/ring-2.6-1t:free`; flags
+  swap to NVIDIA `build.nvidia.com` or Gemini, with automatic
+  provider failover.
 
   As a CLI:
 
   ```sh
-  export NVIDIA_API_KEY=nvapi-...
+  export OPENROUTER_API_KEY=sk-or-v1-...
   go run ./agents/glue-review              # review current branch vs main
-  go run ./agents/glue-review --provider openrouter
+  go run ./agents/glue-review --provider nvidia
   ```
 
   As a GitHub Action — drop into any repo:
 
   ```yaml
-  - uses: erain/glue/agents/glue-review@v1
+  - uses: erain/glue/agents/glue-review@main
     with:
-      nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+      openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
   ```
 
-  See [`agents/glue-review/CHANGELOG.md`](agents/glue-review/CHANGELOG.md)
-  for surface guarantees and release history.
+  See [`agents/glue-review/README.md`](agents/glue-review/README.md)
+  for the full input/output contract and the eval evidence behind
+  the current prompt.
 
 ## Examples
 

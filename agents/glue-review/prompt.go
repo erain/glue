@@ -1,68 +1,13 @@
 package main
 
-import (
-	"embed"
-	"fmt"
-	"path"
-	"sort"
-	"strings"
-)
+import _ "embed"
 
-// systemPrompts holds every shipped system prompt by version. They are
-// kept in source so we can A/B prompt revisions and roll back without
-// re-running history. Adding a new version means: add prompts/vN.md,
-// bump defaultPromptVersion when you want it to become the default.
+// systemPrompt is the canonical glue-review system prompt — a single
+// embedded file at prompts/default.md. We deliberately do not ship a
+// versioned catalog: there's one product shape (one sticky comment per
+// PR with a fenced ```markdown fix block), and exposing a flag to swap
+// it out invites users into the prompt-iteration business when they
+// should be in the receiving-fix-instructions business.
 //
-//go:embed prompts/*.md
-var systemPromptsFS embed.FS
-
-// defaultPromptVersion picks the prompt loaded when --prompt-version is
-// empty. Bump only when you want every consumer to see the new prompt
-// without an explicit opt-in.
-//
-// History:
-//   - v1 — initial prompt (1.0 release).
-//   - v2 — adds `Fix: <ai prompt>` at the end of every Issues /
-//     Suggestions entry, so the Action can render a copy-pastable
-//     coding-agent prompt next to each inline comment.
-//   - v3 — single-comment format optimised for AI-coding-agent
-//     consumption: one `## glue-review` headline, ≤ 5 severity bullets,
-//     one fenced ```markdown fix-instruction block with verb-first
-//     directives and per-item `Acceptance:` lines. Three variants:
-//     A (issues), B (clean — LGTM), C (rejected — Pushback on approach).
-//     This is the v2.0.0 release shape; legacy v1/v2 prompts remain
-//     embedded for `--prompt-version v1` / `v2` opt-back.
-const defaultPromptVersion = "v3"
-
-// systemPromptFor returns the embedded prompt for the requested
-// version. An unknown version returns an error listing the available
-// versions instead of falling back silently — silent fallback would
-// hide A/B test misconfiguration.
-func systemPromptFor(version string) (string, error) {
-	if strings.TrimSpace(version) == "" {
-		version = defaultPromptVersion
-	}
-	data, err := systemPromptsFS.ReadFile(path.Join("prompts", version+".md"))
-	if err != nil {
-		return "", fmt.Errorf("unknown prompt version %q (available: %s)", version, strings.Join(availablePromptVersions(), ", "))
-	}
-	return strings.TrimRight(string(data), "\n") + "\n", nil
-}
-
-// availablePromptVersions lists every shipped prompt version, sorted
-// for stable error messages and CLI help text.
-func availablePromptVersions() []string {
-	entries, err := systemPromptsFS.ReadDir("prompts")
-	if err != nil {
-		return nil
-	}
-	out := []string{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		out = append(out, strings.TrimSuffix(e.Name(), ".md"))
-	}
-	sort.Strings(out)
-	return out
-}
+//go:embed prompts/default.md
+var systemPrompt string

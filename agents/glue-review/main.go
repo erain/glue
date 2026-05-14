@@ -1,25 +1,25 @@
 // Command glue-review is a free, local pre-push branch reviewer built on
 // the Glue agent harness. Point it at a Git repo and it walks the diff
 // against a base branch (default `main`), reads the files it cares
-// about, and emits structured review notes.
+// about, and emits one Markdown review comment with a fenced
+// ```markdown fix-instruction block downstream coding agents can paste.
 //
-// Defaults to moonshotai/kimi-k2.6 via the NVIDIA provider — the strongest
-// free model exposed through build.nvidia.com. Swap with --provider /
-// --model to use OpenRouter or Gemini.
+// Defaults to OpenRouter's free `inclusionai/ring-2.6-1t:free` model.
+// Swap with --provider / --model to use NVIDIA build.nvidia.com or
+// Gemini instead.
 //
 // Usage:
 //
-//	export NVIDIA_API_KEY=nvapi-...
+//	export OPENROUTER_API_KEY=sk-or-v1-...
 //	glue-review                              # review current branch vs main
 //	glue-review --base origin/main           # review vs a remote ref
-//	glue-review --provider openrouter        # use OpenRouter instead
+//	glue-review --provider nvidia            # use NVIDIA build.nvidia.com instead
 //	glue-review --provider gemini --model gemini-2.5-flash
 package main
 
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,19 +43,17 @@ func main() {
 }
 
 type config struct {
-	base          string
-	provider      string
-	model         string
-	id            string
-	store         string
-	work          string
-	maxTurns      int
-	prompt        string
-	inlineJSON    string
-	promptVersion string
-	blockedPaths  []string
-	paths         []string
-	pathsIgnore   []string
+	base         string
+	provider     string
+	model        string
+	id           string
+	store        string
+	work         string
+	maxTurns     int
+	prompt       string
+	blockedPaths []string
+	paths        []string
+	pathsIgnore  []string
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -126,57 +124,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout)
 		}
 	}
-
-	if cfg.inlineJSON != "" {
-		entries := parseInlineComments(successCaptured.String())
-		// Citation validation: re-fetch the diff once and drop any
-		// inline comments whose path:line is not reachable on the new
-		// side. Defends against the model fabricating plausibly-shaped
-		// file:line citations — a real failure mode we observed with
-		// Kimi K2.6 on PR #72. Validation is best-effort: a diff parse
-		// error degrades to "skip validation" rather than failing the
-		// whole run, so a flaky git invocation cannot red the workflow.
-		if diff, dErr := fetchValidationDiff(ctx, cfg); dErr == nil {
-			lineMap := parseDiffLineMap(diff)
-			kept, dropped := validateInlineComments(entries, lineMap)
-			if len(dropped) > 0 {
-				fmt.Fprintf(stderr, "[validate] dropping %d/%d inline comments with unverifiable file:line citations\n",
-					len(dropped), len(entries))
-				fmt.Fprint(stderr, describeDropped(dropped, lineMap))
-			}
-			entries = kept
-		} else {
-			fmt.Fprintf(stderr, "[validate] skipped: %v\n", dErr)
-		}
-		raw, mErr := json.MarshalIndent(entries, "", "  ")
-		if mErr != nil {
-			fmt.Fprintf(stderr, "marshal inline JSON: %v\n", mErr)
-			return 1
-		}
-		if wErr := os.WriteFile(cfg.inlineJSON, raw, 0o644); wErr != nil {
-			fmt.Fprintf(stderr, "write inline JSON: %v\n", wErr)
-			return 1
-		}
-	}
 	return 0
-}
-
-// fetchValidationDiff re-runs the same `git diff` the agent saw, so
-// the validation step can match inline comments against the same set
-// of new-side line numbers the model was looking at. Honors --paths
-// and --paths-ignore so out-of-scope files are excluded from
-// validation as well as from the agent's input.
-func fetchValidationDiff(ctx context.Context, cfg config) (string, error) {
-	// cfg.base may already include `origin/` (CI passes it that way) or
-	// be a bare branch name (local dev). Use it verbatim — Git resolves
-	// either form against `HEAD`.
-	gitArgs := []string{"diff", "--no-color", cfg.base + "...HEAD"}
-	pathspec := buildPathspec(cfg.paths, cfg.pathsIgnore)
-	if len(pathspec) > 0 {
-		gitArgs = append(gitArgs, "--")
-		gitArgs = append(gitArgs, pathspec...)
-	}
-	return runGit(ctx, cfg.work, gitArgs...)
 }
 
 // runOnce executes one Prompt against a specific provider, buffering
@@ -190,11 +138,6 @@ func runOnce(ctx context.Context, cfg config, p providerEntry, into io.Writer, s
 	model := cfg.model
 	if model == "" {
 		model = defaultModel
-	}
-
-	systemPrompt, err := systemPromptFor(cfg.promptVersion)
-	if err != nil {
-		return err
 	}
 
 	agent := glue.NewAgent(glue.AgentOptions{
@@ -236,15 +179,13 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	flags.SetOutput(stderr)
 
 	base := flags.String("base", "main", "base branch / ref to diff against")
-	provider := flags.String("provider", "nvidia", "provider list (single name or comma-separated for failover, e.g. 'nvidia,openrouter,gemini'); first provider with its API key in env wins")
+	provider := flags.String("provider", "openrouter", "provider list (single name or comma-separated for failover, e.g. 'openrouter,nvidia,gemini'); first provider with its API key in env wins")
 	model := flags.String("model", "", "model id (defaults vary by provider)")
 	id := flags.String("id", "glue-review", "session id (file-backed sessions key off this)")
 	store := flags.String("store", ".glue/review-sessions", "session store directory")
 	work := flags.String("work", ".", "working directory (must be inside the Git repo)")
 	maxTurns := flags.Int("max-turns", 16, "loop budget — caps total assistant turns")
 	prompt := flags.String("prompt", "", "override the default review prompt")
-	inlineJSON := flags.String("inline-json", "", "if set, write parsed inline-comment entries to this path as JSON (one array of {path,line,severity,body}); the final markdown still goes to stdout")
-	promptVersion := flags.String("prompt-version", defaultPromptVersion, fmt.Sprintf("system-prompt version to load (available: %s)", strings.Join(availablePromptVersions(), ", ")))
 	blockedPaths := flags.String("blocked-paths", "", "comma-separated extra path patterns the read_file tool will refuse to open (extends the built-in blocklist of secret-shaped files; cannot subtract defaults)")
 	paths := flags.String("paths", "", "comma-separated Git pathspec globs; only files matching at least one pattern are reviewed. When empty, all changed files are in scope.")
 	pathsIgnore := flags.String("paths-ignore", "", "comma-separated Git pathspec globs to exclude from review; applied after --paths")
@@ -262,19 +203,17 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	}
 
 	cfg := config{
-		base:          *base,
-		provider:      strings.TrimSpace(*provider),
-		model:         *model,
-		id:            *id,
-		store:         *store,
-		work:          *work,
-		maxTurns:      *maxTurns,
-		prompt:        *prompt,
-		inlineJSON:    *inlineJSON,
-		promptVersion: strings.TrimSpace(*promptVersion),
-		blockedPaths:  splitCommaList(*blockedPaths),
-		paths:         splitCommaList(*paths),
-		pathsIgnore:   splitCommaList(*pathsIgnore),
+		base:         *base,
+		provider:     strings.TrimSpace(*provider),
+		model:        *model,
+		id:           *id,
+		store:        *store,
+		work:         *work,
+		maxTurns:     *maxTurns,
+		prompt:       *prompt,
+		blockedPaths: splitCommaList(*blockedPaths),
+		paths:        splitCommaList(*paths),
+		pathsIgnore:  splitCommaList(*pathsIgnore),
 	}
 	if cfg.prompt == "" {
 		cfg.prompt = fmt.Sprintf("Review the current Git branch against base ref %q. Use the tools to gather context, then output the final review only.", cfg.base)

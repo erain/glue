@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  issues: write           # post / update the sticky comment on the PR thread
   pull-requests: write
 
 concurrency:
@@ -78,7 +79,7 @@ jobs:
         uses: ./agents/glue-review
         continue-on-error: true
         with:
-          provider: nvidia,openrouter,gemini
+          provider: openrouter,nvidia,gemini
           base-ref: ${{ steps.pr.outputs.base_ref }}
           max-turns: '12'
           pr-number: ${{ github.event.issue.number }}
