@@ -121,6 +121,13 @@ func TestFixtureReplay(t *testing.T) {
 			f.seed(t, repo)
 			review, err := runAgentInRepo(t, repo, provider, fmt.Sprintf("fixture-%s-%d", f.name, time.Now().UnixNano()))
 			if err != nil {
+				// Free upstreams (e.g. inclusionai/ling-2.6-1t:free)
+				// share a 20 req/min quota and 429 frequently. Treat
+				// upstream rate limits as a skip so transient quota
+				// trips don't fail CI; other failures still fail loudly.
+				if msg := err.Error(); strings.Contains(msg, "http 429") || strings.Contains(msg, "Rate limit exceeded") {
+					t.Skipf("upstream rate-limited (free tier): %v", err)
+				}
 				t.Fatalf("run failed: %v", err)
 			}
 			t.Logf("%s review (%d bytes):\n%s", f.name, len(review), review)

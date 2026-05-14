@@ -105,6 +105,9 @@ func TestLiveSmoke(t *testing.T) {
 		Options: map[string]any{"max_tokens": 16, "temperature": 0.0},
 	})
 	if err != nil {
+		if isUpstream429(err.Error()) {
+			t.Skipf("upstream rate-limited (free tier): %v", err)
+		}
 		t.Fatalf("Stream: %v", err)
 	}
 
@@ -140,6 +143,9 @@ func TestLiveSmoke(t *testing.T) {
 			case loop.ProviderEventDone:
 				done = event.Message
 			case loop.ProviderEventError:
+				if isUpstream429(event.Error) {
+					t.Skipf("upstream rate-limited (free tier): %s", event.Error)
+				}
 				t.Fatalf("provider error: %s", event.Error)
 			}
 		}
@@ -164,4 +170,13 @@ func newCapturingServer(t *testing.T) (*httptest.Server, func() http.Header) {
 func drain(ch <-chan loop.ProviderEvent) {
 	for range ch {
 	}
+}
+
+// isUpstream429 reports whether an error message looks like an OpenRouter
+// upstream rate-limit response. Free routes (e.g. inclusionai/ling-2.6-1t:free)
+// share a 20 req/min quota and 429 frequently; we treat those as a skip so
+// transient upstream limits don't fail CI, while real wire-protocol
+// regressions (other HTTP codes, malformed SSE) still fail loudly.
+func isUpstream429(msg string) bool {
+	return strings.Contains(msg, "http 429") || strings.Contains(msg, "Rate limit exceeded")
 }
