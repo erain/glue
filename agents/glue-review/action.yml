@@ -345,7 +345,13 @@ runs:
         # heredocs awkward). gh api -F body=@file reads the file as-is.
         BODY_PATH="${RUNNER_TEMP}/glue-review-body.md"
 
+        # Soft-fail marker so we can recognise a previous failure body
+        # and overwrite it (but never overwrite a real review).
+        SOFT_FAIL_MARK='<!-- glue-review:soft-fail -->'
+
+        SUCCESS=0
         if [ "$EXIT_CODE" = "0" ] && [ -s "$REVIEW_PATH" ]; then
+          SUCCESS=1
           {
             printf '%s\n' "$MARKER"
             cat "$REVIEW_PATH"
@@ -354,6 +360,7 @@ runs:
         else
           {
             printf '%s\n' "$MARKER"
+            printf '%s\n' "$SOFT_FAIL_MARK"
             printf '%s\n\n' '⚠️ **glue-review could not produce a review.**'
             printf 'Exit code: `%s`. Re-run the workflow to retry.\n\n' "$EXIT_CODE"
             printf '<details><summary>Failure log (last 3.5 KiB of stderr)</summary>\n\n'
@@ -369,14 +376,44 @@ runs:
             "repos/$REPO/issues/$PR_NUMBER/comments" \
             --jq "[.[] | select(.body | contains(\"$MARKER\"))] | first | .id"
         )
-
+        existing_is_soft_fail=0
         if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
-          url=$(gh api -X PATCH "repos/$REPO/issues/comments/$existing_id" \
-            -F body="@$BODY_PATH" --jq '.url')
-          echo "Updated comment $existing_id"
-        else
-          url=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-            -F body="@$BODY_PATH" --jq '.url')
-          echo "Created new sticky comment"
+          existing_body=$(gh api "repos/$REPO/issues/comments/$existing_id" --jq '.body')
+          if printf '%s' "$existing_body" | grep -qF "$SOFT_FAIL_MARK"; then
+            existing_is_soft_fail=1
+          fi
         fi
-        echo "comment-url=$url" >> "$GITHUB_OUTPUT"
+
+        # Behaviour matrix:
+        #   success + no existing                       -> create new sticky
+        #   success + existing (any flavor)             -> overwrite in-place
+        #   fail    + no existing                       -> create soft-fail sticky
+        #   fail    + existing review (not soft-fail)   -> SKIP: keep the prior good review
+        #   fail    + existing soft-fail sticky         -> overwrite (refresh the error)
+        if [ "$SUCCESS" = "1" ]; then
+          if [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
+            url=$(gh api -X PATCH "repos/$REPO/issues/comments/$existing_id" \
+              -F body="@$BODY_PATH" --jq '.url')
+            echo "Updated comment $existing_id (success)"
+          else
+            url=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+              -F body="@$BODY_PATH" --jq '.url')
+            echo "Created new sticky comment"
+          fi
+          echo "comment-url=$url" >> "$GITHUB_OUTPUT"
+        else
+          if [ -n "$existing_id" ] && [ "$existing_id" != "null" ] && [ "$existing_is_soft_fail" = "0" ]; then
+            echo "::warning::glue-review run failed (exit $EXIT_CODE); previous successful review on comment $existing_id is kept intact."
+            echo "comment-url=" >> "$GITHUB_OUTPUT"
+          elif [ -n "$existing_id" ] && [ "$existing_id" != "null" ]; then
+            url=$(gh api -X PATCH "repos/$REPO/issues/comments/$existing_id" \
+              -F body="@$BODY_PATH" --jq '.url')
+            echo "Updated soft-fail comment $existing_id (still failing)"
+            echo "comment-url=$url" >> "$GITHUB_OUTPUT"
+          else
+            url=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
+              -F body="@$BODY_PATH" --jq '.url')
+            echo "Created soft-fail sticky comment"
+            echo "comment-url=$url" >> "$GITHUB_OUTPUT"
+          fi
+        fi
