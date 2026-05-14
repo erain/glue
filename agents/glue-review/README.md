@@ -73,6 +73,7 @@ on:
 
 permissions:
   contents: read
+  issues: write           # the sticky comment lives on the PR's issues thread
   pull-requests: write
 
 jobs:
@@ -115,6 +116,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:

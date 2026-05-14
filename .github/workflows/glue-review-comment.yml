@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  issues: write           # post / update the sticky comment on the PR thread
   pull-requests: write
 
 concurrency:
