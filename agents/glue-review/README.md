@@ -1,19 +1,80 @@
 # glue-review
 
-A free, local pre-push branch reviewer built on the Glue agent harness. Run
-it before opening a PR and get structured review notes from a real LLM, no
-cloud account required beyond a free API key.
+A free, local code-review agent that posts **one** GitHub comment per PR — written for the AI coding agent that will paste the fix, not for a human skimming sections.
 
-## Use it as a GitHub Action
+Built on the [glue](https://github.com/erain/glue) agent harness as the framework's reference agent.
+
+## What you get on every PR
+
+A single sticky comment with:
+
+- A one-line headline.
+- ≤ 5 severity bullets (`critical` / `high` / `medium` / `low` / `nit`) pointing at `file:line`.
+- One fenced ` ```markdown ` fix-instruction block with verb-first directives and an `Acceptance:` line per item, ready to paste into Claude Code / Cursor / Codex / Aider / Cline / Gemini CLI / whatever your coding agent of choice is.
+
+````markdown
+## glue-review
+
+SQL injection in /links/{short_id}/stats — short_id is f-stringed into raw SQL.
+
+- **critical** — app/routes.py:88 — short_id is interpolated into a raw SQL WHERE clause; `' OR '1'='1` leaks every non-deleted row.
+- **medium** — app/routes.py:46–57 — fresh in-memory SQLite DB on every call; O(n) per invocation for a simple LIKE filter.
+
+---
+
+### Fix instructions — paste into your coding agent
+
+```markdown
+Fix the following in this PR before merging.
+
+1. **app/routes.py:88** — `/links/{short_id}/stats` interpolates a user-controlled path parameter directly into a SQL string.
+   - Replace the f-string with a parameterised query: `db.execute(text("... WHERE short_id = :sid AND deleted_at IS NULL"), {"sid": short_id})`, or use the ORM `select(Link.hits, Link.created_at).where(...)` pattern from `_load_active_link`.
+   Acceptance: `pytest tests/test_stats.py::test_stats_rejects_sql_metacharacters` passes.
+```
+````
+
+That fix block is the product. A real coding agent reads it, applies the change, and closes the loop. Live example on a real PR: [erain/glue-review-eval#1](https://github.com/erain/glue-review-eval/pull/1).
+
+When there are no real issues, the comment is just:
+
+```
+## glue-review
+
+No concerns — LGTM.
+```
+
+When the *approach* is wrong (not the lines):
+
+````markdown
+## glue-review
+
+**Pushback on approach** — <one-line summary>
+
+<2–4 sentences on why and what to do instead>
+
+---
+
+### Fix instructions — paste into your coding agent
+
+```markdown
+Do NOT apply the current diff. Instead:
+1. <high-level redirection step>
+   Acceptance: <property the redesigned change must satisfy>
+```
+````
+
+## Install as a GitHub Action
 
 ```yaml
 # .github/workflows/glue-review.yml
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+
 permissions:
   contents: read
   pull-requests: write
+
 jobs:
   review:
     runs-on: ubuntu-latest
@@ -22,39 +83,40 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - uses: erain/glue/agents/glue-review@v1   # or @v1.0.0 for strict pinning
+      - uses: erain/glue/agents/glue-review@v2     # pin v2 for the new comment format
         with:
-          nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          provider: openrouter
 ```
 
-Releases follow semver in the `v1.x` series; see
-[CHANGELOG.md](CHANGELOG.md) for what shipped when. The `v1` floating
-tag advances on every backwards-compatible release.
+That's it. The `openrouter-api-key` is the cheapest path (free with sign-up at <https://openrouter.ai>); `provider: openrouter` selects the `inclusionai/ring-2.6-1t:free` model by default — what the eval below was scored against. Substitute `nvidia-api-key` / `provider: nvidia` for NVIDIA's free build.nvidia.com tier, or `gemini-api-key` / `provider: gemini` for Gemini 2.5 Flash.
 
-That posts a sticky review comment on every PR. Use `provider: openrouter` or
-`provider: gemini` (with the matching `*-api-key` input) to swap backends.
+Re-runs **update** the existing sticky comment instead of stacking duplicates. A transient upstream rate-limit on a re-run will *not* overwrite a previous good review.
 
-Inputs and outputs are documented in [`action.yml`](action.yml). Re-runs
-update the existing sticky comment instead of stacking duplicates.
+### Pinning
 
-### Fork PRs (production setup)
+| Tag | Format |
+|---|---|
+| `@v2` (floating, recommended) | v3 prompt — single comment + fenced markdown fix block. |
+| `@v2.0.0` (strict) | First v3-default release. |
+| `@v1` (floating, legacy) | v2 prompt — multi-section format with per-bullet `Fix:` inline-comment payload. |
 
-GitHub does not pass repository secrets to `pull_request` workflows from
-forks, for security reasons. The `pull_request`-triggered workflow above
-will skip any fork PR — by design, since otherwise a fork could exfiltrate
-the LLM API key just by opening a PR.
+The `v2` floating tag advances on every backwards-compatible release. See [CHANGELOG.md](CHANGELOG.md).
 
-The standard fix is a **second workflow** triggered by an `issue_comment`
-that a maintainer types on the PR:
+### Fork PRs
+
+GitHub doesn't pass repo secrets to `pull_request` workflows from forks, so the workflow above won't review fork PRs. The standard fix is a **second workflow** triggered by an `issue_comment` that a maintainer types:
 
 ```yaml
 # .github/workflows/glue-review-comment.yml
 on:
   issue_comment:
     types: [created]
+
 permissions:
   contents: read
   pull-requests: write
+
 jobs:
   review:
     if: |
@@ -72,24 +134,82 @@ jobs:
           echo "base_ref=$(echo "$json" | jq -r .base.ref)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.pr.outputs.head_sha }}  # pin SHA at trigger time
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
-      - uses: erain/glue/agents/glue-review@main
+      - uses: erain/glue/agents/glue-review@v2
         with:
           base-ref: ${{ steps.pr.outputs.base_ref }}
           pr-number: ${{ github.event.issue.number }}
-          nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          provider: openrouter
 ```
 
-`issue_comment` runs in the **base-repo context** with full secret access,
-but only fires when a maintainer (`OWNER`/`MEMBER`/`COLLABORATOR`) comments
-`/glue-review` on the PR. Untrusted commenters are filtered out by
-`author_association`. The head SHA is resolved at trigger time and pinned
-on checkout so a fork pushing immediately after the trigger comment cannot
-swap code into the run.
+`issue_comment` runs in the **base-repo context** with full secret access, fires only when a maintainer (`OWNER` / `MEMBER` / `COLLABORATOR`) types `/glue-review`, and pins the head SHA at trigger time so a fork pushing immediately after the trigger comment can't swap code into the run.
 
-This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.github/workflows/glue-review.yml)
-and [.github/workflows/glue-review-comment.yml](../../.github/workflows/glue-review-comment.yml).
+This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.github/workflows/glue-review.yml) and [.github/workflows/glue-review-comment.yml](../../.github/workflows/glue-review-comment.yml).
+
+## Evidence
+
+The current default prompt (`v3`) is a deliberate iteration on top of v1/v2, measured against a 28-case eval suite at [erain/glue-review-eval](https://github.com/erain/glue-review-eval) covering Go / Python / TypeScript host projects with planted security bugs, logic bugs, missing-test PRs, doc drift, rejected-direction refactors, multi-bug PRs, and clean PRs.
+
+|                     | v2 baseline | v3 (current) | delta       |
+|---------------------|------------:|-------------:|------------:|
+| `has_fix_block`     |        0.11 |         0.82 | **+70.4pp** |
+| `no_false_positives`|        0.96 |         1.00 |     +3.7pp  |
+| `flagged_file`      |        0.93 |         0.85 |     −7.4pp  |
+| `flagged_concept`   |        0.90 |         0.86 |     −4.0pp  |
+
+`has_fix_block` is the product-shaping metric: it asks whether the comment carries a fenced markdown block downstream coding agents can paste. The recall regressions are the cost of the tighter format — model spends some of its turn budget on the structural rubric — and they're modest.
+
+**Downstream-fix success** (the closer-to-truth product KPI): we run `codex exec` against the v3 fix block in a tmpdir and check whether the planted-bug acceptance test transitions red → green. 6 / 8 = **75%** on cases that have a fix block and where the executor doesn't error mid-run.
+
+Repro: see the eval repo's [`results/FINAL_REPORT.md`](https://github.com/erain/glue-review-eval/blob/main/results/FINAL_REPORT.md).
+
+## CLI usage
+
+```sh
+go install github.com/erain/glue/agents/glue-review@v2
+
+# OpenRouter free tier (the default mode the eval polishes toward):
+export OPENROUTER_API_KEY=sk-or-v1-...
+glue-review --provider openrouter
+
+# NVIDIA's free build.nvidia.com tier:
+export NVIDIA_API_KEY=nvapi-...
+glue-review --provider nvidia
+
+# Gemini:
+export GEMINI_API_KEY=...
+glue-review --provider gemini --model gemini-2.5-flash
+
+# Pick a base ref other than `main`:
+glue-review --base origin/release
+```
+
+## Flags
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--base` | `main` | Base ref to diff against. |
+| `--provider` | `nvidia` | Provider name, or comma-separated failover chain (`openrouter,nvidia,gemini`). First with an API key in env AND a successful call wins. |
+| `--model` | provider-specific | NVIDIA: `moonshotai/kimi-k2.6`; OpenRouter: `inclusionai/ring-2.6-1t:free`; Gemini: `gemini-2.5-flash`. |
+| `--prompt-version` | `v3` | System prompt to load. `v1` and `v2` remain embedded for opt-back. |
+| `--max-turns` | `16` | Loop budget. |
+| `--paths` / `--paths-ignore` | (none) | Git pathspec globs to include / exclude. |
+| `--prompt` | (default) | Override the user message (one-off focused runs: "only check for SQL injection"). |
+| `--id` | `glue-review` | Session id. File-backed under `--store`. |
+| `--store` | `.glue/review-sessions` | Where the session store lives. |
+| `--work` | `.` | Working directory (must be inside a Git repo). |
+
+## Tools wired
+
+| Name | Purpose |
+|---|---|
+| `git_diff_branch(base?, max_bytes?)` | Diff of `<base>...HEAD`. |
+| `git_log_branch(base?, limit?)` | Commits on the branch with full messages. |
+| `read_file(path, max_bytes?)` | Read a file, capped, traversal-rejected, secret-shaped paths blocked. |
+
+All output is capped so a runaway tool call cannot blow up the model's context window. Paths are validated against `--work` to reject `..` traversal. The [`blocklist`](blocklist.go) rejects secret-shaped paths (`.env*`, `id_rsa*`, `*.pem`, `*.key`, `credentials.json`, `service-account*.json`, `secret.*`, `.aws/.gcloud/.azure`) — extendable via `--blocked-paths` / `extra-blocked-paths`.
 
 ## Path filters
 
@@ -98,220 +218,32 @@ Restrict the diff the agent sees with Git pathspec globs:
 - CLI: `--paths "src/**,*.go" --paths-ignore "vendor/**,*.gen.go"`
 - Action inputs: `paths` / `paths-ignore` (comma-separated).
 
-When `paths` is empty, every changed file is in scope. `paths-ignore`
-applies after `paths`. Excludes-only is fine — the agent injects an
-implicit `*` include so "everything except testdata" works as expected.
-
-## Custom prompts
-
-- `--prompt "..."` (CLI) / `prompt:` (Action input) replaces the user
-  message sent to the agent. Use for one-off focused runs ("only check
-  for SQL injection", "only review the migration files").
-- `--prompt-version v1` selects which built-in system prompt to load.
-  Only `v1` ships today; the version is embedded in sticky comment
-  markers so future prompt-shape revisions don't mangle existing comments.
+When `paths` is empty every changed file is in scope. `paths-ignore` applies after `paths`. Excludes-only is fine — the agent injects an implicit `*` include so "everything except testdata" works.
 
 ## Citation validation
 
-After the model emits its review, glue-review re-fetches the diff and
-validates each parsed `[severity] path:line` citation against the new
-side of the diff. Entries pointing at files not in the diff, or at line
-numbers outside any added/context hunk, are dropped and logged to
-stderr; they never reach the inline review on the PR.
-
-This protects against the most common LLM failure mode for code review:
-fabricating a plausibly-shaped file:line citation that doesn't exist in
-the change. The bulk markdown body is left as-is — citation drops only
-affect inline annotations, where a wrong location is a hard UX failure.
-
-## Sensitive-file blocklist
-
-`read_file` refuses to open paths that match any of a built-in
-secret-shaped pattern list — `.env*`, `id_rsa*`, `*.pem`, `*.key`,
-`credentials.json`, `service-account*.json`, `secret.*`, `secrets.*`,
-files inside `.aws`/`.gcloud`/`.azure`, and others (full list in
-[blocklist.go](blocklist.go)). The match runs before the file is
-opened, so blocked paths can never reach the model's context window
-or the public review comment.
-
-Extend the blocklist with repo-specific patterns:
-
-- CLI: `--blocked-paths "*.token,internal/secrets/*"`
-- Action input: `extra-blocked-paths: "*.token,internal/secrets/*"`
-
-Patterns use Go's `filepath.Match` glob syntax (`*`, `?`, character
-classes). They are matched against the relative path, the basename, and
-each path component (case-insensitive), so `infra/secrets/foo.yaml` is
-caught by the pattern `secrets`. You cannot subtract a default — only
-add.
-
-## AI fix prompts (v1.1+)
-
-Each inline review comment carries a copy-pastable instruction
-targeted at a coding agent, rendered as a `<details>` collapsible:
-
-```markdown
-**[major]** Off-by-one error in loop bound
-
-<details><summary>💡 AI prompt to fix</summary>
-
-```
-In math.go, change the loop in SumFirstN from `for i := 0; i <= n;
-i++` to `for i := 1; i <= n; i++` so it sums 1..n inclusive.
-```
-
-</details>
-```
-
-Reviewers copy the inner block into Claude / Cursor / Aider / etc. to
-dispatch the fix without retyping. Pattern inspired by
-[fluent-bit's review style](https://github.com/fluent/fluent-bit/pull/11778#pullrequestreview-4236889315).
-
-To turn off (revert to plain inline comments without the
-collapsible), pin the prompt to v1:
-
-```yaml
-- uses: erain/glue/agents/glue-review@v1
-  with:
-    prompt-version: v1
-    nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
-```
+After the model emits its review, glue-review re-fetches the diff and validates each parsed `[severity] path:line` citation against the new side of the diff. Entries pointing at files not in the diff, or at line numbers outside any added/context hunk, are dropped and logged to stderr; they never reach an inline annotation. (v3 emits a single sticky comment so this codepath is mostly a safety net; v1/v2 used it for the inline-comments flow.)
 
 ## Prompt versioning
 
-The system prompt lives at [`prompts/v1.md`](prompts/v1.md), embedded
-into the binary via `//go:embed`. Bump to a new file (`prompts/v2.md`,
-etc.) when iterating on the review style; pass `--prompt-version v2` to
-opt in. The default version is set in `prompt.go`.
+The system prompt lives at [`prompts/v3.md`](prompts/v3.md), embedded into the binary via `//go:embed`. Each version is a separate file (`prompts/vN.md`); the default version is set in [`prompt.go`](prompt.go). The bot-identity tag in the sticky comment marker is independent of the prompt version — it changes only when a prompt-shape revision would mangle an in-place edit.
 
-The sticky comment / PR Review marker carries the prompt version
-(`<!-- glue-review:promptv1:do-not-edit -->`) so a prompt-shape change
-starts fresh comments instead of editing old ones into a different
-format.
+To pin a specific shape:
 
-## Fixture replay tests
-
-`fixture_test.go` defines small synthetic-repo scenarios (`panic-stub`,
-`subtle-bug`, `cosmetic-only`). Running the test suite with
-`OPENROUTER_API_KEY` (or `NVIDIA_API_KEY` / `GEMINI_API_KEY`) set
-replays each scenario through a real free model and asserts structural
-invariants — section presence, severity tags on the right files, no
-fabricated paths. Add a new fixture when locking in a prompt behavior:
-
-```go
-{
-    name: "your-scenario",
-    seed: func(t *testing.T, repo string) { /* set up the repo */ },
-    expect: func(t *testing.T, review string) { /* invariants */ },
-}
+```yaml
+- uses: erain/glue/agents/glue-review@v2
+  with:
+    prompt-version: v2  # multi-section + per-bullet Fix:
+    openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    provider: openrouter
 ```
 
-## What it looks like on a PR
+## Building blocks
 
-The bot posts inline review comments on the diff plus a top-level
-review body. Severity tags (`[critical]` / `[major]` / `[minor]`) are
-preserved on each line so reviewers can scan triage at a glance.
-
-> *(A screenshot of a real review will land here once the next
-> non-trivial PR runs through the v1 Action — see the live samples
-> on merged PRs in this repo's history under the `glue-review`
-> author for the current shape.)*
-
-## What it does
-
-Given a Git working directory, the agent:
-
-1. Reads the diff of `HEAD` versus a base ref (default `main`).
-2. Reads the commit history on the branch.
-3. Reads specific files when the diff alone lacks context.
-4. Emits a single Markdown review with sections for issues, suggestions,
-   things that look good, and open questions.
-
-The model decides which files in the diff warrant a deep read — that is the
-whole point of running it through an agent loop instead of stuffing the
-entire diff into one prompt.
-
-## Quickstart
-
-```sh
-go install github.com/erain/glue/agents/glue-review@latest
-
-# Default: NVIDIA build + moonshotai/kimi-k2.6 (the strongest free model).
-export NVIDIA_API_KEY=nvapi-...
-glue-review
-
-# Pick a different base ref:
-glue-review --base origin/main
-
-# Use OpenRouter free tier instead:
-export OPENROUTER_API_KEY=sk-or-v1-...
-glue-review --provider openrouter
-
-# Use Gemini:
-export GEMINI_API_KEY=...
-glue-review --provider gemini --model gemini-2.5-flash
-```
-
-## Flags
-
-| Flag | Default | Notes |
-|---|---|---|
-| `--base` | `main` | Base ref to diff against. |
-| `--provider` | `nvidia` | One of `nvidia`, `openrouter`, `gemini`. |
-| `--model` | provider-specific | NVIDIA: `moonshotai/kimi-k2.6`; OpenRouter: `inclusionai/ring-2.6-1t:free`; Gemini: `gemini-2.5-flash`. |
-| `--id` | `glue-review` | Session id. Sessions are file-backed under `--store`. |
-| `--store` | `.glue/review-sessions` | Where the file-backed session store lives. |
-| `--work` | `.` | Working directory; must be inside the Git repo. |
-| `--max-turns` | `16` | Loop budget (cap on assistant turns). |
-| `--prompt` | (default review prompt) | Override the user message sent to the agent. |
-
-## Tools wired
-
-| Name | Purpose |
-|---|---|
-| `git_diff_branch(base?, max_bytes?)` | Diff of `<base>...HEAD`. |
-| `git_log_branch(base?, limit?)`      | Commits on the branch with full messages. |
-| `read_file(path, max_bytes?)`        | Read a file, capped, traversal-rejected. |
-
-All output is capped so a runaway tool call cannot blow up the model's
-context window. Paths are validated against `--work` to reject `..`
-traversal.
-
-## Why this is interesting
-
-- **Daily-driver utility.** Every PR gets one; this is something you run.
-- **Real agentic flow.** Not a single-shot prompt — the model picks files
-  to read based on the diff.
-- **Hackable.** ~300 LOC across two files; copy and adapt for your own
-  reviewer flavor (security-focused, performance-focused, doc-focused).
-- **Free.** Defaults to NVIDIA's free Kimi K2.6 (1T params); also works on
-  OpenRouter free routes and Gemini Flash.
-
-## Sample output
-
-```
-## Summary
-This branch adds a new main.go containing only a stub that panics with "todo".
-
-## Issues
-[major] main.go:2 — The program panics immediately on startup, making it
-unusable and failing any runtime tests or deployments.
-
-## Suggestions
-- Replace the panic stub with a valid entrypoint.
-- Add tests and build checks before marking the feature complete.
-
-## Open questions
-- Is this intended as a temporary scaffold, or should main provide
-  production behavior now?
-```
+The agent is ~300 LOC of Go on top of the [`glue`](https://github.com/erain/glue) framework. If you want a security-focused / performance-focused / docs-focused variant, fork [`main.go`](main.go), swap the embedded prompt, and ship it as your own action. See the parent repo's [docs/design.md](../../docs/design.md) for the framework's surface.
 
 ## What it is not
 
-- Not a replacement for human review. The model misses things; treat the
-  output as a first pass and a sanity check.
-- Not a CI bot. It is a local CLI; if you want CI integration, the Go code
-  is ~300 LOC and easy to call from a workflow.
-- Not opinionated about your repo. The system prompt is generic on purpose
-  — if you want a specific style (e.g., "always check for SQL injection"),
-  pass it via `--prompt`.
+- Not a replacement for human review. The model misses things; treat the comment as a first pass and a sanity check.
+- Not opinionated about your style guide. If you want a specific lens ("always check for SQL injection", "always check for missing tests"), pass it via `--prompt` / the `prompt:` Action input.
+- Not a CI gate. It posts a comment; merge decisions remain yours. (Setting `exit-code` outputs `1` on internal failure, but a v3 comment with severity bullets still exits `0` — it's commentary, not a verdict.)

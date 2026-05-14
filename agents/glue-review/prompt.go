@@ -25,7 +25,14 @@ var systemPromptsFS embed.FS
 //   - v2 — adds `Fix: <ai prompt>` at the end of every Issues /
 //     Suggestions entry, so the Action can render a copy-pastable
 //     coding-agent prompt next to each inline comment.
-const defaultPromptVersion = "v2"
+//   - v3 — single-comment format optimised for AI-coding-agent
+//     consumption: one `## glue-review` headline, ≤ 5 severity bullets,
+//     one fenced ```markdown fix-instruction block with verb-first
+//     directives and per-item `Acceptance:` lines. Three variants:
+//     A (issues), B (clean — LGTM), C (rejected — Pushback on approach).
+//     This is the v2.0.0 release shape; legacy v1/v2 prompts remain
+//     embedded for `--prompt-version v1` / `v2` opt-back.
+const defaultPromptVersion = "v3"
 
 // systemPromptFor returns the embedded prompt for the requested
 // version. An unknown version returns an error listing the available
