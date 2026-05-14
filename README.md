@@ -20,9 +20,11 @@ order:
 ## Status
 
 The harness is feature-complete for the `0.x` series and is in active
-use behind the `agents/glue-review` agent (stable at `v1.1.0`). The
-library itself remains pre-1.0 — the public `Agent` / `Session` surface
-is stable in practice, but minor versions may still break API.
+use behind the `agents/glue-review` agent (current release `v2.0.0` —
+[ships a single-comment format optimised for AI coding agents to
+paste-and-go](agents/glue-review/CHANGELOG.md#v200--2026-05-14)). The
+library itself remains pre-1.0 — the public `Agent` / `Session`
+surface is stable in practice, but minor versions may still break API.
 Shipped today:
 
 - Normalized loop types and the provider-agnostic agent loop in `loop/`,

@@ -4,6 +4,72 @@ This file tracks releases of the `glue-review` agent and its GitHub
 Action. It is independent from the parent `github.com/erain/glue`
 library, which versions separately.
 
+## v2.0.0 — 2026-05-14
+
+**Breaking change to the posted comment shape.** Existing v1.x consumers
+that pin `@v1` are unaffected; new installs pinning `@v2` or `@latest`
+get the new format. Opt-back via `prompt-version: v2`.
+
+### Changed
+
+- **Default prompt is now `v3`** — a single-comment format optimised
+  for AI coding agents to paste-and-go, not for humans skimming
+  sections.
+  - One `## glue-review` headline.
+  - ≤ 5 severity bullets (`critical` / `high` / `medium` / `low` /
+    `nit`) with `file:line` references.
+  - One fenced ` ```markdown ` fix-instruction block, numbered items
+    with verb-first directives and an `Acceptance:` line per item.
+  - Three explicit variants: A (issues), B (`No concerns — LGTM.`),
+    C (`**Pushback on approach**` for design-level concerns).
+  - Worked examples for all three variants are baked into the prompt
+    so the model has format anchors, not just rules.
+
+### Added
+
+- `prompts/v3.md` — the new default system prompt. `v1.md` and `v2.md`
+  remain embedded; pin via `--prompt-version v1` / `v2` / `v3` to
+  opt back to a specific shape.
+- **Safer soft-fail behaviour** in the Action: a transient upstream
+  rate-limit on a re-run no longer overwrites a previous good review.
+  Soft-fail comments carry a `<!-- glue-review:soft-fail -->` marker
+  so the action can distinguish them from real reviews. On
+  `success + existing real review` we overwrite as before; on
+  `fail + existing real review` we skip the post and emit a workflow
+  `::warning::` instead.
+
+### Evidence
+
+Measured against a 28-case planted-bug eval suite at
+[erain/glue-review-eval](https://github.com/erain/glue-review-eval),
+running OpenRouter `inclusionai/ring-2.6-1t:free` (the indie-hacker
+shipping target):
+
+| signal              | v2 baseline | v3 (default) | delta       |
+|---------------------|------------:|-------------:|------------:|
+| `has_fix_block`     |        0.11 |         0.82 | **+70.4pp** |
+| `no_false_positives`|        0.96 |         1.00 |     +3.7pp  |
+| `flagged_file`      |        0.93 |         0.85 |     −7.4pp  |
+| `flagged_concept`   |        0.90 |         0.86 |     −4.0pp  |
+
+Downstream-fix success (codex applies the fix block; acceptance test
+red → green): 6 / 8 = **75%** on cases that have a fix block and where
+the executor doesn't error mid-run.
+
+### Migration from v1.x
+
+If your repo pinned `@v1` and you want the new comment shape, change
+to `@v2` (or `@v2.0.0`). If you want to stay on the v2 multi-section
+format on the new version, set `prompt-version: v2` explicitly:
+
+```yaml
+- uses: erain/glue/agents/glue-review@v2
+  with:
+    prompt-version: v2
+    openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    provider: openrouter
+```
+
 ## v1.1.0 — 2026-05-06
 
 Backwards-compatible feature release. Existing v1.0.0 deployments

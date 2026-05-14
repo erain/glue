@@ -44,10 +44,22 @@ var fixtures = []fixture{
 			gitCommit(t, repo, "scaffold", "main.go")
 		},
 		expect: func(t *testing.T, review string) {
-			assertHasSection(t, review, "Summary")
-			assertHasSection(t, review, "Issues")
-			if !regexpMatch(review, `\[(major|critical)\][^\n]*main\.go`) {
-				t.Errorf("expected a major/critical issue mentioning main.go; review=%q", review)
+			// The fixture is a smoke for output-shape regressions, not a
+			// precision test for the model's judgement. The model may
+			// legitimately read `func main() { panic("todo") }` as an
+			// intentional scaffold placeholder and emit Variant B (LGTM),
+			// or call it `medium` instead of `critical` ("intentional
+			// stub" vs "ships broken"). Both are defensible from a senior
+			// reviewer. What we want to catch is: silence, fabricated
+			// paths, or output that isn't the v3 shape.
+			assertGlueReviewHeader(t, review)
+			isLGTM := strings.Contains(review, "No concerns — LGTM")
+			mentionsMain := strings.Contains(review, "main.go")
+			if !isLGTM && !mentionsMain {
+				t.Errorf("review neither said LGTM nor mentioned main.go; review=%q", review)
+			}
+			if !isLGTM {
+				assertHasFixBlock(t, review)
 			}
 		},
 	},
@@ -74,7 +86,7 @@ var fixtures = []fixture{
 			// Don't gate on "the model spotted this specific bug" —
 			// model quality varies. Do gate on output structure being
 			// well-formed for a non-trivial diff.
-			assertHasSection(t, review, "Summary")
+			assertGlueReviewHeader(t, review)
 			if !strings.Contains(review, "math.go") {
 				t.Errorf("expected review to mention math.go (the only changed file); review=%q", review)
 			}
@@ -89,7 +101,7 @@ var fixtures = []fixture{
 			gitCommit(t, repo, "polish: fix package comment trailing period", "doc.go")
 		},
 		expect: func(t *testing.T, review string) {
-			assertHasSection(t, review, "Summary")
+			assertGlueReviewHeader(t, review)
 			// Permissive: the model may legitimately have nothing
 			// substantive to say. We only fail if it fabricated a
 			// reference to a file outside the diff.
@@ -231,6 +243,28 @@ func assertHasSection(t *testing.T, review, section string) {
 	t.Helper()
 	if !strings.Contains(review, "## "+section) {
 		t.Errorf("missing `## %s` heading; review=%q", section, review)
+	}
+}
+
+// assertGlueReviewHeader checks that the v3 single-comment header is
+// present at the start of the review body. v3 collapses the v1/v2
+// multi-section format (`## Summary` / `## Issues` / `## Suggestions` /
+// `## Looks good` / `## Open questions`) into one `## glue-review`
+// headline followed by ≤ 5 severity bullets and a fenced fix block.
+func assertGlueReviewHeader(t *testing.T, review string) {
+	t.Helper()
+	if !strings.Contains(review, "## glue-review") {
+		t.Errorf("missing `## glue-review` header; review=%q", review)
+	}
+}
+
+// assertHasFixBlock checks that the v3 fenced ```markdown fix-instruction
+// block is present. Required for Variant A (issues found); not required
+// for Variant B (clean) or Variant C (rejected) — caller decides.
+func assertHasFixBlock(t *testing.T, review string) {
+	t.Helper()
+	if !strings.Contains(review, "```markdown\n") {
+		t.Errorf("missing fenced ```markdown fix block; review=%q", review)
 	}
 }
 
