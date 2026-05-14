@@ -258,7 +258,7 @@ glue-review --provider gemini --model gemini-2.5-flash
 |---|---|---|
 | `--base` | `main` | Base ref to diff against. |
 | `--provider` | `nvidia` | One of `nvidia`, `openrouter`, `gemini`. |
-| `--model` | provider-specific | NVIDIA: `moonshotai/kimi-k2.6`; OpenRouter: `inclusionai/ling-2.6-1t:free`; Gemini: `gemini-2.5-flash`. |
+| `--model` | provider-specific | NVIDIA: `moonshotai/kimi-k2.6`; OpenRouter: `inclusionai/ring-2.6-1t:free`; Gemini: `gemini-2.5-flash`. |
 | `--id` | `glue-review` | Session id. Sessions are file-backed under `--store`. |
 | `--store` | `.glue/review-sessions` | Where the file-backed session store lives. |
 | `--work` | `.` | Working directory; must be inside the Git repo. |

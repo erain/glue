@@ -128,7 +128,9 @@ jobs:
           # Pin a deterministic free model with a consistently-available
           # upstream (Novita). Popular routes (google/gemma-4-*:free,
           # minimax-m2.5:free) are over-subscribed and 429 frequently.
-          OPENROUTER_LIVE_MODEL: inclusionai/ling-2.6-1t:free
+          # Previous pin (ling-2.6-1t:free) graduated to paid 2026-05;
+          # ring is its successor in the same InclusionAI family.
+          OPENROUTER_LIVE_MODEL: inclusionai/ring-2.6-1t:free
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
             echo "OPENROUTER_API_KEY not configured; skipping live tests."

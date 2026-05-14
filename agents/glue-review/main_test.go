@@ -45,7 +45,7 @@ func TestNewProviderSelectionAndDefaults(t *testing.T) {
 	cases := map[string]string{
 		"":           "moonshotai/kimi-k2.6",
 		"nvidia":     "moonshotai/kimi-k2.6",
-		"openrouter": "inclusionai/ling-2.6-1t:free",
+		"openrouter": "inclusionai/ring-2.6-1t:free",
 		"gemini":     "gemini-2.5-flash",
 	}
 	for input, wantModel := range cases {
@@ -244,7 +244,7 @@ func TestLiveReviewSmoke(t *testing.T) {
 	var args []string
 	switch {
 	case os.Getenv("OPENROUTER_API_KEY") != "":
-		args = []string{"--provider", "openrouter", "--model", "inclusionai/ling-2.6-1t:free"}
+		args = []string{"--provider", "openrouter", "--model", "inclusionai/ring-2.6-1t:free"}
 	case os.Getenv("NVIDIA_API_KEY") != "":
 		args = []string{"--provider", "nvidia", "--model", "meta/llama-3.3-70b-instruct"}
 	default:

@@ -214,7 +214,7 @@ func runAgentInRepo(t *testing.T, repo, provider, sessionID string) (string, err
 	// uses its default. The fixtures are tiny so any model works.
 	switch provider {
 	case "openrouter":
-		args = append(args, "--model", "inclusionai/ling-2.6-1t:free")
+		args = append(args, "--model", "inclusionai/ring-2.6-1t:free")
 	case "nvidia":
 		args = append(args, "--model", "meta/llama-3.3-70b-instruct")
 	}

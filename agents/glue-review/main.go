@@ -287,7 +287,7 @@ func newProvider(name string) (glue.Provider, string, error) {
 	case "", "nvidia":
 		return nvidia.New(nvidia.Options{}), "moonshotai/kimi-k2.6", nil
 	case "openrouter":
-		return openrouter.New(openrouter.Options{}), "inclusionai/ling-2.6-1t:free", nil
+		return openrouter.New(openrouter.Options{}), "inclusionai/ring-2.6-1t:free", nil
 	case "gemini":
 		return gemini.New(gemini.Options{}), "gemini-2.5-flash", nil
 	default:
