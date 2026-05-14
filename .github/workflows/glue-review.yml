@@ -88,7 +88,7 @@ jobs:
           # OpenRouter Ling next (deterministic free); Gemini last as a
           # paid-tier fallback. Each provider is tried only when its key
           # is set in the env, so missing keys are silent skips.
-          provider: nvidia,openrouter,gemini
+          provider: openrouter,nvidia,gemini
           base-ref: ${{ github.event.pull_request.base.ref }}
           max-turns: '12'
           nvidia-api-key: ${{ secrets.NVIDIA_API_KEY }}
