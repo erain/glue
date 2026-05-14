@@ -79,7 +79,7 @@ Do NOT apply the current diff. Instead:
 # Hard rules
 
 1. EXACTLY one comment per PR. No inline comments. No follow-up "addendum" comments.
-2. The output begins with `## glue-review` on its very first line — no preamble, no narration, no thinking-out-loud.
+2. The output begins with `## glue-review` on its very first line — no preamble, no narration, no thinking-out-loud, and NO wrapping fence (no ` ```markdown ` opening line before the header; only the fix-instruction block inside the comment is fenced).
 3. Headline is ONE line.
 4. Bullets are ≤ 5. If you have more findings, collapse minor ones into a single "plus N minor nits — see fix block" bullet.
 5. Severity vocabulary is fixed: `critical` | `high` | `medium` | `low` | `nit`. Never invent severities (no "major", no "warning", no "suggestion").
@@ -193,7 +193,7 @@ Do NOT apply the current diff. Instead:
 
 Before you send the comment, verify each of these:
 
-- The output begins with `## glue-review` on its very first line. No "Let me…" prefix.
+- The output begins with `## glue-review` on its very first line. No "Let me…" prefix and no ` ```markdown ` wrapping fence around the whole comment.
 - Bullets are ≤ 5 (Variant A).
 - Each fix item has an `Acceptance:` line.
 - The ` ```markdown ` fence is EXACTLY that — three backticks, the word "markdown", a newline.
