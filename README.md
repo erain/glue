@@ -451,11 +451,31 @@ agent := glue.NewAgent(glue.AgentOptions{
 })
 ```
 
-The `Searcher` capability that lets callers query the FTS index
-(`Agent.SearchSessions` / `Session.Search`) ships as a follow-up; once
-it lands, `stores/sqlite` is the backend that implements it. The file
-store deliberately does not — picking `stores/sqlite` is the signal
-that you want cross-session search.
+The `Searcher` capability that lets callers query the FTS index is
+exposed through `Agent.SearchSessions` and `Session.Search`. The
+file store deliberately does not implement it — picking
+`stores/sqlite` is the signal that you want cross-session search.
+
+```go
+hits, err := agent.SearchSessions(ctx, "Australian Shepherd",
+    glue.WithLimit(5),
+    glue.WithSince(time.Now().AddDate(0, -1, 0)), // last month
+)
+for _, h := range hits {
+    fmt.Printf("[%s#%d] %s\n", h.SessionID, h.Index, h.Snippet)
+}
+
+// Scoped to one session:
+hits, _ = session.Search(ctx, "what we decided about deployment")
+```
+
+Search options are functional: `WithLimit`, `WithOffset`, `WithSessionID`,
+`WithSince`, `WithUntil`. `Session.Search` ignores any `WithSessionID`
+and forces its own id. When the active store does not implement
+`Searcher`, both methods return `glue.ErrSearchNotSupported` — callers
+can fall back gracefully. The query string is forwarded straight to
+FTS5's `MATCH` syntax (bare words, `"quoted phrases"`, `AND` / `OR` /
+`NOT`); hits are returned by BM25 score ascending (lower is better).
 
 The implementation uses [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite)
 (no CGo, cross-compiles freely). Schema and FTS5 trigger details are in
