@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+// ChannelConfig is the raw JSON for one channel's configuration,
+// keyed by channel name in Settings.Channels. Each channel package
+// (agents/peggy/channels/<name>) owns the schema and decodes its own
+// subtree.
+
 // Settings is the on-disk JSON shape of Peggy's config. All fields
 // are optional except where noted. The loader applies sensible
 // defaults via fillDefaults so a minimal `{}` settings.json works.
@@ -30,6 +35,12 @@ type Settings struct {
 	// Compaction tunes the SummarizingCompactor. Zero values fall
 	// back to the framework defaults (target 8000 / keep 8).
 	Compaction CompactionSettings `json:"compaction"`
+
+	// Channels carries per-channel configuration subtrees keyed by
+	// channel name (e.g. "telegram"). Each channel package decodes
+	// its own subtree via a DecodeConfig helper. Empty means "no
+	// channels configured".
+	Channels map[string]json.RawMessage `json:"channels,omitempty"`
 }
 
 // StoreSettings configures session persistence.
