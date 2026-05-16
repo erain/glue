@@ -68,6 +68,14 @@ ADRs 0005-0008 and the M2/M3 ADRs that follow them. The architectural
 rule that holds the expansion together is in ADR-0005 §1: every product
 concern enters glue only as an interface the host fills in.
 
+**Channels** (Telegram, future TUI / web / IDE) live in product
+packages under `agents/<name>/channels/<channel>` per
+[`adr/0008-channel-adapter.md`](adr/0008-channel-adapter.md). Core
+`glue` stays channel-blind — channels call into `Session.Prompt` and
+`Session.Subscribe` the same way the CLI does. Session-id namespacing
+(`<channel>:<id>`) keeps CLI sessions, channel sessions, and the
+curated memory session distinct in a single store.
+
 ## Package Boundaries
 
 The module path is `github.com/erain/glue`.
