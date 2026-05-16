@@ -165,14 +165,15 @@ the loop, the agent, and other providers never learn about the auth
 shape.
 
 The pattern is documented in
-[`adr/0006-codex-provider.md`](adr/0006-codex-provider.md), which
-designs `providers/codex` (ChatGPT-subscription auth, Responses
-transport against `chatgpt.com`). New subscription-auth providers
-should follow that same package layout (`providers/<name>/auth` for
-token handling, `providers/<name>` for the `glue.Provider`
-implementation), reference upstream open-source CLIs as the protocol
-spec rather than copying code, and quarantine all vendor-specific
-headers and base URLs in the package.
+[`adr/0006-codex-provider.md`](adr/0006-codex-provider.md) and
+implemented in [`providers/codex`](../providers/codex) (ChatGPT-
+subscription auth, Responses transport against `chatgpt.com`). The
+package layout is the recommended template for future
+subscription-auth providers: `providers/<name>/auth` for token
+handling (OAuth flow, refresh, atomic write-back), `providers/<name>`
+for the `glue.Provider` implementation. Reference upstream
+open-source CLIs as the protocol spec rather than copying code, and
+quarantine all vendor-specific headers and base URLs in the package.
 
 ## Common mistakes
 
