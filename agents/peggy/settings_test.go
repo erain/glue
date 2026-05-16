@@ -238,7 +238,7 @@ func TestFillDefaults_NoOpWhenAllSet(t *testing.T) {
 		},
 	}
 	got := fillDefaults(s)
-	if got != s {
+	if got.Provider != s.Provider || got.Model != s.Model || got.Store != s.Store || got.Compaction != s.Compaction {
 		t.Errorf("fillDefaults mutated set values: %+v", got)
 	}
 }

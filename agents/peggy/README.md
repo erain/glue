@@ -170,7 +170,9 @@ external transports. The pattern is designed in
 [`docs/adr/0008-channel-adapter.md`](../../docs/adr/0008-channel-adapter.md):
 
 - Each channel lives in its own package under
-  `agents/peggy/channels/<name>` (Telegram is first).
+  `agents/peggy/channels/<name>`. Telegram is the first concrete
+  channel — see [`channels/telegram/README.md`](channels/telegram/README.md)
+  for the bot setup and the `peggy-telegram` binary.
 - Channels satisfy a small `peggy.Channel` interface and call into
   the existing `Peggy.Prompt` API. They never modify core `glue`.
 - Channels namespace their session ids (`telegram:12345` etc.) so a
@@ -178,7 +180,8 @@ external transports. The pattern is designed in
   and the curated `__memories__` session without collision.
 - Channels accepting input from anyone reachable (Telegram, public
   webhooks) gate inbound traffic on an allowlist configured in
-  `settings.json` under `channels.<name>`.
+  `settings.json` under `channels.<name>`. Empty allowlist =
+  refuse-all (the safe default).
 
 ## What's coming
 

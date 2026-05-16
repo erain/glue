@@ -574,8 +574,12 @@ itself), not `examples/` (which holds tutorial-grade demos only).
   peggy "Hello — what should I be working on today?"
   ```
 
+  Peggy is also reachable on Telegram via the
+  [`peggy-telegram`](agents/peggy/channels/telegram) binary — a
+  chat-allowlisted bot built on the
+  [channel-adapter pattern](docs/adr/0008-channel-adapter.md).
   See [`agents/peggy/README.md`](agents/peggy/README.md) for the
-  config / identity / CLI surface.
+  config / identity / CLI surface and channels overview.
 
 ## Examples
 
