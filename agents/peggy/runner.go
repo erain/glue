@@ -11,7 +11,7 @@ import (
 
 // Version is the package version string surfaced by `peggy --version`.
 // Bumped by hand at release time.
-const Version = "0.1.0-dev"
+const Version = "0.1.0"
 
 // Run is the top-level CLI entry point. It parses args, loads the
 // settings and identity files, constructs a Peggy, and dispatches a
