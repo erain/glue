@@ -154,6 +154,26 @@ quietly there.
   (`providers/<name>` may import `glue/loop`, but the loop must not
   import the provider).
 
+## Subscription-auth providers
+
+Providers that authenticate via a user's existing
+ChatGPT / SaaS-account subscription rather than a static API key follow
+the same `Provider` contract as the rest, but have an extra fragility
+budget — OAuth flows, token refresh, custom headers, vendor-specific
+allowlists. Glue keeps that fragility *inside the provider package*:
+the loop, the agent, and other providers never learn about the auth
+shape.
+
+The pattern is documented in
+[`adr/0006-codex-provider.md`](adr/0006-codex-provider.md), which
+designs `providers/codex` (ChatGPT-subscription auth, Responses
+transport against `chatgpt.com`). New subscription-auth providers
+should follow that same package layout (`providers/<name>/auth` for
+token handling, `providers/<name>` for the `glue.Provider`
+implementation), reference upstream open-source CLIs as the protocol
+spec rather than copying code, and quarantine all vendor-specific
+headers and base URLs in the package.
+
 ## Common mistakes
 
 - **Aliasing the same `Message` across `Start` and `Done`.** The loop
