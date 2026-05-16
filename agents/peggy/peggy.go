@@ -43,6 +43,23 @@ type Options struct {
 	// Stderr collects diagnostic warnings (missing SOUL.md etc).
 	// Defaults to os.Stderr.
 	Stderr io.Writer
+
+	// MemoryHint overrides the paragraph appended to the system
+	// prompt describing the remember / recall tools. Empty falls
+	// back to DefaultMemoryHint. Ignored when DisableMemoryTools is
+	// true.
+	MemoryHint string
+
+	// DisableMemoryTools, when true, skips registration of the
+	// remember / recall tools and omits the memory hint from the
+	// system prompt. Useful for tests and out-of-tree integrations
+	// that want to roll their own memory model.
+	DisableMemoryTools bool
+
+	// ExtraTools are appended to the constructed Agent.Tools after
+	// any memory tools registered by default. Order: extra tools
+	// come after remember / recall.
+	ExtraTools []glue.Tool
 }
 
 // Peggy is a constructed personal-assistant agent. Hold one per
@@ -94,22 +111,45 @@ func New(opts Options) (*Peggy, error) {
 		KeepRecent:   settings.Compaction.KeepRecent,
 	}
 
-	agent := glue.NewAgent(glue.AgentOptions{
+	// Construct Peggy first so the memory tools can close over it.
+	// The agent is wired in below after tools are built.
+	p := &Peggy{
+		store:    store,
+		settings: settings,
+		soul:     systemPrompt,
+		stderr:   stderr,
+	}
+
+	var tools []glue.Tool
+	finalSystem := systemPrompt
+	if !opts.DisableMemoryTools {
+		tools = append(tools, RememberTool(p), RecallTool(p))
+		hint := opts.MemoryHint
+		if hint == "" {
+			hint = DefaultMemoryHint
+		}
+		hint = strings.TrimSpace(hint)
+		if hint != "" {
+			if finalSystem != "" {
+				finalSystem = finalSystem + "\n\n" + hint
+			} else {
+				finalSystem = hint
+			}
+		}
+	}
+	tools = append(tools, opts.ExtraTools...)
+
+	p.agent = glue.NewAgent(glue.AgentOptions{
 		Provider:            provider,
 		Model:               settings.Model,
-		SystemPrompt:        systemPrompt,
+		SystemPrompt:        finalSystem,
+		Tools:               tools,
 		Store:               store,
 		Compactor:           compactor,
 		CompactionThreshold: settings.Compaction.Threshold,
 	})
 
-	return &Peggy{
-		agent:    agent,
-		store:    store,
-		settings: settings,
-		soul:     systemPrompt,
-		stderr:   stderr,
-	}, nil
+	return p, nil
 }
 
 // Settings returns the effective settings the Peggy was constructed

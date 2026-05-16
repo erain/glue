@@ -115,11 +115,49 @@ An explicit `--config` / `--soul` or `$PEGGY_CONFIG` / `$PEGGY_SOUL`
 that points at a missing file is an error. The XDG / HOME fallbacks
 quietly fall through to defaults when missing.
 
+## Memory
+
+Peggy ships two **model-callable** tools that let the model decide
+when to persist and when to look up across sessions:
+
+- `remember(content, tags?)` — append a curated fact to the
+  `__memories__` session. Phrase content in third person ("the user
+  prefers …"). Tags are optional. The model is told (via the system
+  prompt) to use this sparingly — for facts worth keeping across many
+  future conversations, not one-off context.
+- `recall(query, limit?, only_memories?)` — search prior history and
+  curated memories via FTS5. Default returns up to 5 hits across all
+  sessions; pass `only_memories: true` to restrict to the curated
+  list. Requires a `Searcher`-capable store (`stores/sqlite`); the
+  `file` store surfaces a clear "use sqlite" error.
+
+The model invokes these on its own as the conversation requires. The
+tools are registered by default; disable them via
+`Options.DisableMemoryTools` (library) — there's no CLI flag in v0.1.
+
+A short hint paragraph is appended to your `SOUL.md` content in the
+system prompt so the model knows the tools exist; override via
+`Options.MemoryHint` if you want different phrasing.
+
+Inspecting memories programmatically:
+
+```go
+mems, _ := p.ListMemories(ctx) // newest-first
+for _, m := range mems {
+    fmt.Printf("[%s] %s  (tags=%v)\n",
+        m.Timestamp.Format(time.RFC3339), m.Content, m.Tags)
+}
+```
+
+A `peggy memories` subcommand for list / forget / export is a
+near-term follow-up.
+
 ## What v0.1 supports
 
 - Single-prompt CLI with file or sqlite session persistence.
+- **Model-callable `remember` and `recall` tools** for cross-session memory.
 - Cross-session FTS5 search via `Agent.SearchSessions` (library API
-  only in v0.1; a `peggy recall` subcommand is a near-term follow-up).
+  available directly; CLI subcommand is a near-term follow-up).
 - Token-aware summarizing compaction via the provider you configured.
 - Identity injected from `SOUL.md` into the system prompt.
 - All four shipped providers: `codex` (ChatGPT subscription), `gemini`,
