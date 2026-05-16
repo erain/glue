@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted.
+Accepted. The "token-aware compaction can be added later as a separate
+`Compactor` implementation" clause below is delivered by
+[ADR-0007](0007-memory-layer.md) under the Peggy milestone (tracker
+[#110](https://github.com/erain/glue/issues/110)) as
+`SummarizingCompactor`. The `Compactor` interface itself is unchanged.
 
 ## Context
 

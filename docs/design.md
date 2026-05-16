@@ -97,6 +97,11 @@ The module path is `github.com/erain/glue`.
   makes that name resolvable. Holds factory functions, not constructed
   providers, so registration is cheap and credential-free.
 - `stores/file`: file-backed JSON session store with atomic writes.
+- `stores/sqlite`: SQLite-backed `Store` with FTS5 over message text;
+  implements the optional `Searcher` capability for cross-session
+  retrieval. Designed in
+  [`adr/0007-memory-layer.md`](adr/0007-memory-layer.md). Pure-Go via
+  `modernc.org/sqlite`; `stores/file` stays as the simple option.
 - `tools/fs`: filesystem tool factories — `SafeJoin`, `Truncate`,
   `Blocklist`, and a ready-to-register `ReadFileTool`. Outside the core
   package per ADR 0003 so the harness stays free of POSIX coupling.
@@ -114,6 +119,7 @@ glue    -> providers/nvidia only through explicit user construction
 glue    -> providers/openrouter only through explicit user construction
 glue    -> providers/codex only through explicit user construction
 glue    -> stores/file only through explicit user construction
+glue    -> stores/sqlite only through explicit user construction
 loop    -> no dependency on glue, providers, stores, CLI, or docs
 ```
 
@@ -303,6 +309,9 @@ accepts a store, and `Session.Prompt` saves the transcript after each run.
 The initial durable implementation is `stores/file`. It writes normalized
 session state as JSON and uses temp-file-plus-rename for atomic updates. Session
 ids are URL-escaped into `<id>.json` files below the configured directory.
+`stores/sqlite` (designed in
+[`adr/0007-memory-layer.md`](adr/0007-memory-layer.md)) is the alternative
+backend for long-running agents that need cross-session search via FTS5.
 
 Persisted data includes:
 
@@ -314,6 +323,11 @@ Persisted data includes:
 - tool calls and tool results inside messages
 - usage inside messages when available
 
+Stores may optionally implement the `Searcher` capability for
+cross-session retrieval; `Agent.SearchSessions` and `Session.Search`
+return `ErrSearchNotSupported` when the active store does not implement
+it. See ADR-0007.
+
 ## Context Compaction
 
 Long-running sessions can exceed provider context windows. Glue exposes an
@@ -324,11 +338,16 @@ transcript has more than the threshold number of messages; the compactor's
 output replaces the in-memory transcript before the loop runs and is
 persisted by the next save.
 
-The first built-in policy is `KeepRecentMessages(n)`, which keeps the last
-`n` messages and replaces everything older with a single assistant-role
-marker carrying `Metadata["compaction"] = "keep_recent"`. Token-aware
-compaction can be added later as a separate `Compactor` implementation;
-see [`adr/0002-context-compaction.md`](adr/0002-context-compaction.md).
+Two built-in policies ship:
+
+- **`KeepRecentMessages(n)`** — keeps the last `n` messages and
+  replaces everything older with a single assistant-role marker
+  carrying `Metadata["compaction"] = "keep_recent"`. No token model,
+  no provider calls; the right default for short-lived agents.
+- **`SummarizingCompactor`** — token-aware, summarizes older messages
+  via the configured `Provider`. Designed in
+  [`adr/0007-memory-layer.md`](adr/0007-memory-layer.md); supersedes
+  ADR-0002's "token-aware policy can be added later" note.
 
 ## Verification Policy
 
