@@ -85,6 +85,12 @@ The module path is `github.com/erain/glue`.
   (`openrouter.ai/api/v1`), aggregator of many upstream models. Sends
   attribution headers (`HTTP-Referer`, `X-Title`) and tolerates
   comment-line SSE keep-alives during cold routing.
+- `providers/codex`: ChatGPT-subscription-authenticated provider that
+  routes through the Codex Responses endpoint
+  (`chatgpt.com/backend-api/codex/responses`). Reuses the upstream
+  Codex CLI's `auth.json` (the user runs `codex login` once outside
+  glue). Designed in ADR 0006; subscription-auth fragility is
+  quarantined to this package.
 - `providers`: driver-style registry (`Register`, `New`, `Lookup`,
   `Known`, `KeyAvailable`). Each provider sub-package self-registers
   via `init()` so importing `_ "github.com/erain/glue/providers/<name>"`
@@ -106,6 +112,7 @@ cmd/glue -> glue -> loop
 glue    -> providers/gemini only through explicit user construction
 glue    -> providers/nvidia only through explicit user construction
 glue    -> providers/openrouter only through explicit user construction
+glue    -> providers/codex only through explicit user construction
 glue    -> stores/file only through explicit user construction
 loop    -> no dependency on glue, providers, stores, CLI, or docs
 ```
