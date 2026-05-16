@@ -122,9 +122,21 @@ following has shipped:
   downstream agent at [`agents/glue-review`](../agents/glue-review)
   (stable at `v1.1.0`).
 
-The next focus is hardening through dogfooding `agents/glue-review`,
-migrating the agent off its hand-coded copies of the helpers shipped
-above, and closing gaps surfaced in
-[`flue-gap-analysis.md`](flue-gap-analysis.md): multi-target deployment,
-sandbox connectors, subagent orchestration, and MCP tooling. See the
-pinned tracker for the next recommended issue.
+The next focus is the **Peggy milestone** — a long-running, multi-channel,
+memory-bearing personal-assistant agent built on glue. Tracker:
+[#110](https://github.com/erain/glue/issues/110). The architectural
+pivot from "narrow library for short-lived agents" to "foundation for
+long-running multi-channel agents" is recorded in
+[`adr/0005-foundation-expansion.md`](adr/0005-foundation-expansion.md);
+the framework non-goals listed in [`design.md`](design.md) were updated
+in the same ADR. Tracker [#110](https://github.com/erain/glue/issues/110)
+is the source of truth for the next recommended issue under that
+milestone; the original glue tracker (#1) remains closed and is the
+historical record for the `0.x` roadmap.
+
+Continuing dogfood of `agents/glue-review`, hand-coded-helper
+migration, and the gaps surfaced in
+[`flue-gap-analysis.md`](flue-gap-analysis.md) (multi-target
+deployment, sandbox connectors, subagent orchestration, MCP tooling)
+proceed under the Peggy milestone — most of those gaps are now in
+scope behind interfaces (see ADR-0005).

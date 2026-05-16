@@ -23,24 +23,50 @@ of truth for implementation order and status after the initial bootstrap.
 
 ## Non-Goals
 
-These remain out of scope for the `0.x` series:
+The non-goals list below was revised in
+[`adr/0005-foundation-expansion.md`](adr/0005-foundation-expansion.md)
+when work began on the Peggy long-running-agent milestone (tracker
+[#110](https://github.com/erain/glue/issues/110)). Items lifted by
+ADR-0005 are now in scope behind framework interfaces; items below are
+what remains firm.
 
-- No sandboxing, shell execution, container runtime, or remote
-  connector in the core `glue` package. Read-side filesystem and git
-  helpers ship as `tools/fs` and `tools/git` per
-  [`adr/0003-shell-filesystem-tools.md`](adr/0003-shell-filesystem-tools.md);
-  write-side filesystem and arbitrary shell execution remain out of
-  scope until a follow-up ADR designs the safety boundary.
-- No dynamic Go plugin loading.
-- No MCP integration.
-- No HTTP server or deploy target.
-- No automatic context compaction. The `Compactor` interface and
-  `KeepRecentMessages` policy ship today (see
-  [`adr/0002-context-compaction.md`](adr/0002-context-compaction.md))
-  but are strictly opt-in via `AgentOptions.Compactor` and
-  `AgentOptions.CompactionThreshold`.
-- No implicit parallel tool execution. `RunRequest.Parallel` is opt-in
-  and preserves transcript order (#17, shipped).
+- **Sandboxing / containerization.** No process, namespace, or
+  container isolation in glue. Hosts that need it implement the
+  `Executor` interface against docker / firecracker / their own
+  sandbox helper. Glue ships a local `Executor` only.
+- **No dynamic Go plugin loading.**
+- **No deploy target.** `cmd/glue serve` (introduced under M3 of
+  tracker [#110](https://github.com/erain/glue/issues/110)) is a local
+  daemon for channel adapters to attach to; it is not a hosted
+  service abstraction.
+- **No implicit parallel tool execution.** `RunRequest.Parallel`
+  remains opt-in and preserves transcript order (#17, shipped).
+- **No channel concepts in core `glue`.** Telegram, Slack, web,
+  IDE-attach, and similar live in product packages (e.g.
+  `agents/peggy`) and bind to glue Sessions through the daemon
+  protocol or in-process API. Glue does not learn about them.
+- **No default UI or default policy in core `glue`.** Every product
+  concern enters glue only as an interface the host fills in. This is
+  the rule that protects glue's purity through the Peggy expansion;
+  see ADR-0005 §1.
+
+For the historical "lifted" non-goals — shell execution, write-side
+filesystem, MCP integration, HTTP server, the trigger for automatic
+compaction — see ADR-0005 for which interface gates each one.
+
+## Long-Running Agents
+
+Glue's original `0.x` shape targeted short-lived, single-purpose agents
+(see `agents/glue-review`: emit one PR comment and exit). The Peggy
+milestone (tracker [#110](https://github.com/erain/glue/issues/110))
+extends glue toward a different category: long-running, multi-channel,
+memory-bearing agents that may live for days. The framework expansions
+required to support that category — Codex provider, summarizing
+compactor + FTS5 session search, daemon mode, channel adapter pattern,
+Executor / Permission / Hook interfaces — are designed in
+ADRs 0005-0008 and the M2/M3 ADRs that follow them. The architectural
+rule that holds the expansion together is in ADR-0005 §1: every product
+concern enters glue only as an interface the host fills in.
 
 ## Package Boundaries
 
