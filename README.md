@@ -427,6 +427,40 @@ Malformed arguments surface to the model as an error `ToolResult` rather
 than crashing the loop. Schema generation from `Args` is intentionally
 out of scope; supply `Parameters` explicitly.
 
+## Persistent sessions with search
+
+`stores/file` writes one JSON file per session — the simple default, no
+new dependencies. For long-running agents that need cross-session recall
+(e.g. "what did I tell you about my dog last week?"), `stores/sqlite`
+implements the same `glue.Store` interface against a pure-Go SQLite
+database with FTS5 over message text:
+
+```go
+import (
+    "github.com/erain/glue"
+    "github.com/erain/glue/stores/sqlite"
+)
+
+store, err := sqlite.Open(sqlite.Options{Path: "peggy.db"})
+if err != nil { /* … */ }
+defer store.Close()
+
+agent := glue.NewAgent(glue.AgentOptions{
+    Provider: /* … */,
+    Store:    store,
+})
+```
+
+The `Searcher` capability that lets callers query the FTS index
+(`Agent.SearchSessions` / `Session.Search`) ships as a follow-up; once
+it lands, `stores/sqlite` is the backend that implements it. The file
+store deliberately does not — picking `stores/sqlite` is the signal
+that you want cross-session search.
+
+The implementation uses [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite)
+(no CGo, cross-compiles freely). Schema and FTS5 trigger details are in
+[`docs/adr/0007-memory-layer.md`](docs/adr/0007-memory-layer.md).
+
 ## Testing without Gemini
 
 The `glue.Provider` interface is small, so tests can drive sessions with a
