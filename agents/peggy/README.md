@@ -163,12 +163,29 @@ near-term follow-up.
 - All four shipped providers: `codex` (ChatGPT subscription), `gemini`,
   `openrouter`, `nvidia`.
 
+## Channels
+
+Beyond the single-prompt CLI, Peggy is reachable from any number of
+external transports. The pattern is designed in
+[`docs/adr/0008-channel-adapter.md`](../../docs/adr/0008-channel-adapter.md):
+
+- Each channel lives in its own package under
+  `agents/peggy/channels/<name>` (Telegram is first).
+- Channels satisfy a small `peggy.Channel` interface and call into
+  the existing `Peggy.Prompt` API. They never modify core `glue`.
+- Channels namespace their session ids (`telegram:12345` etc.) so a
+  single sqlite store cleanly holds CLI sessions, channel sessions,
+  and the curated `__memories__` session without collision.
+- Channels accepting input from anyone reachable (Telegram, public
+  webhooks) gate inbound traffic on an allowlist configured in
+  `settings.json` under `channels.<name>`.
+
 ## What's coming
 
 Per tracker [#110](https://github.com/erain/glue/issues/110):
 
-- `remember-this` / `recall` skills that surface the FTS index to the model.
-- Telegram channel adapter (sender allowlist + per-channel permission tier).
+- Telegram channel adapter (sender allowlist; first concrete channel
+  on the ADR-0008 pattern).
 - Coding ability — `tools/shell`, `tools/fs.FileWrite`, the subagent primitive.
 - Multi-channel daemon (`cmd/glue serve`) so one always-on Peggy serves a TUI, Telegram, and future clients.
 
