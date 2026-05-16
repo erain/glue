@@ -561,6 +561,22 @@ itself), not `examples/` (which holds tutorial-grade demos only).
   for the full input/output contract and the eval evidence behind
   the current prompt.
 
+- [`agents/peggy`](agents/peggy) — a long-running personal-assistant
+  agent. v0.1 is a single-prompt CLI that remembers across sessions
+  via sqlite + FTS5 and a token-aware summarizing compactor.
+  Identity is injected from a Markdown `SOUL.md`; defaults to the
+  `codex` provider (ChatGPT subscription via `codex login`). Tracker:
+  [#110](https://github.com/erain/glue/issues/110).
+
+  ```sh
+  go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
+  codex login
+  peggy "Hello — what should I be working on today?"
+  ```
+
+  See [`agents/peggy/README.md`](agents/peggy/README.md) for the
+  config / identity / CLI surface.
+
 ## Examples
 
 - [`examples/local-agent`](examples/local-agent) is a small Gemini-backed
