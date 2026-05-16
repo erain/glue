@@ -1,28 +1,45 @@
 # peggy
 
+> Your always-on assistant — runs from the CLI or Telegram,
+> remembers you across sessions, and curates facts on her own.
+
 A long-running personal-assistant agent built on the
-[glue](../..) framework. v0.1 ships as a single-prompt CLI that
-remembers you across invocations via SQLite + FTS5 session search and
-a token-aware summarizing compactor. Telegram, REPL, and coding
-skills land in later milestones (tracker
-[#110](https://github.com/erain/glue/issues/110)).
+[glue](../..) framework. **v0.1** ships:
+
+- a single-prompt **CLI** (`peggy`)
+- a **Telegram bot** binary (`peggy-telegram`) with a chat-id allowlist
+- model-callable **`remember` / `recall` tools** for durable
+  cross-session memory
+- **token-aware summarizing compaction** so long sessions don't blow
+  the context window
+- **FTS5 session search** under the hood, exposed via
+  `Agent.SearchSessions`
+- four model backends: Codex (ChatGPT subscription), Gemini,
+  OpenRouter, NVIDIA build
+
+Tracker: [#110](https://github.com/erain/glue/issues/110). M2 ("she
+can code") is the next milestone.
 
 ## Quickstart
 
 ```sh
+# 1. Install.
 go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
 
-# One-time auth (subscription-mode default provider).
+# 2. One-time auth (Codex subscription is the default provider).
 codex login
 
-# Edit your identity and config (optional but recommended).
+# 3. Optional: drop an identity file so Peggy knows who you are.
 mkdir -p ~/.config/peggy
-$EDITOR ~/.config/peggy/SOUL.md
-$EDITOR ~/.config/peggy/settings.json
+$EDITOR ~/.config/peggy/SOUL.md         # see "SOUL.md" below
+$EDITOR ~/.config/peggy/settings.json   # see "settings.json" below
 
-# Run a single prompt.
+# 4. Talk to her.
 peggy "Hello — what should I be working on today?"
 ```
+
+To reach her from your phone, set up Telegram next — see
+[Channels](#channels) below.
 
 ## SOUL.md
 
@@ -154,14 +171,23 @@ near-term follow-up.
 
 ## What v0.1 supports
 
-- Single-prompt CLI with file or sqlite session persistence.
-- **Model-callable `remember` and `recall` tools** for cross-session memory.
-- Cross-session FTS5 search via `Agent.SearchSessions` (library API
-  available directly; CLI subcommand is a near-term follow-up).
-- Token-aware summarizing compaction via the provider you configured.
+- **Single-prompt CLI** (`peggy`) and **Telegram bot** (`peggy-telegram`)
+  on the same agent + same session store.
+- File or SQLite session persistence. SQLite enables cross-session
+  FTS5 search.
+- **Model-callable `remember` / `recall` tools** for durable
+  cross-session memory.
+- **Cross-session FTS5 search** via `Agent.SearchSessions` library
+  API (a `peggy recall` subcommand is a near-term follow-up).
+- **Token-aware summarizing compaction** via the configured provider.
 - Identity injected from `SOUL.md` into the system prompt.
-- All four shipped providers: `codex` (ChatGPT subscription), `gemini`,
-  `openrouter`, `nvidia`.
+- All four shipped providers: `codex` (ChatGPT subscription),
+  `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
+  your existing ChatGPT subscription via `codex login` — no per-token
+  bill.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.1 summary and
+known limitations.
 
 ## Channels
 
@@ -185,12 +211,23 @@ external transports. The pattern is designed in
 
 ## What's coming
 
-Per tracker [#110](https://github.com/erain/glue/issues/110):
+Per tracker [#110](https://github.com/erain/glue/issues/110), in
+priority order:
 
-- Telegram channel adapter (sender allowlist; first concrete channel
-  on the ADR-0008 pattern).
-- Coding ability — `tools/shell`, `tools/fs.FileWrite`, the subagent primitive.
-- Multi-channel daemon (`cmd/glue serve`) so one always-on Peggy serves a TUI, Telegram, and future clients.
+- **M2 — "she can code".** Permission-gated `tools/shell` and
+  `tools/fs.FileWrite`, the subagent primitive (`Agent`-as-`Tool`),
+  diff display in the TUI/Telegram, an `Executor` / `Permission` /
+  `Hook` interface trio in core glue.
+- **M3 — multi-channel daemon.** `cmd/glue serve` so a single
+  long-running Peggy serves a TUI, Telegram, and future clients
+  concurrently. Per-channel permission tiers.
+- **M4 — ecosystem.** MCP client (stdio + HTTP), cost tracking,
+  `providers/anthropic` when budget allows.
+
+Near-term follow-ups that may slip into v0.1.x patches: a `peggy
+memories` subcommand (list / export / forget), edit-in-place
+Telegram streaming, FTS5 prefix-match on session ids for
+channel-scoped recall.
 
 ## As a library
 

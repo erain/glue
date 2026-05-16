@@ -21,6 +21,15 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
+// TestVersionPinned guards against accidentally publishing a binary
+// whose --version still says "-dev". Bump the constant deliberately
+// at release time, and update this test to match.
+func TestVersionPinned(t *testing.T) {
+	if Version != "0.1.0" {
+		t.Fatalf("Version = %q, want %q", Version, "0.1.0")
+	}
+}
+
 func TestRun_NoPromptShowsUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), []string{}, &out, &errOut)
