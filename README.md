@@ -136,6 +136,50 @@ The model id matches the `org/name` path on build.nvidia.com (e.g.
 on Kimi K2 can reach tens of seconds for the first chunk; configure your
 HTTP client and context timeouts accordingly.
 
+## Quickstart: Codex (ChatGPT subscription)
+
+The `providers/codex` package routes requests through the Codex
+Responses endpoint
+([`chatgpt.com/backend-api/codex/responses`](https://chatgpt.com)),
+authenticated by your existing ChatGPT subscription rather than an
+OpenAI API key. Useful when your daily-driver agent should bill
+against the subscription you already pay for.
+
+v0.1 piggybacks on the upstream Codex CLI's `auth.json`. Install the
+[OpenAI Codex CLI](https://github.com/openai/codex) and log in once:
+
+```sh
+codex login
+```
+
+Glue reads the same token file (`~/.codex/auth.json` by default;
+overridable via `$GLUE_CODEX_AUTH` or `$CODEX_HOME`) and refreshes
+stale tokens automatically.
+
+```go
+import (
+    "github.com/erain/glue"
+    "github.com/erain/glue/providers/codex"
+)
+
+agent := glue.NewAgent(glue.AgentOptions{
+    Provider: codex.New(codex.Options{}),
+    Model:    codex.DefaultModel, // "gpt-5-codex"
+})
+```
+
+The provider quarantines all subscription-auth fragility (OAuth flow,
+Bearer + `ChatGPT-Account-ID` headers, Cloudflare cookie persistence,
+401-refresh-retry) to the package — the rest of glue is unchanged.
+See [`docs/adr/0006-codex-provider.md`](docs/adr/0006-codex-provider.md)
+for the full design. Subscription-auth use via third-party tools is
+not formally documented by OpenAI; the provider is intended for
+personal use.
+
+The interactive PKCE login flow is deferred for v0.1 (full protocol
+in the ADR appendix). If you cannot install the upstream Codex CLI,
+file an issue.
+
 ## Quickstart: OpenRouter
 
 The `providers/openrouter` package speaks the OpenAI-compatible API at
