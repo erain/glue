@@ -76,15 +76,12 @@ func TestStreamUsesAPIKeyEnv(t *testing.T) {
 }
 
 // TestLiveSmoke runs against the real OpenRouter endpoint when
-// OPENROUTER_API_KEY is set. Defaults to inclusionai/ring-2.6-1t:free —
-// a deterministic free model whose upstream (Novita) is consistently
-// available. (The previous ling-2.6-1t:free pin graduated to paid in
-// May 2026; ring is its successor in the same InclusionAI family.)
-// Better-known free routes (google/gemma-4-*:free,
-// minimax/minimax-m2.5:free) are over-subscribed and frequently 429 at
-// the upstream. Local devs can swap to the openrouter/free meta-route
-// (which auto-routes around 429s but is non-deterministic) via
-// OPENROUTER_LIVE_MODEL.
+// OPENROUTER_API_KEY is set. Defaults to the openrouter/free meta-route,
+// which auto-selects from the currently-available free models on every
+// call. This is non-deterministic by design — pinning a single free
+// model led to repeated CI breakage every few weeks as upstreams went
+// paid or 404'd (see #115, May 2026 / inclusionai/ring-2.6-1t:free).
+// Local devs who need determinism can pin via OPENROUTER_LIVE_MODEL.
 func TestLiveSmoke(t *testing.T) {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -92,7 +89,7 @@ func TestLiveSmoke(t *testing.T) {
 	}
 	model := os.Getenv("OPENROUTER_LIVE_MODEL")
 	if model == "" {
-		model = "inclusionai/ring-2.6-1t:free"
+		model = DefaultModel
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
@@ -125,10 +122,10 @@ func TestLiveSmoke(t *testing.T) {
 				if done == nil {
 					t.Fatalf("channel closed without Done event; text=%q", text.String())
 				}
-				// Default model (inclusionai/ring-2.6-1t:free) emits visible
-				// text. When OPENROUTER_LIVE_MODEL points at the
-				// non-deterministic openrouter/free meta-route, some upstreams
-				// emit only reasoning — accept thinking as a fallback.
+				// The openrouter/free meta-route is non-deterministic —
+				// some upstreams emit only reasoning. Accept thinking as
+				// a fallback so the smoke isn't brittle to which model
+				// the router picked this call.
 				if strings.TrimSpace(text.String()) == "" && thinking.Len() == 0 {
 					t.Fatalf("expected non-empty text or thinking; got neither (done=%+v)", done)
 				}

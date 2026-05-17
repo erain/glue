@@ -134,6 +134,42 @@ Rotating the key:
 gh secret set GEMINI_API_KEY --repo erain/glue
 ```
 
+## Live OpenRouter model
+
+The `live (openrouter)` CI job (and the `openrouter` provider's
+`DefaultModel`) point at the meta-route **`openrouter/free`**.
+OpenRouter's meta-route auto-selects from the currently-available
+free models on every call — non-deterministic by design, but
+resilient to free-tier churn.
+
+We learned this the painful way: pinning a specific free model led
+to repeated CI breakage every few weeks as upstreams went paid or
+404'd (see #115, May 2026 / `inclusionai/ring-2.6-1t:free` — second
+time the same kind of break in a quarter). The meta-route trades
+determinism for the right behavior in CI.
+
+**If the meta-route itself ever breaks** (it never has, but in
+principle): browse [openrouter.ai/models?max_price=0](https://openrouter.ai/models?max_price=0)
+and pick a pinned free model with a consistently-available upstream
+(InclusionAI's Ling family historically holds up; NVIDIA Nemotron
+free routes are also stable but over-subscribed). Update three
+places:
+
+- `providers/openrouter/openrouter.go` — the `DefaultModel` constant.
+- `.github/workflows/ci.yml` — the `OPENROUTER_LIVE_MODEL` env on
+  the `live (openrouter)` job.
+- The test fallback in `providers/openrouter/openrouter_test.go`
+  uses `DefaultModel`, so it picks up the constant automatically.
+
+Verify locally:
+
+```sh
+OPENROUTER_API_KEY=sk-or-v1-... go test ./providers/openrouter -run Live -count=1
+```
+
+The provider-level smoke is the canonical check. The
+`agents/glue-review` fixture replay is a separate concern.
+
 ## Why so little automation
 
 Glue's discipline is "one issue per PR" with a human-readable closing

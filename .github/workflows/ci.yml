@@ -125,12 +125,15 @@ jobs:
       - name: Live OpenRouter smoke
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          # Pin a deterministic free model with a consistently-available
-          # upstream (Novita). Popular routes (google/gemma-4-*:free,
-          # minimax-m2.5:free) are over-subscribed and 429 frequently.
-          # Previous pin (ling-2.6-1t:free) graduated to paid 2026-05;
-          # ring is its successor in the same InclusionAI family.
-          OPENROUTER_LIVE_MODEL: inclusionai/ring-2.6-1t:free
+          # Use openrouter/free, the meta-router that auto-selects
+          # from currently-available free models. Pinning a specific
+          # free model burned us twice (#115, May 2026 ring-2.6 → paid;
+          # before that, ling-2.6). The meta-router trades determinism
+          # for robustness, which is the right call for CI. Local devs
+          # who need determinism can override OPENROUTER_LIVE_MODEL.
+          # See docs/issue-automation.md "Live OpenRouter model" for
+          # the refresh-recipe if the meta-router itself ever breaks.
+          OPENROUTER_LIVE_MODEL: openrouter/free
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
             echo "OPENROUTER_API_KEY not configured; skipping live tests."

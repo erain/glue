@@ -222,11 +222,11 @@ func runAgentInRepo(t *testing.T, repo, provider, sessionID string) (string, err
 		"--id", sessionID,
 		"--max-turns", "8",
 	}
-	// OpenRouter+Ling is fastest; NVIDIA we let default itself; Gemini
-	// uses its default. The fixtures are tiny so any model works.
+	// OpenRouter resolves to openrouter/free (the meta-router) via
+	// the provider default — robust to free-tier churn. NVIDIA gets
+	// pinned to llama-3.3-70b for fixture-test perf (its registry
+	// default kimi-k2.6 is slower than the fixture call needs).
 	switch provider {
-	case "openrouter":
-		args = append(args, "--model", "inclusionai/ring-2.6-1t:free")
 	case "nvidia":
 		args = append(args, "--model", "meta/llama-3.3-70b-instruct")
 	}
