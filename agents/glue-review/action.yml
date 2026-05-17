@@ -22,7 +22,7 @@ inputs:
   model:
     description: |
       Model id. When empty, uses the provider-specific default
-      (OpenRouter: inclusionai/ring-2.6-1t:free, NVIDIA:
+      (OpenRouter: openrouter/free meta-router, NVIDIA:
       moonshotai/kimi-k2.6, Gemini: gemini-2.5-flash).
     required: false
     default: ''

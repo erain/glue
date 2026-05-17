@@ -537,7 +537,7 @@ itself), not `examples/` (which holds tutorial-grade demos only).
   comment per PR — a short headline, ≤ 5 severity bullets, and a
   fenced ` ```markdown ` fix-instruction block downstream coding
   agents (Claude Code, Codex, Cursor, Aider, …) can paste and act on.
-  Defaults to OpenRouter's free `inclusionai/ring-2.6-1t:free`; flags
+  Defaults to OpenRouter's `openrouter/free` meta-router; flags
   swap to NVIDIA `build.nvidia.com` or Gemini, with automatic
   provider failover.
 

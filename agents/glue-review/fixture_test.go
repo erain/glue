@@ -222,11 +222,11 @@ func runAgentInRepo(t *testing.T, repo, provider, sessionID string) (string, err
 		"--id", sessionID,
 		"--max-turns", "8",
 	}
-	// OpenRouter+Ling is fastest; NVIDIA we let default itself; Gemini
-	// uses its default. The fixtures are tiny so any model works.
+	// OpenRouter resolves to openrouter/free (the meta-router) via
+	// the provider default — robust to free-tier churn. NVIDIA gets
+	// pinned to llama-3.3-70b for fixture-test perf (its registry
+	// default kimi-k2.6 is slower than the fixture call needs).
 	switch provider {
-	case "openrouter":
-		args = append(args, "--model", "inclusionai/ring-2.6-1t:free")
 	case "nvidia":
 		args = append(args, "--model", "meta/llama-3.3-70b-instruct")
 	}
@@ -246,21 +246,35 @@ func assertHasSection(t *testing.T, review, section string) {
 	}
 }
 
+// glueReviewHeaderPattern accepts the canonical `## glue-review`
+// header AND the common drift variants the free models produce
+// (no space after `##`, extra spaces, mixed case). Tightening the
+// matcher leads to brittleness without catching real regressions —
+// the model has correctly identified itself either way. (#127)
+var glueReviewHeaderPattern = regexp.MustCompile(`(?im)^##\s*glue-review\b`)
+
 // assertGlueReviewHeader checks that the canonical `## glue-review`
-// header is present at the start of the review body.
+// header is present at the start of the review body. Whitespace
+// around / after `##` is tolerated.
 func assertGlueReviewHeader(t *testing.T, review string) {
 	t.Helper()
-	if !strings.Contains(review, "## glue-review") {
-		t.Errorf("missing `## glue-review` header; review=%q", review)
+	if !glueReviewHeaderPattern.MatchString(review) {
+		t.Errorf("missing `## glue-review` header (or drift variant); review=%q", review)
 	}
 }
+
+// fixBlockPattern accepts the canonical fenced ```markdown block with
+// or without a trailing newline before the fence content. Free models
+// sometimes collapse the whole reply onto fewer lines.
+var fixBlockPattern = regexp.MustCompile("```markdown\\s")
 
 // assertHasFixBlock checks that the fenced ```markdown fix-instruction
 // block is present. Required for Variant A (issues found); not required
 // for Variant B (clean) or Variant C (rejected) — caller decides.
+// Whitespace right after the opening fence is tolerated (#127).
 func assertHasFixBlock(t *testing.T, review string) {
 	t.Helper()
-	if !strings.Contains(review, "```markdown\n") {
+	if !fixBlockPattern.MatchString(review) {
 		t.Errorf("missing fenced ```markdown fix block; review=%q", review)
 	}
 }

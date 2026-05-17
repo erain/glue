@@ -151,7 +151,7 @@ This repo runs both workflows. See [.github/workflows/glue-review.yml](../../.gi
 
 ## Evidence
 
-The current prompt is iterated against a 28-case planted-bug suite at [erain/glue-review-eval](https://github.com/erain/glue-review-eval) — Go / Python / TypeScript host projects with SQL injection, missing auth, off-by-one, missing tests, stale docs, rejected-direction refactors, multi-bug PRs, and clean PRs. Every case ships a YAML sidecar with the planted bug, expected findings, and a machine-checkable acceptance test. Run against `openrouter/inclusionai/ring-2.6-1t:free` — the same free path the install above uses.
+The current prompt is iterated against a 28-case planted-bug suite at [erain/glue-review-eval](https://github.com/erain/glue-review-eval) — Go / Python / TypeScript host projects with SQL injection, missing auth, off-by-one, missing tests, stale docs, rejected-direction refactors, multi-bug PRs, and clean PRs. Every case ships a YAML sidecar with the planted bug, expected findings, and a machine-checkable acceptance test. Eval runs go through `openrouter/free` (the meta-router) so the suite survives free-tier churn.
 
 | signal              | initial prompt | current prompt | delta       |
 |---------------------|---------------:|---------------:|------------:|
@@ -193,7 +193,7 @@ glue-review --base origin/release
 |---|---|---|
 | `--base` | `main` | Base ref to diff against. |
 | `--provider` | `openrouter` | Provider name, or comma-separated failover chain (`openrouter,nvidia,gemini`). |
-| `--model` | provider-specific | OpenRouter: `inclusionai/ring-2.6-1t:free`; NVIDIA: `moonshotai/kimi-k2.6`; Gemini: `gemini-2.5-flash`. |
+| `--model` | provider-specific | OpenRouter: `openrouter/free` (meta-router); NVIDIA: `moonshotai/kimi-k2.6`; Gemini: `gemini-2.5-flash`. |
 | `--max-turns` | `16` | Loop budget. |
 | `--paths` / `--paths-ignore` | (none) | Git pathspec globs to include / exclude. |
 | `--prompt` | (default) | Override the user message (one-off focused runs: "only check for SQL injection"). |

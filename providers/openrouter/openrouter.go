@@ -13,10 +13,13 @@ import (
 // probe key availability without hard-coding the name.
 const EnvKey = "OPENROUTER_API_KEY"
 
-// DefaultModel is the registry-level default model. The free Ring
-// route is fast and unmetered; OpenRouter callers with a paid key
-// typically override via glue.WithModel.
-const DefaultModel = "inclusionai/ring-2.6-1t:free"
+// DefaultModel is the registry-level default model. We point at
+// OpenRouter's meta-router `openrouter/free` rather than any specific
+// upstream free model so the default survives free-tier churn (a
+// pinned model used to mean repeated CI breakage every few weeks when
+// the upstream went paid or 404'd). OpenRouter callers with a paid
+// key typically override via glue.WithModel.
+const DefaultModel = "openrouter/free"
 
 const (
 	providerName   = "openrouter"

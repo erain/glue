@@ -4,9 +4,10 @@
 // about, and emits one Markdown review comment with a fenced
 // ```markdown fix-instruction block downstream coding agents can paste.
 //
-// Defaults to OpenRouter's free `inclusionai/ring-2.6-1t:free` model.
-// Swap with --provider / --model to use NVIDIA build.nvidia.com or
-// Gemini instead.
+// Defaults to OpenRouter's meta-router `openrouter/free` (auto-routes
+// to whichever upstream free model is currently available; resilient
+// to free-tier churn). Swap with --provider / --model to use NVIDIA
+// build.nvidia.com or Gemini instead.
 //
 // Usage:
 //
@@ -226,7 +227,7 @@ func newProvider(name string) (glue.Provider, string, error) {
 	case "", "nvidia":
 		return nvidia.New(nvidia.Options{}), "moonshotai/kimi-k2.6", nil
 	case "openrouter":
-		return openrouter.New(openrouter.Options{}), "inclusionai/ring-2.6-1t:free", nil
+		return openrouter.New(openrouter.Options{}), openrouter.DefaultModel, nil
 	case "gemini":
 		return gemini.New(gemini.Options{}), "gemini-2.5-flash", nil
 	default:
