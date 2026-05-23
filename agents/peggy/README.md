@@ -101,6 +101,10 @@ and emits a stderr diagnostic.
 | `compaction.threshold` | `200` | Message-count gate. Compaction only runs when the in-memory transcript exceeds this. |
 | `compaction.target_tokens` | `8000` | Soft cap on transcript size before summarization. Word-count heuristic; not a real tokenizer. |
 | `compaction.keep_recent` | `8` | Most-recent messages retained verbatim through compaction. |
+| `coding.enabled` | `false` | Register local coding tools. Enable only for trusted local workspaces. |
+| `coding.work_dir` | current directory | Workspace root for `read_file`, `write_file`, `shell_exec`, and git helpers. `~` and `$HOME` expand. |
+| `coding.allowed_binaries` | `go`, `git`, `make`, `node`, `npm`, `python`, `python3` | Basename allowlist for `shell_exec`; model calls cannot run arbitrary paths. |
+| `coding.allow_overwrite` | `false` | Host policy for replacing existing files. The model must still pass `overwrite: true`, and the permission prompt must allow the call. |
 
 Missing `settings.json` is non-fatal — Peggy uses the built-in
 defaults above and emits a stderr diagnostic.
@@ -116,12 +120,49 @@ peggy [flags] "<prompt text>"
                      transcripts key off this; a fresh id starts a
                      new conversation while still allowing search
                      across all sessions.
+  --coding           Enable local coding tools for this prompt.
+  --workdir <path>   Workspace root for --coding (default ".").
+  --coding-allow-overwrite
+                     Allow write_file to replace existing files after
+                     model intent and user permission.
   --version          Print the version and exit.
   --help             Print this help.
 ```
 
 The prompt is whatever non-flag args you pass — quoting is your
 shell's job. Multi-word prompts work without quoting too.
+
+## Coding Tools
+
+Coding mode is opt-in. Enable it in `settings.json` with
+`"coding": {"enabled": true, "work_dir": "/path/to/repo"}` or for one
+CLI call with:
+
+```sh
+peggy --coding --workdir . "run the tests and fix the failure"
+```
+
+Peggy registers these model-callable tools:
+
+- `read_file` — read UTF-8 text inside the workspace. Read-only, no
+  permission prompt.
+- `write_file` — write UTF-8 text inside the workspace. Permission
+  required. Existing files require both `coding.allow_overwrite` /
+  `--coding-allow-overwrite` and model argument `overwrite: true`.
+- `shell_exec` — run argv-style commands inside the workspace.
+  Permission required. `argv[0]` must be a configured binary basename.
+- `git_diff_branch` / `git_log_branch` — read-only branch context via
+  the local `git` binary.
+
+For `write_file` and `shell_exec`, the CLI asks on stderr/stdin:
+
+```text
+Allow? [y] once, [s] session, [t] target, [n] deny:
+```
+
+Remembered choices last only for the current `peggy` process. If stdin
+is unavailable or reaches EOF, Peggy denies the side effect and surfaces
+that denial to the model as a tool error.
 
 ### Config resolution
 
@@ -169,7 +210,7 @@ for _, m := range mems {
 A `peggy memories` subcommand for list / forget / export is a
 near-term follow-up.
 
-## What v0.1 supports
+## What Peggy supports today
 
 - **Single-prompt CLI** (`peggy`) and **Telegram bot** (`peggy-telegram`)
   on the same agent + same session store.
@@ -181,6 +222,9 @@ near-term follow-up.
   API (a `peggy recall` subcommand is a near-term follow-up).
 - **Token-aware summarizing compaction** via the configured provider.
 - Identity injected from `SOUL.md` into the system prompt.
+- Opt-in **local coding mode** for the CLI: read files, write files,
+  run allowlisted commands, and inspect git branch context with
+  per-call permission prompts for side effects.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
   your existing ChatGPT subscription via `codex login` — no per-token
@@ -214,10 +258,8 @@ external transports. The pattern is designed in
 Per tracker [#110](https://github.com/erain/glue/issues/110), in
 priority order:
 
-- **M2 — "she can code".** Permission-gated `tools/shell` and
-  `tools/fs.FileWrite`, the subagent primitive (`Agent`-as-`Tool`),
-  diff display in the TUI/Telegram, an `Executor` / `Permission` /
-  `Hook` interface trio in core glue.
+- **M2 — "she can code".** CLI coding tools are wired; next is
+  Telegram inline-keyboard permissions, then tighter product polish.
 - **M3 — multi-channel daemon.** `cmd/glue serve` so a single
   long-running Peggy serves a TUI, Telegram, and future clients
   concurrently. Per-channel permission tiers.

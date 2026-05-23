@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+
+	"github.com/erain/glue"
 )
 
 // Version is the package version string surfaced by `peggy --version`.
@@ -21,13 +24,22 @@ const Version = "0.1.0"
 // captured stdout/stderr writers. For programmatic use prefer
 // constructing a Peggy via New.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return RunWithInput(ctx, args, os.Stdin, stdout, stderr)
+}
+
+// RunWithInput is like [Run] but lets tests and embedded callers provide the
+// stdin reader used by the CLI permission prompt.
+func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("peggy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		configPath  = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
-		soulPath    = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
-		sessionID   = fs.String("session", "default", "session id (file-backed transcripts key off this)")
-		showVersion = fs.Bool("version", false, "print version and exit")
+		configPath           = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		soulPath             = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
+		sessionID            = fs.String("session", "default", "session id (file-backed transcripts key off this)")
+		showVersion          = fs.Bool("version", false, "print version and exit")
+		enableCoding         = fs.Bool("coding", false, "enable local coding tools for this prompt")
+		codingWorkDir        = fs.String("workdir", "", "workspace root for --coding (default current directory)")
+		codingAllowOverwrite = fs.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, `peggy — long-running personal-assistant agent built on glue.
@@ -39,6 +51,7 @@ Examples:
   peggy "hello"
   peggy --session work "remind me about the migration plan"
   peggy --config /tmp/peggy.json "what do you know about my Aussie?"
+  peggy --coding --workdir . "run the tests and fix the failure"
 
 Flags:
 `)
@@ -75,6 +88,15 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 	if settingsPath == "" {
 		fmt.Fprintln(stderr, "peggy: no settings.json found; using built-in defaults")
 	}
+	if *enableCoding || *codingWorkDir != "" || *codingAllowOverwrite {
+		settings.Coding.Enabled = true
+	}
+	if *codingWorkDir != "" {
+		settings.Coding.WorkDir = *codingWorkDir
+	}
+	if *codingAllowOverwrite {
+		settings.Coding.AllowOverwrite = true
+	}
 
 	soul, soulPathUsed, err := LoadSoul(*soulPath)
 	if err != nil {
@@ -87,10 +109,21 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 		fmt.Fprintf(stderr, "peggy: identity loaded from %s (%d bytes)\n", soulPathUsed, len(soul))
 	}
 
+	var permission glue.Permission
+	if settings.Coding.Enabled {
+		permission = NewCLIPermission(CLIPermissionOptions{Stdin: stdin, Stderr: stderr})
+		workDir := settings.Coding.WorkDir
+		if strings.TrimSpace(workDir) == "" {
+			workDir = "."
+		}
+		fmt.Fprintf(stderr, "peggy: coding tools enabled for %s\n", workDir)
+	}
+
 	p, err := New(Options{
-		Settings: settings,
-		Soul:     soul,
-		Stderr:   stderr,
+		Settings:   settings,
+		Soul:       soul,
+		Stderr:     stderr,
+		Permission: permission,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy: setup: %v\n", err)

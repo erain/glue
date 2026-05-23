@@ -122,3 +122,32 @@ func TestRun_PromptArgsJoined(t *testing.T) {
 		t.Fatalf("exit 2 indicates the prompt wasn't recognised; stderr=%q", errOut.String())
 	}
 }
+
+func TestRun_CodingFlagsParseAndUseInputAwareRunner(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "settings.json")
+	cfg := map[string]any{
+		"provider": "bogus-provider",
+		"store":    map[string]any{"type": "file", "path": filepath.Join(cfgDir, "s")},
+	}
+	raw, _ := json.MarshalIndent(cfg, "", "  ")
+	_ = os.WriteFile(cfgPath, raw, 0o600)
+
+	var out, errOut bytes.Buffer
+	code := RunWithInput(context.Background(), []string{
+		"--config", cfgPath,
+		"--coding",
+		"--workdir", t.TempDir(),
+		"help",
+	}, strings.NewReader("n\n"), &out, &errOut)
+	if code == 2 {
+		t.Fatalf("exit 2 indicates coding flags were not recognised; stderr=%q", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "coding tools enabled") {
+		t.Fatalf("stderr = %q, want coding diagnostic", errOut.String())
+	}
+}

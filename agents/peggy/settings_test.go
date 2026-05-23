@@ -155,6 +155,34 @@ func TestLoadSettings_InvalidJSONErrors(t *testing.T) {
 	}
 }
 
+func TestLoadSettings_CodingDefaultsAndWorkDirExpansion(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(XDGConfigEnv, "")
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeJSON(t, path, map[string]any{
+		"coding": map[string]any{
+			"enabled":  true,
+			"work_dir": "~",
+		},
+	})
+
+	s, _, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if !s.Coding.Enabled {
+		t.Fatal("coding.enabled = false, want true")
+	}
+	if s.Coding.WorkDir != home {
+		t.Fatalf("coding.work_dir = %q, want %q", s.Coding.WorkDir, home)
+	}
+	if len(s.Coding.AllowedBinaries) == 0 {
+		t.Fatal("coding.allowed_binaries default is empty")
+	}
+}
+
 func TestExpandPath_HomeAndTilde(t *testing.T) {
 	t.Setenv("HOME", "/tmp/peggy-home")
 	got, err := expandPath("~/.cache")
