@@ -247,6 +247,13 @@ V1 validation is intentionally limited to JSON decoding into the caller's Go
 type. Full JSON Schema validation is out of scope for the first structured
 result API.
 
+`glue.SubagentTool` adapts a child `*glue.Agent` into a normal `glue.Tool` for
+delegation patterns. Each tool call forwards only the explicit prompt argument
+into a fresh child session, using `SubagentOptions.SessionID` as an optional
+session-id prefix, and returns the child final text as the tool result. Child
+prompt failures are visible to the parent model as error tool results; context
+cancellation and deadlines still abort the parent loop.
+
 ## Gemini Provider
 
 The first provider package is `providers/gemini`, implemented with
