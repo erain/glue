@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -100,6 +101,10 @@ type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+
+	RequiresPermission bool                  `json:"-"`
+	PermissionAction   string                `json:"-"`
+	PermissionTarget   func(ToolCall) string `json:"-"`
 }
 
 // ToolExecutor runs a tool call locally and returns a normalized result.
@@ -118,6 +123,73 @@ type ToolResult struct {
 	Content  []ContentPart  `json:"content,omitempty"`
 	IsError  bool           `json:"is_error,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// Permission decides whether a side-effecting tool call may run.
+type Permission interface {
+	Decide(ctx context.Context, req PermissionRequest) (PermissionDecision, error)
+}
+
+// PermissionRequest describes one side-effecting tool call for the host.
+type PermissionRequest struct {
+	Tool      string          `json:"tool"`
+	Action    string          `json:"action"`
+	Target    string          `json:"target"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+}
+
+// PermissionDecision is the host's answer to a PermissionRequest.
+type PermissionDecision struct {
+	Allow       bool          `json:"allow"`
+	Reason      string        `json:"reason,omitempty"`
+	RememberFor RememberScope `json:"remember_for,omitempty"`
+}
+
+// RememberScope tells a host permission implementation how broadly a
+// positive decision may be remembered. Core loop code does not cache
+// decisions.
+type RememberScope int
+
+const (
+	RememberNever RememberScope = iota
+	RememberSession
+	RememberSessionTarget
+	RememberForever
+)
+
+// AllowAll allows every PermissionRequest. It is intended for tests and
+// explicitly trusted hosts.
+type AllowAll struct{}
+
+// Decide implements Permission.
+func (AllowAll) Decide(context.Context, PermissionRequest) (PermissionDecision, error) {
+	return PermissionDecision{Allow: true}, nil
+}
+
+// DenyAll denies every PermissionRequest. It is intended for tests and
+// explicitly locked-down hosts.
+type DenyAll struct {
+	Reason string
+}
+
+// Decide implements Permission.
+func (d DenyAll) Decide(context.Context, PermissionRequest) (PermissionDecision, error) {
+	reason := d.Reason
+	if reason == "" {
+		reason = "permission denied"
+	}
+	return PermissionDecision{Allow: false, Reason: reason}, nil
+}
+
+// ErrSkipTool returned from Hook.PreTool records a skipped tool call as
+// an error tool result without executing the tool.
+var ErrSkipTool = errors.New("glue: skip tool")
+
+// Hook observes or alters tool-call execution.
+type Hook interface {
+	PreTool(ctx context.Context, call ToolCall) error
+	PostTool(ctx context.Context, call ToolCall, result *ToolResult) error
 }
 
 // ProviderRequest is the normalized input sent to a provider for one assistant

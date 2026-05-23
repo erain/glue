@@ -37,6 +37,31 @@ func textTurn(text string) []ProviderEvent {
 	}
 }
 
+type recordingGluePermission struct {
+	requests []PermissionRequest
+	decision PermissionDecision
+}
+
+func (p *recordingGluePermission) Decide(_ context.Context, req PermissionRequest) (PermissionDecision, error) {
+	p.requests = append(p.requests, req)
+	return p.decision, nil
+}
+
+type recordingGlueHook struct {
+	pre  int
+	post int
+}
+
+func (h *recordingGlueHook) PreTool(context.Context, ToolCall) error {
+	h.pre++
+	return nil
+}
+
+func (h *recordingGlueHook) PostTool(_ context.Context, _ ToolCall, _ *ToolResult) error {
+	h.post++
+	return nil
+}
+
 func TestSessionPromptHappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -72,6 +97,56 @@ func TestSessionPromptHappyPath(t *testing.T) {
 	}
 	if got := provider.requests[0].Model; got != "fake-1" {
 		t.Fatalf("Model = %q, want fake-1", got)
+	}
+}
+
+func TestSessionPromptPassesPermissionHooksAndSessionID(t *testing.T) {
+	t.Parallel()
+
+	provider := &recordingProvider{turns: [][]ProviderEvent{
+		{
+			{Type: ProviderEventStart},
+			{Type: ProviderEventToolCall, ToolCall: &ToolCall{ID: "c1", Name: "side", Arguments: []byte(`{"x":1}`)}},
+			{Type: ProviderEventDone},
+		},
+		textTurn("done"),
+	}}
+	perm := &recordingGluePermission{decision: PermissionDecision{Allow: true}}
+	hook := &recordingGlueHook{}
+	agent := NewAgent(AgentOptions{
+		Provider: provider,
+		Tools: []Tool{{
+			ToolSpec: ToolSpec{
+				Name:               "side",
+				RequiresPermission: true,
+				PermissionAction:   "touch",
+			},
+			Execute: func(context.Context, ToolCall) (ToolResult, error) {
+				return TextResult("ok"), nil
+			},
+		}},
+		Permission: perm,
+		Hooks:      []Hook{hook},
+	})
+	session, err := agent.Session(context.Background(), "dev-session")
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+
+	if _, err := session.Prompt(context.Background(), "go"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if len(perm.requests) != 1 {
+		t.Fatalf("permission requests = %d, want 1", len(perm.requests))
+	}
+	if got := perm.requests[0].SessionID; got != "dev-session" {
+		t.Fatalf("SessionID = %q, want dev-session", got)
+	}
+	if got := perm.requests[0].Action; got != "touch" {
+		t.Fatalf("Action = %q, want touch", got)
+	}
+	if hook.pre != 1 || hook.post != 1 {
+		t.Fatalf("hook calls pre=%d post=%d, want 1/1", hook.pre, hook.post)
 	}
 }
 
