@@ -201,6 +201,9 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 		Tools:        config.tools,
 		Options:      config.options,
 		MaxTurns:     config.maxTurns,
+		SessionID:    s.id,
+		Permission:   s.agent.permission,
+		Hooks:        cloneHooks(s.agent.hooks),
 		Emit: func(event Event) {
 			if config.emit != nil {
 				config.emit(event)

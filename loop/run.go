@@ -33,6 +33,9 @@ type RunRequest struct {
 	Options      map[string]any
 	MaxTurns     int
 	Parallel     bool
+	SessionID    string
+	Permission   Permission
+	Hooks        []Hook
 	Emit         func(Event)
 }
 
@@ -65,6 +68,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	messages := cloneMessages(req.Messages)
+	req.Hooks = cloneHooks(req.Hooks)
 	newMessages := make([]Message, 0)
 	emit := func(e Event) {
 		if req.Emit != nil {
@@ -144,6 +148,7 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 		call    ToolCall
 		out     ToolResult
 		message Message
+		err     error
 	}
 
 	results := make([]result, len(calls))
@@ -159,11 +164,12 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 			wg.Add(1)
 			go func(i int, call ToolCall) {
 				defer wg.Done()
-				normalizedCall, toolResult := executeToolCall(ctx, req.Tools, call)
+				normalizedCall, toolResult, err := executeToolCall(ctx, req, call)
 				results[i] = result{
 					call:    normalizedCall,
 					out:     toolResult,
 					message: toolResultMessage(normalizedCall, toolResult),
+					err:     err,
 				}
 			}(i, call)
 		}
@@ -179,7 +185,10 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
 			})
-			normalizedCall, toolResult := executeToolCall(ctx, req.Tools, call)
+			normalizedCall, toolResult, err := executeToolCall(ctx, req, call)
+			if err != nil {
+				return nil, err
+			}
 			results[i] = result{
 				call:    normalizedCall,
 				out:     toolResult,
@@ -194,6 +203,9 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 
 	messages := make([]Message, len(results))
 	for i, r := range results {
+		if r.err != nil {
+			return nil, r.err
+		}
 		messages[i] = r.message
 		emit(Event{
 			Type:       EventToolEnd,
@@ -214,26 +226,103 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 //
 // The first return value is the (possibly argument-normalized) tool call
 // that should be referenced by the resulting tool message.
-func executeToolCall(ctx context.Context, tools []Tool, call ToolCall) (ToolCall, ToolResult) {
+func executeToolCall(ctx context.Context, req RunRequest, call ToolCall) (ToolCall, ToolResult, error) {
 	normalizedCall, err := normalizeToolCallArguments(call)
 	if err != nil {
-		return call, errorToolResult(fmt.Sprintf("invalid arguments for tool %q: %v", call.Name, err))
+		return call, errorToolResult(fmt.Sprintf("invalid arguments for tool %q: %v", call.Name, err)), nil
 	}
 
-	for _, tool := range tools {
+	for _, tool := range req.Tools {
 		if tool.Name != normalizedCall.Name {
 			continue
 		}
-		if tool.Execute == nil {
-			return normalizedCall, errorToolResult(fmt.Sprintf("tool %q has no executor", normalizedCall.Name))
-		}
-		result, err := tool.Execute(ctx, normalizedCall)
-		if err != nil {
-			return normalizedCall, errorToolResult(err.Error())
-		}
-		return normalizedCall, result
+		result, err := executeKnownToolCall(ctx, req, tool, normalizedCall)
+		return normalizedCall, result, err
 	}
-	return normalizedCall, errorToolResult(fmt.Sprintf("unknown tool %q", normalizedCall.Name))
+	return normalizedCall, errorToolResult(fmt.Sprintf("unknown tool %q", normalizedCall.Name)), nil
+}
+
+func executeKnownToolCall(ctx context.Context, req RunRequest, tool Tool, call ToolCall) (ToolResult, error) {
+	for _, hook := range req.Hooks {
+		if hook == nil {
+			continue
+		}
+		if err := hook.PreTool(ctx, call); err != nil {
+			if errors.Is(err, ErrSkipTool) {
+				return errorToolResult("tool skipped by hook"), nil
+			}
+			return ToolResult{}, err
+		}
+	}
+
+	var result ToolResult
+	if tool.RequiresPermission {
+		decision, err := decidePermission(ctx, req, tool, call)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		if !decision.Allow {
+			reason := decision.Reason
+			if reason == "" {
+				reason = "permission denied"
+			}
+			result = errorToolResult(reason)
+			return runPostToolHooks(ctx, req.Hooks, call, result)
+		}
+	}
+
+	if tool.Execute == nil {
+		result = errorToolResult(fmt.Sprintf("tool %q has no executor", call.Name))
+		return runPostToolHooks(ctx, req.Hooks, call, result)
+	}
+
+	var err error
+	result, err = tool.Execute(ctx, call)
+	if err != nil {
+		result = errorToolResult(err.Error())
+	}
+	return runPostToolHooks(ctx, req.Hooks, call, result)
+}
+
+func decidePermission(ctx context.Context, req RunRequest, tool Tool, call ToolCall) (PermissionDecision, error) {
+	if req.Permission == nil {
+		return PermissionDecision{Allow: false, Reason: "permission denied: no permission handler configured"}, nil
+	}
+	return req.Permission.Decide(ctx, permissionRequest(req, tool, call))
+}
+
+func permissionRequest(req RunRequest, tool Tool, call ToolCall) PermissionRequest {
+	action := tool.PermissionAction
+	if action == "" {
+		action = tool.Name
+	}
+	target := ""
+	if tool.PermissionTarget != nil {
+		target = tool.PermissionTarget(call)
+	}
+	if target == "" {
+		target = string(call.Arguments)
+	}
+	return PermissionRequest{
+		Tool:      tool.Name,
+		Action:    action,
+		Target:    target,
+		Args:      append(json.RawMessage(nil), call.Arguments...),
+		SessionID: req.SessionID,
+	}
+}
+
+func runPostToolHooks(ctx context.Context, hooks []Hook, call ToolCall, result ToolResult) (ToolResult, error) {
+	for i := len(hooks) - 1; i >= 0; i-- {
+		hook := hooks[i]
+		if hook == nil {
+			continue
+		}
+		if err := hook.PostTool(ctx, call, &result); err != nil {
+			return ToolResult{}, err
+		}
+	}
+	return result, nil
 }
 
 // normalizeToolCallArguments enforces that arguments are a JSON object and
@@ -433,6 +522,15 @@ func toolSpecs(tools []Tool) []ToolSpec {
 		specs = append(specs, tool.ToolSpec)
 	}
 	return specs
+}
+
+func cloneHooks(hooks []Hook) []Hook {
+	if len(hooks) == 0 {
+		return nil
+	}
+	out := make([]Hook, len(hooks))
+	copy(out, hooks)
+	return out
 }
 
 func cloneMessages(messages []Message) []Message {

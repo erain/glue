@@ -5,18 +5,25 @@ import "github.com/erain/glue/loop"
 // Re-export the loop package's normalized types as part of the public API so
 // callers only need to import `glue`.
 type (
-	Message      = loop.Message
-	MessageRole  = loop.MessageRole
-	ContentPart  = loop.ContentPart
-	ContentType  = loop.ContentType
-	ImageContent = loop.ImageContent
-	ToolCall     = loop.ToolCall
-	ToolResult   = loop.ToolResult
-	ToolSpec     = loop.ToolSpec
-	ToolExecutor = loop.ToolExecutor
-	Tool         = loop.Tool
-	Usage        = loop.Usage
-	StopReason   = loop.StopReason
+	Message            = loop.Message
+	MessageRole        = loop.MessageRole
+	ContentPart        = loop.ContentPart
+	ContentType        = loop.ContentType
+	ImageContent       = loop.ImageContent
+	ToolCall           = loop.ToolCall
+	ToolResult         = loop.ToolResult
+	ToolSpec           = loop.ToolSpec
+	ToolExecutor       = loop.ToolExecutor
+	Tool               = loop.Tool
+	Usage              = loop.Usage
+	StopReason         = loop.StopReason
+	Permission         = loop.Permission
+	PermissionRequest  = loop.PermissionRequest
+	PermissionDecision = loop.PermissionDecision
+	RememberScope      = loop.RememberScope
+	AllowAll           = loop.AllowAll
+	DenyAll            = loop.DenyAll
+	Hook               = loop.Hook
 
 	ProviderRequest   = loop.ProviderRequest
 	Provider          = loop.Provider
@@ -26,6 +33,17 @@ type (
 	Event     = loop.Event
 	EventType = loop.EventType
 )
+
+// RememberScope constants re-exported from package loop.
+const (
+	RememberNever         = loop.RememberNever
+	RememberSession       = loop.RememberSession
+	RememberSessionTarget = loop.RememberSessionTarget
+	RememberForever       = loop.RememberForever
+)
+
+// ErrSkipTool re-exported from package loop.
+var ErrSkipTool = loop.ErrSkipTool
 
 // MessageRole constants re-exported from package loop.
 const (

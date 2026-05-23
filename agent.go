@@ -35,6 +35,8 @@ type AgentOptions struct {
 	Skills       map[string]Skill
 	Roles        []Role
 	Role         string
+	Permission   Permission
+	Hooks        []Hook
 
 	// Compactor, if non-nil and CompactionThreshold > 0, is invoked
 	// before every prompt whenever the in-memory transcript has more
@@ -56,6 +58,8 @@ type Agent struct {
 	store        Store
 	workDir      string
 	role         string
+	permission   Permission
+	hooks        []Hook
 
 	compactor           Compactor
 	compactionThreshold int
@@ -74,17 +78,19 @@ type Agent struct {
 // The Provider must be supplied for [Session.Prompt] to succeed.
 func NewAgent(options AgentOptions) *Agent {
 	return &Agent{
-		provider:     options.Provider,
-		model:        options.Model,
-		systemPrompt: options.SystemPrompt,
-		tools:        cloneTools(options.Tools),
-		options:      cloneMap(options.Options),
-		maxTurns:     options.MaxTurns,
+		provider:            options.Provider,
+		model:               options.Model,
+		systemPrompt:        options.SystemPrompt,
+		tools:               cloneTools(options.Tools),
+		options:             cloneMap(options.Options),
+		maxTurns:            options.MaxTurns,
 		store:               options.Store,
 		workDir:             options.WorkDir,
 		skills:              cloneSkills(options.Skills),
 		roles:               rolesFromSlice(options.Roles),
 		role:                options.Role,
+		permission:          options.Permission,
+		hooks:               cloneHooks(options.Hooks),
 		compactor:           options.Compactor,
 		compactionThreshold: options.CompactionThreshold,
 		sessions:            make(map[string]*Session),
@@ -247,5 +253,14 @@ func cloneMap(in map[string]any) map[string]any {
 	for k, v := range in {
 		out[k] = v
 	}
+	return out
+}
+
+func cloneHooks(in []Hook) []Hook {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Hook, len(in))
+	copy(out, in)
 	return out
 }
