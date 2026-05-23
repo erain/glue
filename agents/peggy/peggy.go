@@ -40,6 +40,12 @@ type Options struct {
 	// Settings.Store.
 	Store glue.Store
 
+	// Permission answers side-effecting tool requests. Nil means
+	// side-effecting tools are denied by the core loop. The CLI
+	// supplies an interactive implementation when coding tools are
+	// enabled.
+	Permission glue.Permission
+
 	// Stderr collects diagnostic warnings (missing SOUL.md etc).
 	// Defaults to os.Stderr.
 	Stderr io.Writer
@@ -137,6 +143,12 @@ func New(opts Options) (*Peggy, error) {
 			}
 		}
 	}
+	codingTools, codingSettings, err := CodingTools(settings.Coding)
+	if err != nil {
+		return nil, err
+	}
+	settings.Coding = codingSettings
+	tools = append(tools, codingTools...)
 	tools = append(tools, opts.ExtraTools...)
 
 	p.agent = glue.NewAgent(glue.AgentOptions{
@@ -145,6 +157,7 @@ func New(opts Options) (*Peggy, error) {
 		SystemPrompt:        finalSystem,
 		Tools:               tools,
 		Store:               store,
+		Permission:          opts.Permission,
 		Compactor:           compactor,
 		CompactionThreshold: settings.Compaction.Threshold,
 	})

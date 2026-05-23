@@ -36,6 +36,10 @@ type Settings struct {
 	// back to the framework defaults (target 8000 / keep 8).
 	Compaction CompactionSettings `json:"compaction"`
 
+	// Coding configures Peggy's local coding tools. Disabled by
+	// default; enable only for trusted local workspaces.
+	Coding CodingSettings `json:"coding"`
+
 	// Channels carries per-channel configuration subtrees keyed by
 	// channel name (e.g. "telegram"). Each channel package decodes
 	// its own subtree via a DecodeConfig helper. Empty means "no
@@ -58,6 +62,26 @@ type CompactionSettings struct {
 	Threshold int `json:"threshold"`
 }
 
+// CodingSettings configures local code-reading, editing, and command
+// execution tools.
+type CodingSettings struct {
+	// Enabled registers local coding tools when true.
+	Enabled bool `json:"enabled"`
+
+	// WorkDir is the workspace root for all coding tools. Empty uses
+	// the current working directory when Enabled is true.
+	WorkDir string `json:"work_dir"`
+
+	// AllowedBinaries is the basename allowlist for shell_exec.
+	// Empty falls back to DefaultCodingAllowedBinaries.
+	AllowedBinaries []string `json:"allowed_binaries"`
+
+	// AllowOverwrite is the host-level file overwrite policy for
+	// write_file. The model must also pass overwrite=true and the
+	// Permission implementation must allow the call.
+	AllowOverwrite bool `json:"allow_overwrite"`
+}
+
 // Environment variables consulted when paths aren't given explicitly.
 const (
 	EnvConfigPath = "PEGGY_CONFIG"
@@ -68,6 +92,11 @@ const (
 // DefaultProvider is the registry-default provider Peggy uses when
 // no settings file is present.
 const DefaultProvider = "codex"
+
+// DefaultCodingAllowedBinaries is the conservative shell_exec allowlist
+// Peggy uses when coding tools are enabled and no explicit list is
+// configured.
+var DefaultCodingAllowedBinaries = []string{"go", "git", "make", "node", "npm", "python", "python3"}
 
 // LoadSettings reads and parses settings.json. When path is empty,
 // the loader walks the resolution chain $PEGGY_CONFIG →
@@ -106,6 +135,13 @@ func LoadSettings(path string) (Settings, string, error) {
 			return Settings{}, resolved, err
 		}
 		s.Store.Path = expanded
+	}
+	if s.Coding.WorkDir != "" {
+		expanded, err := expandPath(s.Coding.WorkDir)
+		if err != nil {
+			return Settings{}, resolved, err
+		}
+		s.Coding.WorkDir = expanded
 	}
 	return s, resolved, nil
 }
@@ -212,6 +248,9 @@ func fillDefaults(s Settings) Settings {
 	}
 	if s.Compaction.KeepRecent == 0 {
 		s.Compaction.KeepRecent = 8
+	}
+	if len(s.Coding.AllowedBinaries) == 0 {
+		s.Coding.AllowedBinaries = append([]string(nil), DefaultCodingAllowedBinaries...)
 	}
 	return s
 }
