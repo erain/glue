@@ -64,9 +64,12 @@ memory-bearing agents that may live for days. The framework expansions
 required to support that category — Codex provider, summarizing
 compactor + FTS5 session search, daemon mode, channel adapter pattern,
 Executor / Permission / Hook interfaces — are designed in
-ADRs 0005-0008 and the M2/M3 ADRs that follow them. The architectural
-rule that holds the expansion together is in ADR-0005 §1: every product
-concern enters glue only as an interface the host fills in.
+ADRs 0005-0009 and the M3 ADRs that follow them. The
+Executor / Permission / Hook trio is specified in
+[`adr/0009-executor-permission-hook.md`](adr/0009-executor-permission-hook.md).
+The architectural rule that holds the expansion together is in
+ADR-0005 §1: every product concern enters glue only as an interface the
+host fills in.
 
 **Channels** (Telegram, future TUI / web / IDE) live in product
 packages under `agents/<name>/channels/<channel>` per
