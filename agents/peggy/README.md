@@ -4,10 +4,12 @@
 > remembers you across sessions, and curates facts on her own.
 
 A long-running personal-assistant agent built on the
-[glue](../..) framework. **v0.2** ships:
+[glue](../..) framework. **v0.3** ships:
 
 - a single-prompt **CLI** (`peggy`)
 - a **Telegram bot** binary (`peggy-telegram`) with a chat-id allowlist
+- a local **HTTP+SSE daemon** (`peggy serve`) shared by terminal and
+  Telegram clients
 - model-callable **`remember` / `recall` tools** for durable
   cross-session memory
 - **token-aware summarizing compaction** so long sessions don't blow
@@ -17,12 +19,13 @@ A long-running personal-assistant agent built on the
 - opt-in local **coding tools** for reading files, writing files,
   running allowlisted commands, and inspecting git branch context
 - per-call permission prompts for side-effecting coding tools in the
-  CLI and Telegram
+  CLI, Telegram, and daemon clients
+- per-channel permission tiers (`prompt`, `read_only`, `trusted`)
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
 Tracker: [#110](https://github.com/erain/glue/issues/110). M3
-("multi-channel daemon") is active.
+("multi-channel daemon") is the v0.3 release milestone.
 
 ## Quickstart
 
@@ -201,6 +204,35 @@ uses the `cli` tier and `telegram:<chat_id>` uses the `telegram` tier.
 Use this to keep a trusted local terminal fast while making Telegram
 ask every time, or to make Telegram read-only.
 
+Recommended v0.3 daily-driver shape:
+
+```json
+{
+  "store": {
+    "type": "sqlite",
+    "path": "~/.peggy/peggy.db"
+  },
+  "coding": {
+    "enabled": true,
+    "work_dir": "/path/to/trusted/repo",
+    "allowed_binaries": ["go", "git", "make"],
+    "allow_overwrite": false
+  },
+  "permissions": {
+    "default_tier": "prompt",
+    "channels": {
+      "cli": "trusted",
+      "telegram": "prompt"
+    }
+  }
+}
+```
+
+Run `peggy serve --config ~/.config/peggy/settings.json`, connect from
+a terminal with `glue connect --prompt "..." --id cli:daily`, and start
+Telegram with `peggy-telegram --daemon`. The daemon prints the base URL
+and metadata path but never prints the bearer token.
+
 ## Coding Tools
 
 Coding mode is opt-in. Enable it in `settings.json` with
@@ -284,7 +316,7 @@ that made them, so a Telegram allow does not silently authorize a
 terminal request.
 
 Coding mode is a trusted-local workflow. The tool layer constrains
-paths, binaries, overwrites, output size, and permissions, but v0.2
+paths, binaries, overwrites, output size, and permissions, but Peggy
 uses the host process via `glue.LocalExecutor`; it is not a container
 or VM sandbox.
 
@@ -336,8 +368,9 @@ near-term follow-up.
 
 ## What Peggy supports today
 
-- **Single-prompt CLI** (`peggy`) and **Telegram bot** (`peggy-telegram`)
-  on the same agent + same session store.
+- **Single-prompt CLI** (`peggy`), **daemon mode** (`peggy serve`),
+  terminal daemon client (`glue connect`), and **Telegram bot**
+  (`peggy-telegram`) in standalone or daemon-client mode.
 - File or SQLite session persistence. SQLite enables cross-session
   FTS5 search.
 - **Model-callable `remember` / `recall` tools** for durable
@@ -349,12 +382,13 @@ near-term follow-up.
 - Opt-in **local coding mode** for CLI and Telegram: read files, write
   files, run allowlisted commands, and inspect git branch context with
   per-call permission prompts for side effects.
+- **Permission tiers** by channel/client: prompt, read-only, or trusted.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
   your existing ChatGPT subscription via `codex login` — no per-token
   bill.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.2 summary and
+See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.3 summary and
 known limitations.
 
 ## Channels
@@ -382,13 +416,10 @@ external transports. The pattern is designed in
 Per tracker [#110](https://github.com/erain/glue/issues/110), in
 priority order:
 
-- **M3 — multi-channel daemon.** `peggy serve` plus daemon clients so
-  one long-running Peggy serves a terminal, Telegram, and future
-  clients concurrently. Next up: per-channel permission tiers.
 - **M4 — ecosystem.** MCP client (stdio + HTTP), cost tracking,
   `providers/anthropic` when budget allows.
 
-Near-term follow-ups that may slip into v0.2.x patches: a `peggy
+Near-term follow-ups that may slip into v0.3.x patches: a `peggy
 memories` subcommand (list / export / forget), edit-in-place
 Telegram streaming, FTS5 prefix-match on session ids for
 channel-scoped recall.

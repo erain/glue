@@ -9,11 +9,12 @@
 //     system prompt so the model sees who Peggy is and who you are
 //     on every turn.
 //   - settings.json — JSON config (provider, model, store path,
-//     compaction knobs).
+//     compaction knobs, coding tools, channels, and permission tiers).
 //
-// v0.2 ships the single-prompt CLI, Telegram channel, durable memory,
-// and opt-in local coding tools with per-call permission prompts. The
-// daemon mode arrives in a later milestone. Tracker:
+// v0.3 ships the single-prompt CLI, Telegram channel, durable memory,
+// opt-in local coding tools, and a local HTTP+SSE daemon so terminal
+// and Telegram clients can share one long-running Peggy process.
+// Tracker:
 // https://github.com/erain/glue/issues/110.
 //
 // Design rule (per ADR-0005): every product concern lives in this
