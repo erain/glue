@@ -126,9 +126,82 @@ func TestPeggyV03ReleaseSmoke(t *testing.T) {
 	}
 }
 
+func TestPeggyDaemonExposesMCPCatalogs(t *testing.T) {
+	p, err := New(Options{
+		Settings: Settings{
+			MCP: MCPSettings{Servers: map[string]MCPServerSettings{
+				"filesystem": mcpTestServer("resources_only", ""),
+				"briefs":     mcpTestServer("prompts_only", ""),
+			}},
+		},
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var resources struct {
+		Resources []daemon.MCPResourceCatalogEntry `json:"resources"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/mcp/resources", &resources)
+	if len(resources.Resources) != 1 || resources.Resources[0].Server != "filesystem" || resources.Resources[0].URI != "file:///workspace/README.md" {
+		t.Fatalf("resources = %+v", resources.Resources)
+	}
+
+	var prompts struct {
+		Prompts []daemon.MCPPromptCatalogEntry `json:"prompts"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/mcp/prompts", &prompts)
+	if len(prompts.Prompts) != 1 || prompts.Prompts[0].Server != "briefs" || prompts.Prompts[0].Name != "daily_brief" {
+		t.Fatalf("prompts = %+v", prompts.Prompts)
+	}
+
+	var status struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/status", &status)
+	for _, want := range []string{"mcp_resources", "mcp_prompts"} {
+		if !containsString(status.Capabilities, want) {
+			t.Fatalf("capabilities = %v, missing %q", status.Capabilities, want)
+		}
+	}
+}
+
 type startRunResponse struct {
 	RunID     string `json:"run_id"`
 	EventsURL string `json:"events_url"`
+}
+
+func getPeggyDaemonJSON(t *testing.T, url string, out any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer tok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d", url, resp.StatusCode, http.StatusOK)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func startPeggyDaemonRun(t *testing.T, baseURL string) startRunResponse {

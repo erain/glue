@@ -1222,7 +1222,7 @@ Flags:
 	defer p.Close()
 
 	handler, err := daemon.New(daemon.Options{
-		Host:              p.Agent(),
+		Host:              p,
 		Token:             token,
 		PermissionPolicy:  NewDaemonPermissionPolicy(settings.Permissions),
 		PermissionTimeout: *permissionTimeout,

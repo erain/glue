@@ -196,6 +196,8 @@ session history and memory store.
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
+glue connect --mcp-resources
+glue connect --mcp-prompts
 glue connect --prompt "summarize today's plan" --id cli:daily --usage
 ```
 
@@ -214,8 +216,11 @@ Useful `serve` flags:
   over the daemon protocol for the connected client to answer.
 
 Startup output prints the `base_url` and metadata path, never the
-bearer token. Add `--usage` to prompt-mode `glue connect` when you want
-provider-reported token usage on stderr. Stop the daemon with
+bearer token. `glue connect --inspect` includes status, tools, and any
+daemon-advertised MCP resource/prompt catalogs. Use
+`--mcp-resources-json` or `--mcp-prompts-json` when another client needs
+the catalog as data. Add `--usage` to prompt-mode `glue connect` when
+you want provider-reported token usage on stderr. Stop the daemon with
 SIGINT/SIGTERM.
 
 Telegram can attach to the same daemon:
@@ -382,6 +387,16 @@ lists prompt templates and `peggy mcp prompt` renders one prompt with
 repeatable `--arg key=value` values. Servers that do not advertise the
 requested MCP capability are skipped for listing and cannot serve that
 request.
+
+When Peggy is already running as a daemon, remote clients can inspect
+the same initialized MCP catalog through the daemon protocol:
+
+```sh
+glue connect --mcp-resources
+glue connect --mcp-resources-json
+glue connect --mcp-prompts
+glue connect --mcp-prompts-json
+```
 
 The permission choices are intentionally small:
 

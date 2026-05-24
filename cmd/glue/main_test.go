@@ -791,6 +791,197 @@ func TestRunCLIConnectListsToolsJSON(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectListsMCPResources(t *testing.T) {
+	size := int64(1234)
+	var sawResources bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mcp/resources":
+			sawResources = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("resources method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("resources auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemonMCPResourceCatalog{Resources: []daemon.MCPResourceCatalogEntry{{
+				Server:      "filesystem",
+				URI:         "file:///workspace/README.md",
+				Name:        "readme",
+				Title:       "Project README",
+				Description: "repository overview",
+				MIMEType:    "text/markdown",
+				Annotations: map[string]any{"audience": []string{"assistant"}},
+				Size:        &size,
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-resources",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawResources || sawRun {
+		t.Fatalf("sawResources=%v sawRun=%v", sawResources, sawRun)
+	}
+	for _, want := range []string{
+		"file:///workspace/README.md",
+		"server: filesystem",
+		"name: readme",
+		"title: Project README",
+		"description: repository overview",
+		"mime_type: text/markdown",
+		"size: 1234",
+		`annotations: {"audience":["assistant"]}`,
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectListsMCPResourcesJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/mcp/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemonMCPResourceCatalog{Resources: []daemon.MCPResourceCatalogEntry{{
+			Server: "filesystem",
+			URI:    "file:///workspace/README.md",
+			Name:   "readme",
+		}}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-resources-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var catalog daemonMCPResourceCatalog
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if len(catalog.Resources) != 1 || catalog.Resources[0].URI != "file:///workspace/README.md" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
+func TestRunCLIConnectListsMCPPrompts(t *testing.T) {
+	var sawPrompts bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mcp/prompts":
+			sawPrompts = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("prompts method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("prompts auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemonMCPPromptCatalog{Prompts: []daemon.MCPPromptCatalogEntry{{
+				Server:      "linear",
+				Name:        "daily_brief",
+				Title:       "Daily Brief",
+				Description: "Draft a concise daily briefing",
+				Arguments: []daemon.MCPPromptCatalogArgument{{
+					Name:        "topic",
+					Description: "Subject to brief",
+					Required:    true,
+				}},
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-prompts",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawPrompts || sawRun {
+		t.Fatalf("sawPrompts=%v sawRun=%v", sawPrompts, sawRun)
+	}
+	for _, want := range []string{
+		"daily_brief",
+		"server: linear",
+		"title: Daily Brief",
+		"description: Draft a concise daily briefing",
+		"arguments:",
+		"topic required - Subject to brief",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectListsMCPPromptsJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/mcp/prompts" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemonMCPPromptCatalog{Prompts: []daemon.MCPPromptCatalogEntry{{
+			Server: "linear",
+			Name:   "daily_brief",
+		}}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-prompts-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var catalog daemonMCPPromptCatalog
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if len(catalog.Prompts) != 1 || catalog.Prompts[0].Name != "daily_brief" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
 func TestRunCLIConnectShowsStatus(t *testing.T) {
 	var sawStatus bool
 	var sawRun bool
@@ -996,6 +1187,64 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 	}
 	if len(inspect.Tools) != 1 || inspect.Tools[0].Name != "shell_exec" || inspect.Tools[0].PermissionAction != "exec" {
 		t.Fatalf("tools = %+v", inspect.Tools)
+	}
+}
+
+func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
+	var sawResources bool
+	var sawPrompts bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
+				OK:           true,
+				Version:      1,
+				Capabilities: []string{"status", "tools", "mcp_resources", "mcp_prompts"},
+			})
+		case "/v1/tools":
+			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{})
+		case "/v1/mcp/resources":
+			sawResources = true
+			writeJSONResponse(t, w, http.StatusOK, daemonMCPResourceCatalog{Resources: []daemon.MCPResourceCatalogEntry{{
+				Server: "filesystem",
+				URI:    "file:///workspace/README.md",
+				Name:   "readme",
+			}}})
+		case "/v1/mcp/prompts":
+			sawPrompts = true
+			writeJSONResponse(t, w, http.StatusOK, daemonMCPPromptCatalog{Prompts: []daemon.MCPPromptCatalogEntry{{
+				Server: "linear",
+				Name:   "daily_brief",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--inspect",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawResources || !sawPrompts {
+		t.Fatalf("sawResources=%v sawPrompts=%v", sawResources, sawPrompts)
+	}
+	for _, want := range []string{
+		"mcp_resources:",
+		"file:///workspace/README.md",
+		"mcp_prompts:",
+		"daily_brief",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
 	}
 }
 

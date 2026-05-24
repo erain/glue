@@ -77,6 +77,23 @@ func (sessionOnlyHost) Session(context.Context, string, ...glue.SessionOption) (
 	return nil, errors.New("unused")
 }
 
+type mcpCatalogHost struct {
+	resources []MCPResourceCatalogEntry
+	prompts   []MCPPromptCatalogEntry
+}
+
+func (mcpCatalogHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (h mcpCatalogHost) MCPResourceCatalog(context.Context) ([]MCPResourceCatalogEntry, error) {
+	return h.resources, nil
+}
+
+func (h mcpCatalogHost) MCPPromptCatalog(context.Context) ([]MCPPromptCatalogEntry, error) {
+	return h.prompts, nil
+}
+
 func TestServerAuthAndHealth(t *testing.T) {
 	srv := newTestServer(t, glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}}))
 	ts := httptest.NewServer(srv)
@@ -170,6 +187,111 @@ func TestServerToolsCatalogUnsupportedHost(t *testing.T) {
 	}
 	if len(catalog.Tools) != 0 {
 		t.Fatalf("catalog = %+v, want empty", catalog.Tools)
+	}
+}
+
+func TestServerMCPCatalogs(t *testing.T) {
+	size := int64(1234)
+	srv := newTestServer(t, mcpCatalogHost{
+		resources: []MCPResourceCatalogEntry{{
+			Server:      "filesystem",
+			URI:         "file:///workspace/README.md",
+			Name:        "readme",
+			Title:       "Project README",
+			Description: "repository overview",
+			MIMEType:    "text/markdown",
+			Annotations: map[string]any{"audience": []any{"assistant"}},
+			Size:        &size,
+		}},
+		prompts: []MCPPromptCatalogEntry{{
+			Server:      "linear",
+			Name:        "daily_brief",
+			Title:       "Daily Brief",
+			Description: "Draft a concise daily briefing",
+			Arguments: []MCPPromptCatalogArgument{{
+				Name:        "topic",
+				Description: "Subject to brief",
+				Required:    true,
+			}},
+		}},
+	})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/mcp/resources", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated resources status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/mcp/resources", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resources status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var resources mcpResourceCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&resources); err != nil {
+		t.Fatal(err)
+	}
+	if len(resources.Resources) != 1 || resources.Resources[0].URI != "file:///workspace/README.md" || resources.Resources[0].MIMEType != "text/markdown" {
+		t.Fatalf("resources = %+v", resources.Resources)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/mcp/prompts", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prompts status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var prompts mcpPromptCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&prompts); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts.Prompts) != 1 || prompts.Prompts[0].Name != "daily_brief" || len(prompts.Prompts[0].Arguments) != 1 {
+		t.Fatalf("prompts = %+v", prompts.Prompts)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	var status statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"mcp_resources", "mcp_prompts"} {
+		if !contains(status.Capabilities, want) {
+			t.Fatalf("capabilities = %v, missing %q", status.Capabilities, want)
+		}
+	}
+}
+
+func TestServerMCPCatalogsUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/mcp/resources", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resources status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var resources mcpResourceCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&resources); err != nil {
+		t.Fatal(err)
+	}
+	if len(resources.Resources) != 0 {
+		t.Fatalf("resources = %+v, want empty", resources.Resources)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/mcp/prompts", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prompts status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var prompts mcpPromptCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&prompts); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts.Prompts) != 0 {
+		t.Fatalf("prompts = %+v, want empty", prompts.Prompts)
 	}
 }
 
