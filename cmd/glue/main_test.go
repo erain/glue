@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/daemon"
 )
 
 type scriptedProvider struct {
@@ -49,6 +51,26 @@ func textTurn(text string) []glue.ProviderEvent {
 		{Type: glue.ProviderEventStart},
 		{Type: glue.ProviderEventTextDelta, Delta: text},
 		{Type: glue.ProviderEventDone},
+	}
+}
+
+func writeJSONResponse(t *testing.T, w http.ResponseWriter, status int, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSSETest(t *testing.T, w io.Writer, event daemon.EventEnvelope) {
+	t.Helper()
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -434,6 +456,196 @@ func TestServeDaemonWritesMetadataAndShutsDown(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "metadata: "+metadataPath) {
 		t.Fatalf("stdout = %q, want metadata path", stdout.String())
+	}
+}
+
+func TestResolveConnectConfigUsesMetadataAndOverrides(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "daemon.json")
+	if err := writeDaemonMetadata(metadataPath, daemonMetadata{
+		Version: 1,
+		BaseURL: "http://metadata",
+		Token:   "meta-token",
+		PID:     123,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := resolveConnectConfig(connectConfig{MetadataPath: metadataPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "http://metadata" || cfg.Token != "meta-token" || cfg.SessionID != "default" || !strings.HasPrefix(cfg.ClientID, "cli:") {
+		t.Fatalf("metadata config = %+v", cfg)
+	}
+
+	cfg, err = resolveConnectConfig(connectConfig{
+		MetadataPath: metadataPath,
+		BaseURL:      "http://override/",
+		Token:        "override-token",
+		SessionID:    "work",
+		ClientID:     "cli:test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "http://override" || cfg.Token != "override-token" || cfg.SessionID != "work" || cfg.ClientID != "cli:test" {
+		t.Fatalf("override config = %+v", cfg)
+	}
+
+	t.Setenv("GLUE_DAEMON_TOKEN", "env-token")
+	cfg, err = resolveConnectConfig(connectConfig{
+		MetadataPath: filepath.Join(t.TempDir(), "missing.json"),
+		BaseURL:      "http://explicit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "http://explicit" || cfg.Token != "env-token" {
+		t.Fatalf("env fallback config = %+v", cfg)
+	}
+}
+
+func TestRunCLIConnectStartsRunAndStreamsText(t *testing.T) {
+	var got startRunPayload
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/dev/runs":
+			if r.Method != http.MethodPost {
+				t.Fatalf("start method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("auth = %q", auth)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			writeJSONResponse(t, w, http.StatusCreated, startRunResult{RunID: "run_1", SessionID: "dev", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("events auth = %q", auth)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "hi"}})
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "run_done"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--prompt", "hello",
+		"--id", "dev",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+		"--model", "gemini/custom",
+		"--role", "reviewer",
+		"--max-turns", "3",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "hi\n" {
+		t.Fatalf("stdout = %q, want streamed text", stdout.String())
+	}
+	if got.Text != "hello" || got.Model != "gemini/custom" || got.Role != "reviewer" || got.MaxTurns != 3 || got.ClientID == "" {
+		t.Fatalf("start payload = %+v", got)
+	}
+}
+
+func TestRunCLIConnectPostsPermissionDecision(t *testing.T) {
+	decisionCh := make(chan connectPermissionDecision, 1)
+	observedDecisionCh := make(chan connectPermissionDecision, 1)
+	clientIDCh := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/default/runs":
+			writeJSONResponse(t, w, http.StatusCreated, startRunResult{RunID: "run_1", SessionID: "default", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "permission_request", Payload: connectPermissionPayload{
+				PermissionID: "perm_1",
+				Request: glue.PermissionRequest{
+					Tool:   "shell_exec",
+					Action: "exec",
+					Target: "go test ./...",
+				},
+			}})
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			select {
+			case decision := <-decisionCh:
+				observedDecisionCh <- decision
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for permission decision")
+			}
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "done"}})
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "run_done"})
+		case "/v1/runs/run_1/permissions/perm_1/decision":
+			clientIDCh <- r.Header.Get("X-Glue-Client-ID")
+			var decision connectPermissionDecision
+			if err := json.NewDecoder(r.Body).Decode(&decision); err != nil {
+				t.Fatal(err)
+			}
+			decisionCh <- decision
+			writeJSONResponse(t, w, http.StatusOK, map[string]any{"accepted": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--prompt", "run tests",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+		"--client-id", "cli:test",
+	}, strings.NewReader("t\n"), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	decision := <-observedDecisionCh
+	if !decision.Allow || decision.RememberFor != "session_target" {
+		t.Fatalf("decision = %+v, want session_target allow", decision)
+	}
+	if got := <-clientIDCh; got != "cli:test" {
+		t.Fatalf("client id header = %q", got)
+	}
+	if stdout.String() != "done\n" {
+		t.Fatalf("stdout = %q, want done", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Permission requested: shell_exec exec") {
+		t.Fatalf("stderr = %q, want permission prompt", stderr.String())
+	}
+}
+
+func TestCancelDaemonRunDeletesRun(t *testing.T) {
+	deleted := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+			t.Fatalf("auth = %q", auth)
+		}
+		deleted <- r.URL.Path
+		writeJSONResponse(t, w, http.StatusAccepted, map[string]any{"canceled": true})
+	}))
+	defer ts.Close()
+
+	err := cancelDaemonRun(context.Background(), connectConfig{BaseURL: ts.URL, Token: "tok"}, "run_1", http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := <-deleted; got != "/v1/runs/run_1" {
+		t.Fatalf("delete path = %q", got)
 	}
 }
 

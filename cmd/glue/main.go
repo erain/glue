@@ -10,6 +10,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -20,6 +21,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -72,6 +74,48 @@ type daemonMetadata struct {
 	PID     int    `json:"pid"`
 }
 
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+type connectConfig struct {
+	BaseURL      string
+	Token        string
+	MetadataPath string
+	SessionID    string
+	Prompt       string
+	ClientID     string
+	Model        string
+	Role         string
+	MaxTurns     int
+}
+
+type startRunPayload struct {
+	Text     string `json:"text"`
+	ClientID string `json:"client_id,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Model    string `json:"model,omitempty"`
+	MaxTurns int    `json:"max_turns,omitempty"`
+}
+
+type startRunResult struct {
+	RunID     string `json:"run_id"`
+	SessionID string `json:"session_id"`
+	EventsURL string `json:"events_url"`
+}
+
+type connectPermissionPayload struct {
+	PermissionID string                 `json:"permission_id"`
+	Request      glue.PermissionRequest `json:"request"`
+	ExpiresAt    time.Time              `json:"expires_at"`
+}
+
+type connectPermissionDecision struct {
+	Allow       bool   `json:"allow"`
+	Reason      string `json:"reason,omitempty"`
+	RememberFor string `json:"remember_for,omitempty"`
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -86,10 +130,14 @@ func defaultGeminiFactory() (glue.Provider, error) {
 }
 
 func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory) int {
-	return runCLIWithServe(ctx, args, stdout, stderr, newProvider, serveDaemon)
+	return runCLIWithDeps(ctx, args, os.Stdin, stdout, stderr, newProvider, serveDaemon, http.DefaultClient)
 }
 
 func runCLIWithServe(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc) int {
+	return runCLIWithDeps(ctx, args, os.Stdin, stdout, stderr, newProvider, serve, http.DefaultClient)
+}
+
+func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc, client httpDoer) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		printUsage(stdout)
 		return 0
@@ -98,6 +146,12 @@ func runCLIWithServe(ctx context.Context, args []string, stdout io.Writer, stder
 	switch args[0] {
 	case "run":
 		if err := runCommand(ctx, args[1:], stdout, stderr, newProvider); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "connect":
+		if err := connectCommand(ctx, args[1:], stdin, stdout, stderr, client); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -236,6 +290,291 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	}, handler, stdout)
 }
 
+func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+	flags := flag.NewFlagSet("glue connect", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	sessionID := flags.String("id", "default", "session id")
+	prompt := flags.String("prompt", "", "prompt text")
+	baseURL := flags.String("base-url", "", "daemon base URL; defaults to metadata file")
+	tokenFlag := flags.String("token", "", "daemon bearer token; defaults to metadata file or GLUE_DAEMON_TOKEN")
+	metadataPath := flags.String("metadata", defaultMetadataPath(), "connection metadata JSON path; empty disables metadata file")
+	clientID := flags.String("client-id", defaultClientID(), "daemon client id")
+	model := flags.String("model", "", "per-run model override")
+	role := flags.String("role", "", "per-run role override")
+	maxTurns := flags.Int("max-turns", 0, "per-run loop turn budget")
+	var envs envFiles
+	flags.Var(&envs, "env", "env file path; repeatable")
+
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*prompt) == "" {
+		return errors.New("missing required --prompt")
+	}
+	if err := loadEnvFiles(envs); err != nil {
+		return err
+	}
+	cfg, err := resolveConnectConfig(connectConfig{
+		BaseURL:      *baseURL,
+		Token:        *tokenFlag,
+		MetadataPath: *metadataPath,
+		SessionID:    *sessionID,
+		Prompt:       *prompt,
+		ClientID:     *clientID,
+		Model:        *model,
+		Role:         *role,
+		MaxTurns:     *maxTurns,
+	})
+	if err != nil {
+		return err
+	}
+	return runConnect(ctx, cfg, stdin, stdout, stderr, client)
+}
+
+func resolveConnectConfig(cfg connectConfig) (connectConfig, error) {
+	var meta daemonMetadata
+	var metadataErr error
+	if strings.TrimSpace(cfg.MetadataPath) != "" {
+		loaded, err := readDaemonMetadata(cfg.MetadataPath)
+		if err != nil {
+			metadataErr = err
+		} else {
+			meta = loaded
+		}
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = meta.BaseURL
+	}
+	if strings.TrimSpace(cfg.Token) == "" {
+		cfg.Token = meta.Token
+	}
+	if strings.TrimSpace(cfg.Token) == "" {
+		cfg.Token = strings.TrimSpace(os.Getenv("GLUE_DAEMON_TOKEN"))
+	}
+	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	cfg.Token = strings.TrimSpace(cfg.Token)
+	cfg.SessionID = strings.TrimSpace(cfg.SessionID)
+	cfg.ClientID = strings.TrimSpace(cfg.ClientID)
+	if cfg.SessionID == "" {
+		cfg.SessionID = "default"
+	}
+	if cfg.ClientID == "" {
+		cfg.ClientID = defaultClientID()
+	}
+	if cfg.BaseURL == "" {
+		if metadataErr != nil {
+			return cfg, metadataErr
+		}
+		return cfg, errors.New("daemon base URL is required (metadata missing or pass --base-url)")
+	}
+	if cfg.Token == "" {
+		if metadataErr != nil {
+			return cfg, metadataErr
+		}
+		return cfg, errors.New("daemon token is required (metadata missing, pass --token, or set GLUE_DAEMON_TOKEN)")
+	}
+	return cfg, nil
+}
+
+func runConnect(ctx context.Context, cfg connectConfig, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+	start, err := startDaemonRun(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = cancelDaemonRun(context.Background(), cfg, start.RunID, client)
+		case <-done:
+		}
+	}()
+	return streamDaemonRun(ctx, cfg, start, bufio.NewReader(stdin), stdout, stderr, client)
+}
+
+func startDaemonRun(ctx context.Context, cfg connectConfig, client httpDoer) (startRunResult, error) {
+	payload := startRunPayload{
+		Text:     cfg.Prompt,
+		ClientID: cfg.ClientID,
+		Role:     strings.TrimSpace(cfg.Role),
+		Model:    strings.TrimSpace(cfg.Model),
+		MaxTurns: cfg.MaxTurns,
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return startRunResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/v1/sessions/"+url.PathEscape(cfg.SessionID)+"/runs", &body)
+	if err != nil {
+		return startRunResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return startRunResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return startRunResult{}, fmt.Errorf("daemon start run: %s", httpStatusError(resp))
+	}
+	var out startRunResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return startRunResult{}, err
+	}
+	if out.RunID == "" || out.EventsURL == "" {
+		return startRunResult{}, errors.New("daemon start run: missing run id or events URL")
+	}
+	return out, nil
+}
+
+func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResult, input *bufio.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+start.EventsURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon event stream: %s", httpStatusError(resp))
+	}
+
+	wroteDelta := false
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event daemon.EventEnvelope
+		dec := json.NewDecoder(strings.NewReader(strings.TrimPrefix(line, "data: ")))
+		dec.UseNumber()
+		if err := dec.Decode(&event); err != nil {
+			return err
+		}
+		switch event.Type {
+		case string(glue.EventTextDelta):
+			if delta := payloadString(event.Payload, "delta"); delta != "" {
+				fmt.Fprint(stdout, delta)
+				wroteDelta = true
+			}
+		case "permission_request":
+			if wroteDelta {
+				fmt.Fprintln(stdout)
+				wroteDelta = false
+			}
+			perm, err := decodePayload[connectPermissionPayload](event.Payload)
+			if err != nil {
+				return err
+			}
+			decision, err := promptPermission(input, stderr, perm)
+			if err != nil {
+				return err
+			}
+			if err := postPermissionDecision(ctx, cfg, start.RunID, perm.PermissionID, decision, client); err != nil {
+				return err
+			}
+		case "run_done":
+			if wroteDelta {
+				fmt.Fprintln(stdout)
+				return nil
+			}
+			if text := payloadString(event.Payload, "text"); text != "" {
+				fmt.Fprintln(stdout, text)
+			}
+			return nil
+		case "run_error":
+			if wroteDelta {
+				fmt.Fprintln(stdout)
+			}
+			if msg := payloadErrorMessage(event.Payload); msg != "" {
+				return errors.New(msg)
+			}
+			return errors.New("daemon run failed")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return errors.New("daemon event stream closed before terminal event")
+}
+
+func promptPermission(input *bufio.Reader, stderr io.Writer, perm connectPermissionPayload) (connectPermissionDecision, error) {
+	req := perm.Request
+	fmt.Fprintf(stderr, "\nPermission requested: %s", req.Tool)
+	if req.Action != "" {
+		fmt.Fprintf(stderr, " %s", req.Action)
+	}
+	if req.Target != "" {
+		fmt.Fprintf(stderr, "\nTarget: %s", req.Target)
+	}
+	fmt.Fprint(stderr, "\n[d]eny, [a]llow once, allow for [s]ession, session [t]arget, [f]orever: ")
+	raw, err := input.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return connectPermissionDecision{}, err
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "a", "allow", "allow once", "y", "yes":
+		return connectPermissionDecision{Allow: true}, nil
+	case "s", "session":
+		return connectPermissionDecision{Allow: true, RememberFor: "session"}, nil
+	case "t", "target", "session_target", "session target":
+		return connectPermissionDecision{Allow: true, RememberFor: "session_target"}, nil
+	case "f", "forever":
+		return connectPermissionDecision{Allow: true, RememberFor: "forever"}, nil
+	default:
+		return connectPermissionDecision{Allow: false, Reason: "permission denied by glue connect"}, nil
+	}
+}
+
+func postPermissionDecision(ctx context.Context, cfg connectConfig, runID, permissionID string, decision connectPermissionDecision, client httpDoer) error {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(decision); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/v1/runs/"+url.PathEscape(runID)+"/permissions/"+url.PathEscape(permissionID)+"/decision", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Glue-Client-ID", cfg.ClientID)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon permission decision: %s", httpStatusError(resp))
+	}
+	return nil
+}
+
+func cancelDaemonRun(ctx context.Context, cfg connectConfig, runID string, client httpDoer) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfg.BaseURL+"/v1/runs/"+url.PathEscape(runID), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("daemon cancel run: %s", httpStatusError(resp))
+	}
+	return nil
+}
+
 func newAgent(newProvider providerFactory, model, storeDir, workDir string) (*glue.Agent, error) {
 	provider, err := newProvider()
 	if err != nil {
@@ -337,6 +676,25 @@ func defaultMetadataPath() string {
 	return filepath.Join(dir, "glue", "daemon.json")
 }
 
+func defaultClientID() string {
+	return fmt.Sprintf("cli:%d", os.Getpid())
+}
+
+func readDaemonMetadata(path string) (daemonMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return daemonMetadata{}, err
+	}
+	var meta daemonMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return daemonMetadata{}, err
+	}
+	if meta.Version != 1 {
+		return daemonMetadata{}, fmt.Errorf("metadata %s: unsupported version %d", path, meta.Version)
+	}
+	return meta, nil
+}
+
 func writeDaemonMetadata(path string, meta daemonMetadata) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -357,14 +715,65 @@ func writeDaemonMetadata(path string, meta daemonMetadata) error {
 	return os.Chmod(path, 0o600)
 }
 
+func decodePayload[T any](payload any) (T, error) {
+	var out T
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(data, &out)
+	return out, err
+}
+
+func payloadString(payload any, key string) string {
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := m[key].(string)
+	return value
+}
+
+func payloadErrorMessage(payload any) string {
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	errValue, ok := m["error"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	msg, _ := errValue["message"].(string)
+	return msg
+}
+
+func httpStatusError(resp *http.Response) string {
+	var out struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	if out.Error.Message != "" {
+		if out.Error.Code != "" {
+			return fmt.Sprintf("%s: %s", out.Error.Code, out.Error.Message)
+		}
+		return out.Error.Message
+	}
+	return resp.Status
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--env <path>]
   glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--env <path>]
+  glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
-  run    Run the local Gemini-backed agent.
-  serve  Start a local HTTP+SSE daemon for Glue sessions.
+  run      Run the local Gemini-backed agent.
+  serve    Start a local HTTP+SSE daemon for Glue sessions.
+  connect  Start a daemon run and stream it in the terminal.
 
 Flags:
   --id       Session id. Defaults to "default".
@@ -375,6 +784,9 @@ Flags:
   --listen   Serve listen address. Defaults to 127.0.0.1:0.
   --token    Serve bearer token. Defaults to GLUE_DAEMON_TOKEN or a generated token.
   --metadata Serve connection metadata JSON. Defaults to the user config directory.
+  --base-url Connect daemon base URL override.
+  --role     Connect role override.
+  --max-turns Connect loop turn budget override.
   --env      Load env vars from a .env file. Repeatable; shell env wins.
 `)
 }
