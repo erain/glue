@@ -1,7 +1,9 @@
 package peggy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,8 +55,13 @@ func RunWithInput(ctx context.Context, args []string, stdin io.Reader, stdout, s
 }
 
 func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, serve serveFunc) int {
-	if len(args) > 0 && args[0] == "serve" {
-		return runServe(ctx, args[1:], stdout, stderr, serve)
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			return runServe(ctx, args[1:], stdout, stderr, serve)
+		case "mcp":
+			return runMCP(ctx, args[1:], stdout, stderr)
+		}
 	}
 
 	fs := flag.NewFlagSet("peggy", flag.ContinueOnError)
@@ -73,6 +80,7 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 
 Usage:
   peggy [flags] "<prompt text>"
+  peggy mcp tools [flags]
   peggy serve [flags]
 
 Examples:
@@ -80,6 +88,7 @@ Examples:
   peggy --session work "remind me about the migration plan"
   peggy --config /tmp/peggy.json "what do you know about my Aussie?"
   peggy --coding --workdir . "run the tests and fix the failure"
+  peggy mcp tools --config ~/.config/peggy/settings.json
   peggy serve --config ~/.config/peggy/settings.json
 
 Flags:
@@ -164,6 +173,161 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 	}
 	fmt.Fprintln(stdout) // trailing newline so shell prompts don't run on
 	return 0
+}
+
+type mcpToolCatalogEntry struct {
+	Name               string          `json:"name"`
+	Description        string          `json:"description,omitempty"`
+	Parameters         json.RawMessage `json:"parameters,omitempty"`
+	RequiresPermission bool            `json:"requires_permission"`
+	PermissionAction   string          `json:"permission_action,omitempty"`
+	PermissionTarget   string          `json:"permission_target,omitempty"`
+}
+
+func runMCP(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	usage := func() {
+		fmt.Fprintf(stderr, `peggy mcp — inspect Peggy's configured MCP surface.
+
+Usage:
+  peggy mcp tools [flags]
+
+Commands:
+  tools    List tools discovered from enabled MCP servers.
+`)
+	}
+	if len(args) == 0 {
+		usage()
+		return 2
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		usage()
+		return 0
+	case "tools":
+		return runMCPTools(ctx, args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "peggy mcp: unknown command %q\n", args[0])
+		usage()
+		return 2
+	}
+}
+
+func runMCPTools(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy mcp tools", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy mcp tools — list tools from enabled MCP servers.
+
+Usage:
+  peggy mcp tools [flags]
+
+Examples:
+  peggy mcp tools --config ~/.config/peggy/settings.json
+  peggy mcp tools --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy mcp tools: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp tools: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy mcp tools: no settings.json found; using built-in defaults")
+	}
+
+	tools, manager, _, err := MCPTools(ctx, settings.MCP)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp tools: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp tools: close: %v\n", err)
+		}
+	}()
+
+	catalog := buildMCPToolCatalog(tools)
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(catalog); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp tools: encode catalog: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMCPToolCatalog(stdout, catalog)
+	return 0
+}
+
+func buildMCPToolCatalog(tools []glue.Tool) []mcpToolCatalogEntry {
+	catalog := make([]mcpToolCatalogEntry, 0, len(tools))
+	for _, tool := range tools {
+		entry := mcpToolCatalogEntry{
+			Name:               tool.Name,
+			Description:        tool.Description,
+			Parameters:         append(json.RawMessage(nil), tool.Parameters...),
+			RequiresPermission: tool.RequiresPermission,
+			PermissionAction:   tool.PermissionAction,
+		}
+		if tool.PermissionTarget != nil {
+			entry.PermissionTarget = tool.PermissionTarget(glue.ToolCall{Name: tool.Name})
+		}
+		catalog = append(catalog, entry)
+	}
+	return catalog
+}
+
+func writeMCPToolCatalog(w io.Writer, catalog []mcpToolCatalogEntry) {
+	if len(catalog) == 0 {
+		fmt.Fprintln(w, "No MCP tools configured.")
+		return
+	}
+	for i, entry := range catalog {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, entry.Name)
+		if entry.Description != "" {
+			fmt.Fprintf(w, "  description: %s\n", singleLine(entry.Description))
+		}
+		if entry.RequiresPermission || entry.PermissionAction != "" || entry.PermissionTarget != "" {
+			fmt.Fprintf(w, "  permission: %s %s\n", entry.PermissionAction, entry.PermissionTarget)
+		}
+		if len(entry.Parameters) > 0 {
+			fmt.Fprintf(w, "  parameters: %s\n", compactJSONLine(entry.Parameters))
+		}
+	}
+}
+
+func singleLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func compactJSONLine(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return singleLine(string(raw))
+	}
+	return buf.String()
 }
 
 func runServe(ctx context.Context, args []string, stdout, stderr io.Writer, serve serveFunc) int {

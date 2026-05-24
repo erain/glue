@@ -147,6 +147,7 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy mcp tools [flags]
 peggy serve [flags]
 
   --config <path>    Override the settings.json path.
@@ -338,6 +339,14 @@ as `mcp_filesystem_read_file`. Permission prompts use the existing
 channel tier settings: `prompt` asks the owning client, `read_only`
 denies before execution, and `trusted` allows the call subject to the
 server configuration and timeout.
+
+Inspect the configured MCP surface without constructing a model
+provider or running a prompt:
+
+```sh
+peggy mcp tools --config ~/.config/peggy/settings.json
+peggy mcp tools --config ~/.config/peggy/settings.json --json
+```
 
 The permission choices are intentionally small:
 
