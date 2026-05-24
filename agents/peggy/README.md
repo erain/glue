@@ -51,6 +51,7 @@ peggy --coding --workdir . "read the failing test and propose a fix"
 # 6. Optional: keep one Peggy process running and connect to it.
 go install github.com/erain/glue/cmd/glue@latest  # if needed
 peggy serve --coding --workdir .
+glue connect --inspect
 glue connect --prompt "what should I do next?" --id cli:daily
 ```
 
@@ -179,6 +180,7 @@ session history and memory store.
 
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
+glue connect --inspect
 glue connect --prompt "summarize today's plan" --id cli:daily
 ```
 
@@ -238,10 +240,11 @@ Recommended v0.3 daily-driver shape:
 }
 ```
 
-Run `peggy serve --config ~/.config/peggy/settings.json`, connect from
-a terminal with `glue connect --prompt "..." --id cli:daily`, and start
-Telegram with `peggy-telegram --daemon`. The daemon prints the base URL
-and metadata path but never prints the bearer token.
+Run `peggy serve --config ~/.config/peggy/settings.json`, inspect the
+live daemon with `glue connect --inspect`, connect from a terminal with
+`glue connect --prompt "..." --id cli:daily`, and start Telegram with
+`peggy-telegram --daemon`. The daemon prints the base URL and metadata
+path but never prints the bearer token.
 
 ## Coding Tools
 
