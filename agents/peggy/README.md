@@ -4,7 +4,7 @@
 > remembers you across sessions, and curates facts on her own.
 
 A long-running personal-assistant agent built on the
-[glue](../..) framework. **v0.1** ships:
+[glue](../..) framework. **v0.2** ships:
 
 - a single-prompt **CLI** (`peggy`)
 - a **Telegram bot** binary (`peggy-telegram`) with a chat-id allowlist
@@ -14,11 +14,15 @@ A long-running personal-assistant agent built on the
   the context window
 - **FTS5 session search** under the hood, exposed via
   `Agent.SearchSessions`
+- opt-in local **coding tools** for reading files, writing files,
+  running allowlisted commands, and inspecting git branch context
+- per-call permission prompts for side-effecting coding tools in the
+  CLI and Telegram
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
-Tracker: [#110](https://github.com/erain/glue/issues/110). M2 ("she
-can code") is the next milestone.
+Tracker: [#110](https://github.com/erain/glue/issues/110). M3
+("multi-channel daemon") is the next milestone.
 
 ## Quickstart
 
@@ -36,6 +40,10 @@ $EDITOR ~/.config/peggy/settings.json   # see "settings.json" below
 
 # 4. Talk to her.
 peggy "Hello — what should I be working on today?"
+
+# 5. Optional: let Peggy work in a trusted repo.
+cd /path/to/repo
+peggy --coding --workdir . "read the failing test and propose a fix"
 ```
 
 To reach her from your phone, set up Telegram next — see
@@ -142,6 +150,19 @@ CLI call with:
 peggy --coding --workdir . "run the tests and fix the failure"
 ```
 
+Persistent config for a single trusted workspace:
+
+```json
+{
+  "coding": {
+    "enabled": true,
+    "work_dir": "/path/to/repo",
+    "allowed_binaries": ["go", "git", "make"],
+    "allow_overwrite": false
+  }
+}
+```
+
 Peggy registers these model-callable tools:
 
 - `read_file` — read UTF-8 text inside the workspace. Read-only, no
@@ -163,6 +184,20 @@ Allow? [y] once, [s] session, [t] target, [n] deny:
 Remembered choices last only for the current `peggy` process. If stdin
 is unavailable or reaches EOF, Peggy denies the side effect and surfaces
 that denial to the model as a tool error.
+
+The permission choices are intentionally small:
+
+- `deny` — return a model-visible tool error.
+- `allow once` — run only this side-effecting call.
+- `allow session` — remember this tool/action for the current process
+  and session id.
+- `allow target` — remember this tool/action/target for the current
+  process and session id.
+
+Coding mode is a trusted-local workflow. The tool layer constrains
+paths, binaries, overwrites, output size, and permissions, but v0.2
+uses the host process via `glue.LocalExecutor`; it is not a container
+or VM sandbox.
 
 ### Config resolution
 
@@ -191,7 +226,7 @@ when to persist and when to look up across sessions:
 
 The model invokes these on its own as the conversation requires. The
 tools are registered by default; disable them via
-`Options.DisableMemoryTools` (library) — there's no CLI flag in v0.1.
+`Options.DisableMemoryTools` (library) — there's no CLI flag today.
 
 A short hint paragraph is appended to your `SOUL.md` content in the
 system prompt so the model knows the tools exist; override via
@@ -222,15 +257,15 @@ near-term follow-up.
   API (a `peggy recall` subcommand is a near-term follow-up).
 - **Token-aware summarizing compaction** via the configured provider.
 - Identity injected from `SOUL.md` into the system prompt.
-- Opt-in **local coding mode** for the CLI: read files, write files,
-  run allowlisted commands, and inspect git branch context with
+- Opt-in **local coding mode** for CLI and Telegram: read files, write
+  files, run allowlisted commands, and inspect git branch context with
   per-call permission prompts for side effects.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
   your existing ChatGPT subscription via `codex login` — no per-token
   bill.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.1 summary and
+See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.2 summary and
 known limitations.
 
 ## Channels
@@ -258,15 +293,13 @@ external transports. The pattern is designed in
 Per tracker [#110](https://github.com/erain/glue/issues/110), in
 priority order:
 
-- **M2 — "she can code".** CLI coding tools are wired; next is
-  Telegram inline-keyboard permissions, then tighter product polish.
 - **M3 — multi-channel daemon.** `cmd/glue serve` so a single
   long-running Peggy serves a TUI, Telegram, and future clients
   concurrently. Per-channel permission tiers.
 - **M4 — ecosystem.** MCP client (stdio + HTTP), cost tracking,
   `providers/anthropic` when budget allows.
 
-Near-term follow-ups that may slip into v0.1.x patches: a `peggy
+Near-term follow-ups that may slip into v0.2.x patches: a `peggy
 memories` subcommand (list / export / forget), edit-in-place
 Telegram streaming, FTS5 prefix-match on session ids for
 channel-scoped recall.

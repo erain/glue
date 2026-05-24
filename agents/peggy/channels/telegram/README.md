@@ -50,6 +50,39 @@ gated by a chat-id allowlist. Built on the pattern designed in
 
    SIGINT / SIGTERM stops cleanly.
 
+### Coding setup
+
+`peggy-telegram` uses the same `settings.json` as the CLI. To let
+Peggy work in a trusted local checkout from Telegram, enable coding
+tools and set the workspace root:
+
+```json
+{
+  "coding": {
+    "enabled": true,
+    "work_dir": "/path/to/repo",
+    "allowed_binaries": ["go", "git", "make"],
+    "allow_overwrite": false
+  },
+  "channels": {
+    "telegram": {
+      "allow_chats": [123456789]
+    }
+  }
+}
+```
+
+Then run the bot from the same host that has that checkout:
+
+```sh
+export PEGGY_TELEGRAM_TOKEN='123456:ABCDEF...'
+peggy-telegram
+```
+
+When the model asks to run `write_file` or `shell_exec`, Telegram
+shows inline buttons for `Deny`, `Allow once`, `Allow session`, and
+`Allow target`. Read-only coding tools do not prompt.
+
 ## Settings reference
 
 ```json
