@@ -129,11 +129,13 @@ and emits a stderr diagnostic.
 | `coding.allowed_binaries` | `go`, `git`, `make`, `node`, `npm`, `python`, `python3` | Basename allowlist for `shell_exec`; model calls cannot run arbitrary paths. |
 | `coding.allow_overwrite` | `false` | Host policy for replacing existing files. The model must still pass `overwrite: true`, and the permission prompt must allow the call. |
 | `mcp.servers.<name>.enabled` | `false` | Register tools from a configured MCP server. Enable only for trusted local servers or explicitly trusted services. |
-| `mcp.servers.<name>.transport` | `stdio` | Only `stdio` is supported today. Streamable HTTP is a planned M4 follow-up. |
+| `mcp.servers.<name>.transport` | `stdio` | `stdio` or Streamable HTTP (`http`). |
 | `mcp.servers.<name>.command` | none | Executable path or basename for stdio MCP servers. This is argv-based, not a shell string. |
 | `mcp.servers.<name>.args` | `[]` | Stdio server argv arguments. |
 | `mcp.servers.<name>.env` | `[]` | Explicit `KEY=value` environment entries passed to the stdio server. Peggy does not inherit the full parent env by default. |
 | `mcp.servers.<name>.work_dir` | current process dir | Working directory for the stdio server. `~` and `$HOME` expand. |
+| `mcp.servers.<name>.url` | none | Streamable HTTP MCP endpoint URL. Required for `transport: "http"`. |
+| `mcp.servers.<name>.headers_env` | `{}` | Map HTTP header names to env var names. Peggy resolves the env vars at startup and does not write secret values back to settings. |
 | `mcp.servers.<name>.timeout_seconds` | `30` | Timeout for initialize, `tools/list`, and individual `tools/call` requests. |
 | `permissions.default_tier` | `prompt` | Permission tier for side-effecting tools when a channel has no override. One of `prompt`, `read_only`, or `trusted`. |
 | `permissions.channels.<name>` | inherited | Channel override keyed by `cli`, `telegram`, or a future daemon client prefix. |
@@ -287,10 +289,11 @@ that denial to the model as a tool error.
 
 ## MCP Tools
 
-Peggy can register tools from local stdio MCP servers. MCP tools are
-permission-gated by default because the server is external code or a
-remote service boundary: even a tool named `search` may read private
-data, mutate state, exfiltrate content, or spend money.
+Peggy can register tools from local stdio MCP servers and Streamable
+HTTP MCP endpoints. MCP tools are permission-gated by default because
+the server is external code or a remote service boundary: even a tool
+named `search` may read private data, mutate state, exfiltrate content,
+or spend money.
 
 ```json
 {
@@ -304,6 +307,26 @@ data, mutate state, exfiltrate content, or spend money.
         "env": ["LOG_LEVEL=warn"],
         "work_dir": "/path/to/workspace",
         "timeout_seconds": 30
+      }
+    }
+  }
+}
+```
+
+For HTTP servers, keep tokens in environment variables and point
+`headers_env` at those variable names:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "linear": {
+        "enabled": true,
+        "transport": "http",
+        "url": "https://example.invalid/mcp",
+        "headers_env": {
+          "Authorization": "LINEAR_MCP_AUTH_HEADER"
+        }
       }
     }
   }

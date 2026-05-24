@@ -1,9 +1,9 @@
 // Package mcp implements the client foundation for consuming Model Context
 // Protocol servers from glue hosts.
 //
-// This package follows ADR-0011. The first implementation supports JSON-RPC
-// lifecycle negotiation over stdio, discovery of MCP server tools, and mapping
-// those tools to permission-gated glue.Tool values. Streamable HTTP, Peggy
-// settings, resources, prompts, sampling, elicitation, and OAuth are deferred
-// follow-up surfaces.
+// This package follows ADR-0011. It supports JSON-RPC lifecycle negotiation
+// over stdio and Streamable HTTP, discovery of MCP server tools, and mapping
+// those tools to permission-gated glue.Tool values. Resources, prompts,
+// sampling, elicitation, OAuth, and dynamic discovery are deferred follow-up
+// surfaces.
 package mcp

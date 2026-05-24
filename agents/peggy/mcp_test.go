@@ -68,10 +68,53 @@ func TestLoadSettingsMCPServers(t *testing.T) {
 
 func TestMCPServerConfigsRejectsUnsupportedEnabledTransport(t *testing.T) {
 	_, _, err := MCPServerConfigs(MCPSettings{Servers: map[string]MCPServerSettings{
-		"remote": {Enabled: true, Transport: "http", URL: "https://example.invalid/mcp"},
+		"remote": {Enabled: true, Transport: "ftp", URL: "https://example.invalid/mcp"},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("MCPServerConfigs error = %v, want unsupported transport", err)
+	}
+}
+
+func TestMCPServerConfigsHTTPResolvesHeadersEnv(t *testing.T) {
+	t.Setenv("PEGGY_TEST_MCP_AUTH", "Bearer secret")
+	configs, normalized, err := MCPServerConfigs(MCPSettings{Servers: map[string]MCPServerSettings{
+		"remote": {
+			Enabled:        true,
+			Transport:      "HTTP",
+			URL:            "https://example.invalid/mcp",
+			HeadersEnv:     map[string]string{"Authorization": "PEGGY_TEST_MCP_AUTH"},
+			TimeoutSeconds: 5,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("MCPServerConfigs: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("configs = %d, want 1", len(configs))
+	}
+	cfg := configs[0]
+	if cfg.Transport != "http" || cfg.URL != "https://example.invalid/mcp" || cfg.Headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("config = %+v", cfg)
+	}
+	if normalized.Servers["remote"].Transport != "http" {
+		t.Fatalf("normalized transport = %q", normalized.Servers["remote"].Transport)
+	}
+	if got := normalized.Servers["remote"].HeadersEnv["Authorization"]; got != "PEGGY_TEST_MCP_AUTH" {
+		t.Fatalf("normalized headers_env = %q", got)
+	}
+}
+
+func TestMCPServerConfigsHTTPMissingHeaderEnvErrors(t *testing.T) {
+	_, _, err := MCPServerConfigs(MCPSettings{Servers: map[string]MCPServerSettings{
+		"remote": {
+			Enabled:    true,
+			Transport:  "http",
+			URL:        "https://example.invalid/mcp",
+			HeadersEnv: map[string]string{"Authorization": "PEGGY_TEST_MISSING_AUTH"},
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "PEGGY_TEST_MISSING_AUTH") {
+		t.Fatalf("MCPServerConfigs error = %v, want missing env error", err)
 	}
 }
 

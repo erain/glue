@@ -15,15 +15,31 @@ const ProtocolVersion = "2025-11-25"
 
 const defaultTimeout = 30 * time.Second
 
+const (
+	// TransportStdio launches an MCP server subprocess over stdin/stdout.
+	TransportStdio = "stdio"
+	// TransportHTTP uses MCP Streamable HTTP against a configured endpoint.
+	TransportHTTP = "http"
+)
+
 // ServerConfig configures one MCP server connection.
 type ServerConfig struct {
 	Name string
+
+	// Transport is "stdio" or "http". Empty means "stdio" for backward
+	// compatibility with the first MCP client slice.
+	Transport string
 
 	// Stdio transport fields. Command is argv[0], never a shell string.
 	Command string
 	Args    []string
 	Env     []string
 	WorkDir string
+
+	// HTTP transport fields. URL is the MCP endpoint. Headers are already
+	// resolved static header values; callers should keep secrets out of logs.
+	URL     string
+	Headers map[string]string
 
 	// Timeout caps lifecycle and request waits when callers do not supply a
 	// tighter context deadline.
@@ -80,10 +96,14 @@ type rpcResponse struct {
 }
 
 type transport interface {
-	Encode(any) error
-	Decode(*rpcResponse) error
+	Request(context.Context, rpcRequest) (rpcResponse, error)
+	Notify(context.Context, rpcRequest) error
 	Close() error
 	Stderr() string
+}
+
+type protocolVersionSetter interface {
+	SetProtocolVersion(string)
 }
 
 // Client is one initialized MCP client session.
@@ -96,6 +116,28 @@ type Client struct {
 	init InitializeResult
 }
 
+// NewClient starts the configured MCP transport and completes lifecycle
+// negotiation. Empty cfg.Transport defaults to stdio.
+func NewClient(ctx context.Context, cfg ServerConfig) (*Client, error) {
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultTimeout
+	}
+	var tr transport
+	var err error
+	switch normalizedTransport(cfg.Transport) {
+	case TransportStdio:
+		tr, err = startStdioTransport(cfg)
+	case TransportHTTP:
+		tr, err = startHTTPTransport(cfg)
+	default:
+		err = fmt.Errorf("mcp: unsupported transport %q", cfg.Transport)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return newInitializedClient(ctx, cfg, tr)
+}
+
 // NewStdioClient starts a stdio MCP server and completes lifecycle
 // negotiation.
 func NewStdioClient(ctx context.Context, cfg ServerConfig) (*Client, error) {
@@ -106,8 +148,24 @@ func NewStdioClient(ctx context.Context, cfg ServerConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{tr: tr}
+	return newInitializedClient(ctx, cfg, tr)
+}
 
+// NewHTTPClient connects to a Streamable HTTP MCP server and completes
+// lifecycle negotiation.
+func NewHTTPClient(ctx context.Context, cfg ServerConfig) (*Client, error) {
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultTimeout
+	}
+	tr, err := startHTTPTransport(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newInitializedClient(ctx, cfg, tr)
+}
+
+func newInitializedClient(ctx context.Context, cfg ServerConfig, tr transport) (*Client, error) {
+	c := &Client{tr: tr}
 	initCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 	if err := c.initialize(initCtx); err != nil {
@@ -140,44 +198,52 @@ func (c *Client) Request(ctx context.Context, method string, params any, result 
 
 	c.nextID++
 	id := c.nextID
-	if err := c.tr.Encode(rpcRequest{
+	resp, err := c.tr.Request(ctx, rpcRequest{
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  method,
 		Params:  params,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
-
-	type readResult struct {
-		resp rpcResponse
-		err  error
+	if err := validateResponse(resp, id); err != nil {
+		return err
 	}
-	ch := make(chan readResult, 1)
-	go func() {
-		resp, err := c.readResponse(id)
-		ch <- readResult{resp: resp, err: err}
-	}()
-
-	select {
-	case got := <-ch:
-		if got.err != nil {
-			return got.err
-		}
-		if result == nil {
-			return nil
-		}
-		if len(got.resp.Result) == 0 {
-			return nil
-		}
-		if err := json.Unmarshal(got.resp.Result, result); err != nil {
-			return fmt.Errorf("mcp: decode %s result: %w", method, err)
-		}
+	if result == nil {
 		return nil
-	case <-ctx.Done():
-		_ = c.Close()
-		return ctx.Err()
 	}
+	if len(resp.Result) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(resp.Result, result); err != nil {
+		return fmt.Errorf("mcp: decode %s result: %w", method, err)
+	}
+	return nil
+}
+
+func validateResponse(resp rpcResponse, wantID int64) error {
+	if len(resp.ID) == 0 {
+		return errors.New("mcp: response missing id")
+	}
+	if resp.JSONRPC != "2.0" {
+		return fmt.Errorf("mcp: response jsonrpc = %q, want 2.0", resp.JSONRPC)
+	}
+	if strings.TrimSpace(string(resp.ID)) != fmt.Sprintf("%d", wantID) {
+		return fmt.Errorf("mcp: response id %s, want %d", strings.TrimSpace(string(resp.ID)), wantID)
+	}
+	if resp.Error != nil {
+		return resp.Error
+	}
+	return nil
+}
+
+func normalizedTransport(transport string) string {
+	transport = strings.ToLower(strings.TrimSpace(transport))
+	if transport == "" {
+		return TransportStdio
+	}
+	return transport
 }
 
 // Notify sends a JSON-RPC notification.
@@ -194,7 +260,7 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.tr.Encode(rpcRequest{
+	return c.tr.Notify(ctx, rpcRequest{
 		JSONRPC: "2.0",
 		Method:  method,
 		Params:  params,
@@ -232,31 +298,12 @@ func (c *Client) initialize(ctx context.Context) error {
 	if init.ProtocolVersion != ProtocolVersion {
 		return fmt.Errorf("mcp: incompatible protocol version %q, want %q", init.ProtocolVersion, ProtocolVersion)
 	}
+	if setter, ok := c.tr.(protocolVersionSetter); ok {
+		setter.SetProtocolVersion(init.ProtocolVersion)
+	}
 	if err := c.Notify(ctx, "notifications/initialized", nil); err != nil {
 		return err
 	}
 	c.init = init
 	return nil
-}
-
-func (c *Client) readResponse(wantID int64) (rpcResponse, error) {
-	for {
-		var resp rpcResponse
-		if err := c.tr.Decode(&resp); err != nil {
-			return rpcResponse{}, err
-		}
-		if len(resp.ID) == 0 {
-			continue
-		}
-		if resp.JSONRPC != "2.0" {
-			return rpcResponse{}, fmt.Errorf("mcp: response jsonrpc = %q, want 2.0", resp.JSONRPC)
-		}
-		if strings.TrimSpace(string(resp.ID)) != fmt.Sprintf("%d", wantID) {
-			return rpcResponse{}, fmt.Errorf("mcp: response id %s, want %d", strings.TrimSpace(string(resp.ID)), wantID)
-		}
-		if resp.Error != nil {
-			return rpcResponse{}, resp.Error
-		}
-		return resp, nil
-	}
 }
