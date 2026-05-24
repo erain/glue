@@ -38,6 +38,11 @@ type Options struct {
 	// errors, etc.). Defaults to os.Stderr. The channel never logs
 	// the bot token here.
 	Stderr io.Writer
+
+	// Permission, when non-nil, handles inline-keyboard responses for
+	// Peggy side-effect permission requests. The same value must be
+	// passed to peggy.New via peggy.Options.Permission.
+	Permission *Permission
 }
 
 // Channel is the peggy.Channel implementation for Telegram.
@@ -47,6 +52,7 @@ type Channel struct {
 	api     *API
 	allowed map[int64]struct{}
 	stderr  io.Writer
+	perm    *Permission
 }
 
 // New constructs a Channel. Returns an error when required fields are
@@ -93,13 +99,18 @@ func New(opts Options) (*Channel, error) {
 		allowed[id] = struct{}{}
 	}
 
-	return &Channel{
+	ch := &Channel{
 		peggy:   opts.Peggy,
 		cfg:     cfg,
 		api:     NewAPI(cfg.APIBaseURL, token, opts.HTTPClient),
 		allowed: allowed,
 		stderr:  stderr,
-	}, nil
+		perm:    opts.Permission,
+	}
+	if ch.perm != nil {
+		ch.perm.attach(ch.api, ch.allowed, stderr)
+	}
+	return ch, nil
 }
 
 // Name implements peggy.Channel.
@@ -115,8 +126,8 @@ func (c *Channel) Run(ctx context.Context) error {
 		fmt.Fprintln(c.stderr, "telegram: allow_chats is empty — refusing all inbound messages (set allow_chats in settings.json to enable)")
 	}
 	var (
-		offset    int64
-		backoff   = transientRetryInitial
+		offset     int64
+		backoff    = transientRetryInitial
 		maxBackoff = transientRetryMax
 	)
 	for {
@@ -145,8 +156,32 @@ func (c *Channel) Run(ctx context.Context) error {
 			if u.UpdateID >= offset {
 				offset = u.UpdateID + 1
 			}
-			c.handleUpdate(ctx, u)
+			if u.CallbackQuery != nil {
+				c.handleCallback(ctx, *u.CallbackQuery)
+				continue
+			}
+			go c.handleUpdate(ctx, u)
 		}
+	}
+}
+
+func (c *Channel) handleCallback(ctx context.Context, cb CallbackQuery) {
+	chatID, ok := callbackChatID(cb)
+	if !ok {
+		if c.perm != nil {
+			_ = c.perm.handleCallback(ctx, cb)
+		}
+		return
+	}
+	if _, ok := c.allowed[chatID]; !ok {
+		fmt.Fprintf(c.stderr, "telegram: dropping callback from non-allowlisted chat %d\n", chatID)
+		if c.perm != nil {
+			_ = c.perm.handleCallback(ctx, cb)
+		}
+		return
+	}
+	if c.perm != nil && c.perm.handleCallback(ctx, cb) {
+		return
 	}
 }
 

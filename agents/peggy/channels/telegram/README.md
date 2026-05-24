@@ -82,7 +82,28 @@ sqlite store. `Agent.SearchSessions` can scope to one channel by
 filtering on the session id (FTS5 prefix search is a planned
 follow-up; exact-match works today).
 
-## What v0.1 supports
+## Permissions
+
+When Peggy coding tools are enabled in the shared `settings.json`,
+side-effecting tool calls (`write_file`, `shell_exec`) are confirmed in
+Telegram with inline keyboard buttons:
+
+- `Deny`
+- `Allow once`
+- `Allow session`
+- `Allow target`
+
+Permission requests are sent only to the same allowlisted chat whose
+message triggered the prompt. Decisions remembered for a session or
+target live only in the running `peggy-telegram` process. If the bot is
+stopped, the request times out, or the callback comes from a
+non-allowlisted chat, Peggy denies the side effect and surfaces that
+denial to the model as a tool result.
+
+Read-only tools such as `read_file`, `git_diff_branch`, and
+`git_log_branch` do not prompt.
+
+## What Peggy on Telegram supports today
 
 - Text-message-only inbound and outbound. Photos / voice / documents /
   stickers are dropped.
@@ -96,11 +117,13 @@ follow-up; exact-match works today).
 - Replies exceeding Telegram's 4096-character limit are truncated
   with a `… [truncated]` suffix; full responses are still in the
   session transcript / sqlite store.
+- Inline-keyboard permission prompts for side-effecting coding tools
+  in allowlisted chats.
 
 ## What's coming
 
 - Edit-in-place streaming for replies (delta → edited message).
-- Per-user permission policy (gated by the M2 `Permission` interface).
+- Persistent per-user permission policy.
 - Webhook-mode (push-based) for low-latency hosted setups.
 - `Agent.SearchSessions` channel-prefix filter so the user can scope
   recall to "things we talked about on Telegram."

@@ -42,6 +42,31 @@ func TestGetUpdates_ParsesCannedResponse(t *testing.T) {
 	}
 }
 
+func TestGetUpdates_ParsesCallbackQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{
+            "ok": true,
+            "result": [
+                {"update_id": 3, "callback_query": {"id": "cb1", "from": {"id": 42}, "message": {"message_id": 200, "chat": {"id": 555, "type": "private"}, "date": 1700000000, "text": "permission"}, "data": "perm:abc:once"}}
+            ]
+        }`)
+	}))
+	defer srv.Close()
+
+	api := NewAPI(srv.URL, "secret-token", srv.Client())
+	updates, err := api.GetUpdates(context.Background(), 0, 30)
+	if err != nil {
+		t.Fatalf("GetUpdates: %v", err)
+	}
+	if len(updates) != 1 || updates[0].CallbackQuery == nil {
+		t.Fatalf("updates = %+v, want callback_query", updates)
+	}
+	cb := updates[0].CallbackQuery
+	if cb.ID != "cb1" || cb.Data != "perm:abc:once" || cb.Message.Chat.ID != 555 {
+		t.Fatalf("callback = %+v, want parsed id/data/chat", cb)
+	}
+}
+
 func TestSendMessage_PostsCorrectShape(t *testing.T) {
 	var capturedBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +91,57 @@ func TestSendMessage_PostsCorrectShape(t *testing.T) {
 	}
 	if body["text"] != "hello" {
 		t.Errorf("text = %v", body["text"])
+	}
+}
+
+func TestSendMessageWithReplyMarkup_PostsInlineKeyboard(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, `{"ok": true, "result": {}}`)
+	}))
+	defer srv.Close()
+
+	api := NewAPI(srv.URL, "tk", srv.Client())
+	keyboard := InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{
+		{Text: "Allow once", CallbackData: "perm:1:once"},
+	}}}
+	if err := api.SendMessageWithReplyMarkup(context.Background(), 555, "allow?", keyboard); err != nil {
+		t.Fatalf("SendMessageWithReplyMarkup: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("body json: %v", err)
+	}
+	if body["reply_markup"] == nil {
+		t.Fatalf("body = %+v, missing reply_markup", body)
+	}
+}
+
+func TestAnswerCallbackQuery_PostsCorrectShape(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/answerCallbackQuery") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		capturedBody, _ = io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, `{"ok": true, "result": {}}`)
+	}))
+	defer srv.Close()
+
+	api := NewAPI(srv.URL, "tk", srv.Client())
+	if err := api.AnswerCallbackQuery(context.Background(), "cb1", "Allowed."); err != nil {
+		t.Fatalf("AnswerCallbackQuery: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("body json: %v", err)
+	}
+	if body["callback_query_id"] != "cb1" || body["text"] != "Allowed." {
+		t.Fatalf("body = %+v, want callback id/text", body)
 	}
 }
 
