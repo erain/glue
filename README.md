@@ -601,7 +601,7 @@ A thin local CLI is built on the same library API:
 go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
 ```
 
-Flags:
+`run` flags:
 
 - `--id` — session id (default `"default"`).
 - `--prompt` — prompt text (required).
@@ -614,6 +614,20 @@ The CLI streams text deltas to stdout, persists sessions through
 `stores/file`, and uses `WorkDir="."` so `AGENTS.md`, `.agents/skills`, and
 `roles/` discovery work from the invocation directory. Errors return a
 non-zero exit code; missing `GEMINI_API_KEY` produces a clear message.
+
+The same binary can also start the local HTTP+SSE daemon described in
+[ADR-0010](docs/adr/0010-daemon-protocol.md):
+
+```sh
+go run ./cmd/glue serve --store .glue/sessions
+```
+
+`serve` binds to `127.0.0.1:0` by default, generates a bearer token when
+`--token` / `GLUE_DAEMON_TOKEN` are not set, and writes connection metadata
+to `glue/daemon.json` under the user config directory with mode `0600`.
+Startup output prints the effective `base_url` and metadata path but not the
+bearer token. Use `--listen`, `--metadata`, `--work`, and
+`--permission-timeout` to override daemon behavior.
 
 ### Standard flags for downstream agents
 
