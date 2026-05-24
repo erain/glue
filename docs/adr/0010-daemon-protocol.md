@@ -129,7 +129,36 @@ The daemon must never log bearer tokens, provider keys, Telegram bot
 tokens, or raw permission args unless a future explicit debug flag says
 so.
 
-### 4. Runs and sessions
+### 4. Tool catalog
+
+Daemon clients can inspect the hosted agent's current tool surface:
+
+```http
+GET /v1/tools
+```
+
+Response:
+
+```json
+{
+  "tools": [
+    {
+      "name": "mcp_filesystem_read_file",
+      "description": "MCP filesystem: Read a file",
+      "parameters": { "type": "object" },
+      "requires_permission": true,
+      "permission_action": "mcp_call",
+      "permission_target_preview": "filesystem.read_file"
+    }
+  ]
+}
+```
+
+`permission_target_preview` is best-effort because some local tools
+derive the final target from call arguments. Hosts that do not expose a
+catalog return an empty `tools` array.
+
+### 5. Runs and sessions
 
 A prompt run is started with:
 
@@ -179,7 +208,7 @@ The underlying `glue.Session` already serializes one prompt at a time
 per session. The daemon may accept concurrent runs for different
 sessions, but same-session runs are serialized by the session lock.
 
-### 5. Event envelope
+### 6. Event envelope
 
 Every SSE message uses the event type as the SSE `event:` name and a
 JSON envelope in `data:`.
@@ -226,7 +255,7 @@ others are loop events.
 it today. Providers may emit thinking internally, and a future
 additive loop event can map to this protocol name.
 
-### 6. Permission flow
+### 7. Permission flow
 
 The daemon installs a `glue.Permission` implementation for the hosted
 agent. That implementation does not decide policy itself. It brokers a
@@ -300,7 +329,7 @@ Safe defaults:
 This mirrors v0.2's CLI and Telegram behavior: side effects never run
 because a UI disappeared.
 
-### 7. Cancellation and disconnects
+### 8. Cancellation and disconnects
 
 The run owner can cancel with:
 
@@ -317,7 +346,7 @@ keeps resource ownership simple for terminal clients. Detached
 background runs are a future additive feature and will need replay or
 query endpoints.
 
-### 8. Error envelope
+### 9. Error envelope
 
 HTTP errors use:
 
@@ -344,7 +373,7 @@ Initial v1 codes:
 
 `run_error` SSE events use the same shape in `payload.error`.
 
-### 9. Session lookup
+### 10. Session lookup
 
 M3 needs enough session lookup for clients to render history and switch
 sessions:
@@ -359,7 +388,7 @@ The search route maps to existing `Agent.SearchSessions` when the
 store implements it. Prefix search for channel ids remains a store
 follow-up; v1 may support exact session id filters first.
 
-### 10. Consequences
+### 11. Consequences
 
 - Core `glue` does not gain channel concepts or UI policy.
 - Permission UX remains in the client: CLI can render `[y/s/t/n]`,

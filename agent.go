@@ -97,6 +97,26 @@ func NewAgent(options AgentOptions) *Agent {
 	}
 }
 
+// ToolCatalog returns a cloned provider-visible catalog of the agent's
+// configured tools, including permission metadata for hosts that need to
+// display or expose the tool surface without starting a session.
+func (a *Agent) ToolCatalog() []ToolSpec {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	tools := cloneTools(a.tools)
+	if len(tools) == 0 {
+		return nil
+	}
+	specs := make([]ToolSpec, len(tools))
+	for i, tool := range tools {
+		specs[i] = tool.ToolSpec
+	}
+	return specs
+}
+
 func rolesFromSlice(roles []Role) map[string]Role {
 	if len(roles) == 0 {
 		return nil

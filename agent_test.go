@@ -2,6 +2,7 @@ package glue
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -329,6 +330,38 @@ func TestAgentSessionReusesByID(t *testing.T) {
 	second, _ := agent.Session(context.Background(), "abc")
 	if first != second {
 		t.Fatal("Session(id) returned different instances on second call")
+	}
+}
+
+func TestAgentToolCatalogClonesToolSpecs(t *testing.T) {
+	t.Parallel()
+
+	agent := NewAgent(AgentOptions{
+		Tools: []Tool{{
+			ToolSpec: ToolSpec{
+				Name:               "demo",
+				Description:        "demo tool",
+				Parameters:         json.RawMessage(`{"type":"object"}`),
+				RequiresPermission: true,
+				PermissionAction:   "demo_action",
+				PermissionTarget: func(call ToolCall) string {
+					return "target:" + call.Name
+				},
+			},
+		}},
+	})
+
+	catalog := agent.ToolCatalog()
+	if len(catalog) != 1 {
+		t.Fatalf("catalog len = %d, want 1", len(catalog))
+	}
+	if catalog[0].Name != "demo" || catalog[0].PermissionAction != "demo_action" || catalog[0].PermissionTarget(ToolCall{Name: "demo"}) != "target:demo" {
+		t.Fatalf("catalog[0] = %+v", catalog[0])
+	}
+	catalog[0].Parameters[0] = '['
+	again := agent.ToolCatalog()
+	if string(again[0].Parameters) != `{"type":"object"}` {
+		t.Fatalf("catalog parameters were aliased: %s", string(again[0].Parameters))
 	}
 }
 

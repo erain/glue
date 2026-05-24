@@ -71,6 +71,12 @@ func (p *blockingProvider) Stream(ctx context.Context, _ glue.ProviderRequest) (
 	return ch, nil
 }
 
+type sessionOnlyHost struct{}
+
+func (sessionOnlyHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
 func TestServerAuthAndHealth(t *testing.T) {
 	srv := newTestServer(t, glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}}))
 	ts := httptest.NewServer(srv)
@@ -95,6 +101,75 @@ func TestServerAuthAndHealth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("bad token status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestServerToolsCatalog(t *testing.T) {
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: scriptedProvider{},
+		Tools: []glue.Tool{{
+			ToolSpec: glue.ToolSpec{
+				Name:               "demo_tool",
+				Description:        "Demo tool",
+				Parameters:         json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`),
+				RequiresPermission: true,
+				PermissionAction:   "demo_action",
+				PermissionTarget: func(call glue.ToolCall) string {
+					return "target:" + call.Name
+				},
+			},
+		}},
+	})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/tools", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/tools", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tools status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog toolCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Tools) != 1 {
+		t.Fatalf("catalog len = %d, want 1", len(catalog.Tools))
+	}
+	tool := catalog.Tools[0]
+	if tool.Name != "demo_tool" || tool.Description != "Demo tool" || tool.PermissionAction != "demo_action" || tool.PermissionTargetPreview != "target:demo_tool" {
+		t.Fatalf("tool = %+v", tool)
+	}
+	if !tool.RequiresPermission {
+		t.Fatal("RequiresPermission = false, want true")
+	}
+	if !strings.Contains(string(tool.Parameters), `"name"`) {
+		t.Fatalf("parameters = %s", string(tool.Parameters))
+	}
+}
+
+func TestServerToolsCatalogUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/tools", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tools status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog toolCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Tools) != 0 {
+		t.Fatalf("catalog = %+v, want empty", catalog.Tools)
 	}
 }
 
@@ -607,6 +682,22 @@ func postJSON(t *testing.T, url, token, body string) *http.Response {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func getJSON(t *testing.T, url, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
