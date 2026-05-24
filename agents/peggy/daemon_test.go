@@ -126,6 +126,68 @@ func TestPeggyV03ReleaseSmoke(t *testing.T) {
 	}
 }
 
+func TestPeggyDaemonListsAndRunsWorkspaceSkills(t *testing.T) {
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "triage")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: triage\ndescription: Triage one issue\n---\nInvestigate and summarize."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{text: "triaged"}
+	p, err := New(Options{
+		Settings: Settings{Context: ContextSettings{WorkDir: workDir}},
+		Provider: provider,
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var skills struct {
+		Skills []daemon.SkillCatalogEntry `json:"skills"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/skills", &skills)
+	if len(skills.Skills) != 1 || skills.Skills[0].Name != "triage" || skills.Skills[0].Description != "Triage one issue" {
+		t.Fatalf("skills = %+v", skills.Skills)
+	}
+
+	var status struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/status", &status)
+	if !containsString(status.Capabilities, "skills") {
+		t.Fatalf("capabilities = %v, missing skills", status.Capabilities)
+	}
+
+	start := startPeggyDaemonSkillRun(t, ts.URL, "triage", `{"issue":"GLUE-123"}`)
+	events := collectPeggyDaemonEvents(t, ts.URL, start.RunID, start.EventsURL)
+	if types := eventTypes(events); types[len(types)-1] != "run_done" {
+		t.Fatalf("events = %v, want terminal run_done", types)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(provider.requests))
+	}
+	prompt := provider.requests[0].Messages[0].Content[0].Text
+	for _, want := range []string{"Investigate and summarize.", `"issue": "GLUE-123"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, missing %q", prompt, want)
+		}
+	}
+}
+
 func TestPeggyDaemonExposesMCPCatalogs(t *testing.T) {
 	p, err := New(Options{
 		Settings: Settings{
@@ -273,6 +335,33 @@ func startPeggyDaemonRunWithClient(t *testing.T, baseURL, sessionID, clientID st
 	t.Helper()
 	body := bytes.NewBufferString(`{"text":"write the note","client_id":` + strconv.Quote(clientID) + `,"max_turns":3}`)
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/sessions/"+sessionID+"/runs", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var start startRunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+	if start.RunID == "" || start.EventsURL == "" {
+		t.Fatalf("start response = %+v", start)
+	}
+	return start
+}
+
+func startPeggyDaemonSkillRun(t *testing.T, baseURL, skill, args string) startRunResponse {
+	t.Helper()
+	body := bytes.NewBufferString(`{"skill":` + strconv.Quote(skill) + `,"arguments":` + args + `,"client_id":"cli:test","max_turns":3}`)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/sessions/default/runs", body)
 	if err != nil {
 		t.Fatal(err)
 	}

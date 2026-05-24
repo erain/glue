@@ -93,8 +93,13 @@ var fixtures = []fixture{
 			// model quality varies. Do gate on output structure being
 			// well-formed for a non-trivial diff.
 			assertGlueReviewHeader(t, review)
-			if !strings.Contains(review, "math.go") {
-				t.Errorf("expected review to mention math.go (the only changed file); review=%q", review)
+			// OpenRouter free models sometimes frame this as missing
+			// tests and name the proposed test file instead of the
+			// changed file. Accept either the changed file or the
+			// changed symbol so the fixture remains a prompt-shape
+			// smoke rather than a brittle exact-reference test.
+			if !strings.Contains(review, "math.go") && !strings.Contains(review, "SumFirstN") {
+				t.Errorf("expected review to mention math.go or SumFirstN; review=%q", review)
 			}
 		},
 	},

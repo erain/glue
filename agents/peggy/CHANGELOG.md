@@ -24,6 +24,12 @@ not formally follow SemVer until v1.0.
   skills without constructing a provider. `peggy skill` runs one
   skill through a Peggy session with repeatable `--arg key=value`
   values, and library callers can use `Peggy.Skill`.
+- **Daemon file skills.** `peggy serve` now exposes authenticated
+  daemon skill catalogs and skill-mode runs. `glue connect --skills`
+  lists discovered skills, `--skills-json` returns the catalog as
+  data, `glue connect --skill <name> --arg key=value` runs a skill
+  over the existing SSE stream, and `glue connect --inspect` includes
+  skills when the daemon advertises them.
 
 ## v0.4.0 — 2026-05-24
 

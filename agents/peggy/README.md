@@ -228,6 +228,15 @@ Repeat `--arg key=value` to pass small structured inputs. Skill runs
 use the same provider, identity, memory, session store, MCP setup, and
 optional `--coding` controls as normal Peggy prompts.
 
+When Peggy is already running as a daemon, clients can use the same
+skill catalog and run path:
+
+```sh
+glue connect --skills
+glue connect --skills-json
+glue connect --skill triage --arg issue=GLUE-123 --id cli:triage --usage
+```
+
 `peggy status` prints a local readiness summary without constructing a
 provider, starting a prompt, or connecting to MCP servers:
 
@@ -248,6 +257,8 @@ session history and memory store.
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
+glue connect --skills
+glue connect --skill triage --arg issue=GLUE-123 --id cli:triage
 glue connect --mcp-resources
 glue connect --mcp-prompts
 glue connect --mcp-read --server filesystem --uri file:///workspace/README.md
@@ -270,13 +281,13 @@ Useful `serve` flags:
   over the daemon protocol for the connected client to answer.
 
 Startup output prints the `base_url` and metadata path, never the
-bearer token. `glue connect --inspect` includes status, tools, and any
-daemon-advertised MCP resource/prompt catalogs. Use
-`--mcp-resources-json`, `--mcp-prompts-json`, `--mcp-read-json`, or
-`--mcp-prompt-json` when another client needs the MCP payload as data.
-Add `--usage` to prompt-mode `glue connect` when you want
-provider-reported token usage on stderr. Stop the daemon with
-SIGINT/SIGTERM.
+bearer token. `glue connect --inspect` includes status, tools,
+daemon-advertised skills, and any daemon-advertised MCP
+resource/prompt catalogs. Use `--skills-json`, `--mcp-resources-json`,
+`--mcp-prompts-json`, `--mcp-read-json`, or `--mcp-prompt-json` when
+another client needs the payload as data. Add `--usage` to prompt or
+skill-mode `glue connect` when you want provider-reported token usage
+on stderr. Stop the daemon with SIGINT/SIGTERM.
 
 Telegram can attach to the same daemon:
 
@@ -562,8 +573,8 @@ near-term follow-up.
   files, run allowlisted commands, and inspect git branch context with
   per-call permission prompts for side effects.
 - **Workspace file skills**: `context.work_dir` loads `AGENTS.md`,
-  `.agents/skills`, and roles; `peggy skills` lists the catalog and
-  `peggy skill --arg key=value <name>` runs one skill through Peggy.
+  `.agents/skills`, and roles; local and daemon clients can list the
+  catalog and run one skill through Peggy.
 - **Permission tiers** by channel/client: prompt, read-only, or trusted.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses

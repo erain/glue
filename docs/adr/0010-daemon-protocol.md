@@ -145,7 +145,7 @@ Response:
   "version": 1,
   "active_runs": 0,
   "tools_count": 4,
-  "capabilities": ["runs", "events", "permissions", "tools", "status"]
+  "capabilities": ["runs", "events", "permissions", "tools", "skills", "status"]
 }
 ```
 
@@ -179,6 +179,29 @@ Response:
 derive the final target from call arguments. Hosts that do not expose a
 catalog return an empty `tools` array.
 
+Daemon clients can also inspect reusable host skills:
+
+```http
+GET /v1/skills
+```
+
+Response:
+
+```json
+{
+  "skills": [
+    {
+      "name": "triage",
+      "description": "Triage one issue"
+    }
+  ]
+}
+```
+
+Hosts that do not expose a skill catalog return an empty `skills`
+array. A host that does expose a catalog advertises the `skills`
+capability in `/v1/status`.
+
 ### 5. Runs and sessions
 
 A prompt run is started with:
@@ -197,6 +220,28 @@ Content-Type: application/json
   "options": {}
 }
 ```
+
+A skill run uses the same endpoint and event stream, but sends `skill`
+and optional string arguments instead of `text`:
+
+```json
+{
+  "skill": "triage",
+  "arguments": {
+    "issue": "GLUE-123"
+  },
+  "client_id": "cli:tty-1234",
+  "role": "",
+  "model": "",
+  "max_turns": 0,
+  "options": {}
+}
+```
+
+`text` and `skill` are mutually exclusive. Skill runs forward through
+`Session.Skill`, so they use the same provider streaming,
+permission-request, usage, role, model, and session behavior as prompt
+runs.
 
 The response is:
 
