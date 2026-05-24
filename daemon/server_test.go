@@ -109,6 +109,18 @@ func (h skillCatalogHost) SkillCatalog(context.Context) ([]SkillCatalogEntry, er
 	return h.skills, nil
 }
 
+type roleCatalogHost struct {
+	roles []RoleCatalogEntry
+}
+
+func (roleCatalogHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (h roleCatalogHost) RoleCatalog(context.Context) ([]RoleCatalogEntry, error) {
+	return h.roles, nil
+}
+
 type mcpCatalogHost struct {
 	resources []MCPResourceCatalogEntry
 	prompts   []MCPPromptCatalogEntry
@@ -314,6 +326,64 @@ func TestServerSkillsCatalogUnsupportedHost(t *testing.T) {
 	}
 	if len(catalog.Skills) != 0 {
 		t.Fatalf("catalog = %+v, want empty", catalog.Skills)
+	}
+}
+
+func TestServerRolesCatalog(t *testing.T) {
+	srv := newTestServer(t, roleCatalogHost{roles: []RoleCatalogEntry{{
+		Name:        "reviewer",
+		Description: "Reviews diffs",
+		Model:       "fast-model",
+	}}})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/roles", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/roles", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("roles status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog roleCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Roles) != 1 || catalog.Roles[0].Name != "reviewer" || catalog.Roles[0].Model != "fast-model" {
+		t.Fatalf("catalog = %+v", catalog.Roles)
+	}
+
+	var status statusResponse
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(status.Capabilities, "roles") {
+		t.Fatalf("capabilities = %v, missing roles", status.Capabilities)
+	}
+}
+
+func TestServerRolesCatalogUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/roles", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("roles status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog roleCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Roles) != 0 {
+		t.Fatalf("catalog = %+v, want empty", catalog.Roles)
 	}
 }
 

@@ -131,6 +131,10 @@ type daemonSkillCatalog struct {
 	Skills []daemon.SkillCatalogEntry `json:"skills"`
 }
 
+type daemonRoleCatalog struct {
+	Roles []daemon.RoleCatalogEntry `json:"roles"`
+}
+
 type daemonMCPResourceCatalog struct {
 	Resources []daemon.MCPResourceCatalogEntry `json:"resources"`
 }
@@ -160,6 +164,7 @@ type daemonInspect struct {
 	Status       daemonStatus                     `json:"status"`
 	Tools        []daemonToolCatalogEntry         `json:"tools"`
 	Skills       []daemon.SkillCatalogEntry       `json:"skills,omitempty"`
+	Roles        []daemon.RoleCatalogEntry        `json:"roles,omitempty"`
 	MCPResources []daemon.MCPResourceCatalogEntry `json:"mcp_resources,omitempty"`
 	MCPPrompts   []daemon.MCPPromptCatalogEntry   `json:"mcp_prompts,omitempty"`
 }
@@ -371,6 +376,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
 	showSkills := flags.Bool("skills", false, "list daemon skills and exit without starting a run")
 	skillsJSON := flags.Bool("skills-json", false, "print --skills output as JSON")
+	showRoles := flags.Bool("roles", false, "list daemon roles and exit without starting a run")
+	rolesJSON := flags.Bool("roles-json", false, "print --roles output as JSON")
 	showMCPResources := flags.Bool("mcp-resources", false, "list daemon MCP resources and exit without starting a run")
 	mcpResourcesJSON := flags.Bool("mcp-resources-json", false, "print --mcp-resources output as JSON")
 	showMCPPrompts := flags.Bool("mcp-prompts", false, "list daemon MCP prompts and exit without starting a run")
@@ -400,6 +407,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *skillsJSON {
 		*showSkills = true
 	}
+	if *rolesJSON {
+		*showRoles = true
+	}
 	if *mcpResourcesJSON {
 		*showMCPResources = true
 	}
@@ -419,13 +429,13 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		*showInspect = true
 	}
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showSkills, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --skills, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --status, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
 		return errors.New("missing required --prompt or --skill")
@@ -461,6 +471,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if *showSkills {
 		return runConnectSkills(ctx, cfg, *skillsJSON, stdout, client)
+	}
+	if *showRoles {
+		return runConnectRoles(ctx, cfg, *rolesJSON, stdout, client)
 	}
 	if *showMCPResources {
 		return runConnectMCPResources(ctx, cfg, *mcpResourcesJSON, stdout, client)
@@ -575,6 +588,20 @@ func runConnectSkills(ctx context.Context, cfg connectConfig, jsonOutput bool, s
 	return nil
 }
 
+func runConnectRoles(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	catalog, err := fetchDaemonRoles(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(catalog)
+	}
+	writeDaemonRoleCatalog(stdout, catalog.Roles)
+	return nil
+}
+
 func runConnectMCPResources(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
 	catalog, err := fetchDaemonMCPResources(ctx, cfg, client)
 	if err != nil {
@@ -678,6 +705,13 @@ func runConnectInspect(ctx context.Context, cfg connectConfig, jsonOutput bool, 
 		}
 		inspect.Skills = skills.Skills
 	}
+	if daemonHasCapability(status, "roles") {
+		roles, err := fetchDaemonRoles(ctx, cfg, client)
+		if err != nil {
+			return err
+		}
+		inspect.Roles = roles.Roles
+	}
 	if daemonHasCapability(status, "mcp_resources") {
 		resources, err := fetchDaemonMCPResources(ctx, cfg, client)
 		if err != nil {
@@ -746,6 +780,11 @@ func writeDaemonInspect(w io.Writer, inspect daemonInspect) {
 		fmt.Fprintln(w, "skills:")
 		writeDaemonSkillCatalogIndented(w, inspect.Skills, "  ")
 	}
+	if daemonHasCapability(inspect.Status, "roles") {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "roles:")
+		writeDaemonRoleCatalogIndented(w, inspect.Roles, "  ")
+	}
 	if daemonHasCapability(inspect.Status, "mcp_resources") {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "mcp_resources:")
@@ -802,6 +841,30 @@ func fetchDaemonSkills(ctx context.Context, cfg connectConfig, client httpDoer) 
 	}
 	if catalog.Skills == nil {
 		catalog.Skills = []daemon.SkillCatalogEntry{}
+	}
+	return catalog, nil
+}
+
+func fetchDaemonRoles(ctx context.Context, cfg connectConfig, client httpDoer) (daemonRoleCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/roles", nil)
+	if err != nil {
+		return daemonRoleCatalog{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemonRoleCatalog{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonRoleCatalog{}, fmt.Errorf("daemon roles: %s", httpStatusError(resp))
+	}
+	var catalog daemonRoleCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return daemonRoleCatalog{}, err
+	}
+	if catalog.Roles == nil {
+		catalog.Roles = []daemon.RoleCatalogEntry{}
 	}
 	return catalog, nil
 }
@@ -956,6 +1019,29 @@ func writeDaemonSkillCatalogIndented(w io.Writer, skills []daemon.SkillCatalogEn
 		fmt.Fprintf(w, "%s%s\n", indent, skill.Name)
 		if skill.Description != "" {
 			fmt.Fprintf(w, "%s  description: %s\n", indent, oneLine(skill.Description))
+		}
+	}
+}
+
+func writeDaemonRoleCatalog(w io.Writer, roles []daemon.RoleCatalogEntry) {
+	writeDaemonRoleCatalogIndented(w, roles, "")
+}
+
+func writeDaemonRoleCatalogIndented(w io.Writer, roles []daemon.RoleCatalogEntry, indent string) {
+	if len(roles) == 0 {
+		fmt.Fprintf(w, "%sNo daemon roles reported.\n", indent)
+		return
+	}
+	for i, role := range roles {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "%s%s\n", indent, role.Name)
+		if role.Description != "" {
+			fmt.Fprintf(w, "%s  description: %s\n", indent, oneLine(role.Description))
+		}
+		if role.Model != "" {
+			fmt.Fprintf(w, "%s  model: %s\n", indent, role.Model)
 		}
 	}
 }
@@ -1487,6 +1573,7 @@ func printUsage(w io.Writer) {
   glue connect --status [--status-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skills [--skills-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --roles [--roles-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-resources [--mcp-resources-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-prompts [--mcp-prompts-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-read --server <name> --uri <uri> [--mcp-read-json] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -1495,7 +1582,7 @@ func printUsage(w io.Writer) {
 Commands:
   run      Run the local Gemini-backed agent.
   serve    Start a local HTTP+SSE daemon for Glue sessions.
-  connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/MCP catalogs.
+  connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP catalogs.
 
 Flags:
   --id       Session id. Defaults to "default".
@@ -1523,6 +1610,9 @@ Flags:
   --skills   Connect mode: list daemon skills and exit without starting a run.
   --skills-json
              Connect --skills mode: print JSON.
+  --roles    Connect mode: list daemon roles and exit without starting a run.
+  --roles-json
+             Connect --roles mode: print JSON.
   --mcp-resources
              Connect mode: list daemon MCP resources and exit without starting a run.
   --mcp-resources-json

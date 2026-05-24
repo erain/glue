@@ -146,6 +146,38 @@ func TestPeggy_SkillUsesWorkspaceSkill(t *testing.T) {
 	}
 }
 
+func TestPeggy_PromptWithOptionsUsesWorkspaceRole(t *testing.T) {
+	workDir := t.TempDir()
+	roleDir := filepath.Join(workDir, "roles")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roleDir, "reviewer.md"), []byte("---\nname: reviewer\ndescription: Reviews diffs\nmodel: role-model\n---\nReview carefully."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakeProvider{text: "reviewed"}
+	p, err := New(Options{
+		Settings: Settings{Context: ContextSettings{WorkDir: workDir}},
+		Provider: fp,
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	if _, err := p.PromptWithOptions(context.Background(), "default", "check this", nil, glue.WithRole("reviewer")); err != nil {
+		t.Fatalf("PromptWithOptions: %v", err)
+	}
+	if len(fp.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(fp.requests))
+	}
+	req := fp.requests[0]
+	if req.Model != "role-model" || !strings.Contains(req.SystemPrompt, "Review carefully.") {
+		t.Fatalf("request model=%q system=%q", req.Model, req.SystemPrompt)
+	}
+}
+
 func TestPeggy_PromptPersistsTranscript(t *testing.T) {
 	storeDir := filepath.Join(t.TempDir(), "sessions")
 	fp := &fakeProvider{text: "first"}

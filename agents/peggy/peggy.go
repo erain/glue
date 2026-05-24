@@ -232,6 +232,32 @@ func (p *Peggy) SkillCatalog(ctx context.Context) ([]daemon.SkillCatalogEntry, e
 	return out, nil
 }
 
+// RoleCatalog implements daemon.RoleCatalogHost.
+func (p *Peggy) RoleCatalog(ctx context.Context) ([]daemon.RoleCatalogEntry, error) {
+	if p == nil {
+		return nil, nil
+	}
+	workDir := strings.TrimSpace(p.settings.Context.WorkDir)
+	if workDir == "" {
+		return nil, nil
+	}
+	projectContext, err := glue.LoadContext(workDir)
+	if err != nil {
+		return nil, err
+	}
+	names := sortedMapKeys(projectContext.Roles)
+	out := make([]daemon.RoleCatalogEntry, 0, len(names))
+	for _, name := range names {
+		role := projectContext.Roles[name]
+		out = append(out, daemon.RoleCatalogEntry{
+			Name:        role.Name,
+			Description: role.Description,
+			Model:       role.Model,
+		})
+	}
+	return out, nil
+}
+
 // MCPResourceCatalog implements daemon.MCPResourceCatalogHost.
 func (p *Peggy) MCPResourceCatalog(ctx context.Context) ([]daemon.MCPResourceCatalogEntry, error) {
 	if p == nil || p.mcpManager == nil {
@@ -369,6 +395,11 @@ func (p *Peggy) Close() error {
 //
 // An empty sessionID resolves to "default".
 func (p *Peggy) Prompt(ctx context.Context, sessionID, text string, stdout io.Writer) (string, error) {
+	return p.PromptWithOptions(ctx, sessionID, text, stdout)
+}
+
+// PromptWithOptions runs one turn with additional Glue prompt options.
+func (p *Peggy) PromptWithOptions(ctx context.Context, sessionID, text string, stdout io.Writer, options ...glue.PromptOption) (string, error) {
 	if p == nil || p.agent == nil {
 		return "", errors.New("peggy: not initialised")
 	}
@@ -379,7 +410,7 @@ func (p *Peggy) Prompt(ctx context.Context, sessionID, text string, stdout io.Wr
 	if err != nil {
 		return "", err
 	}
-	opts := []glue.PromptOption{}
+	opts := append([]glue.PromptOption{}, options...)
 	if stdout != nil {
 		opts = append(opts, glue.WithStreamWriter(stdout))
 	}
@@ -393,6 +424,11 @@ func (p *Peggy) Prompt(ctx context.Context, sessionID, text string, stdout io.Wr
 // Skill runs one named Glue skill against the given session id. Args are
 // appended to the skill prompt as formatted JSON by the Glue session layer.
 func (p *Peggy) Skill(ctx context.Context, sessionID, name string, args any, stdout io.Writer) (string, error) {
+	return p.SkillWithOptions(ctx, sessionID, name, args, stdout)
+}
+
+// SkillWithOptions runs one named Glue skill with additional prompt options.
+func (p *Peggy) SkillWithOptions(ctx context.Context, sessionID, name string, args any, stdout io.Writer, options ...glue.PromptOption) (string, error) {
 	if p == nil || p.agent == nil {
 		return "", errors.New("peggy: not initialised")
 	}
@@ -404,7 +440,7 @@ func (p *Peggy) Skill(ctx context.Context, sessionID, name string, args any, std
 	if err != nil {
 		return "", err
 	}
-	opts := []glue.PromptOption{}
+	opts := append([]glue.PromptOption{}, options...)
 	if stdout != nil {
 		opts = append(opts, glue.WithStreamWriter(stdout))
 	}

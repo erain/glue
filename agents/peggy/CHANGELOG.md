@@ -30,6 +30,12 @@ not formally follow SemVer until v1.0.
   data, `glue connect --skill <name> --arg key=value` runs a skill
   over the existing SSE stream, and `glue connect --inspect` includes
   skills when the daemon advertises them.
+- **Workspace roles for Peggy.** `peggy roles` lists role files from
+  `context.work_dir`, local `peggy --role <name>` and
+  `peggy skill --role <name>` apply a workspace role to a run, and
+  daemon clients can inspect roles with `glue connect --roles` /
+  `--roles-json`. `glue connect --inspect` includes roles when the
+  daemon advertises them.
 
 ## v0.4.0 — 2026-05-24
 

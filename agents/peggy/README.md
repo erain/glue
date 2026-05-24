@@ -158,6 +158,7 @@ defaults above and emits a stderr diagnostic.
 peggy [flags] "<prompt text>"
 peggy skill [flags] <name>
 peggy skills [flags]
+peggy roles [flags]
 peggy mcp prompt [flags]
 peggy mcp prompts [flags]
 peggy mcp read [flags]
@@ -237,6 +238,28 @@ glue connect --skills-json
 glue connect --skill triage --arg issue=GLUE-123 --id cli:triage --usage
 ```
 
+Roles live under `roles/*.md` with the same simple frontmatter style:
+
+```markdown
+---
+name: reviewer
+description: Review diffs carefully
+model: gpt-5-codex
+---
+
+Focus on correctness, regressions, and missing tests.
+```
+
+List roles and apply one to a prompt or skill run:
+
+```sh
+peggy roles --config ~/.config/peggy/settings.json
+peggy --role reviewer --config ~/.config/peggy/settings.json "review this branch"
+peggy skill --role reviewer --config ~/.config/peggy/settings.json triage
+glue connect --roles
+glue connect --role reviewer --prompt "review this branch"
+```
+
 `peggy status` prints a local readiness summary without constructing a
 provider, starting a prompt, or connecting to MCP servers:
 
@@ -258,6 +281,7 @@ session history and memory store.
 peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
 glue connect --skills
+glue connect --roles
 glue connect --skill triage --arg issue=GLUE-123 --id cli:triage
 glue connect --mcp-resources
 glue connect --mcp-prompts
@@ -282,12 +306,13 @@ Useful `serve` flags:
 
 Startup output prints the `base_url` and metadata path, never the
 bearer token. `glue connect --inspect` includes status, tools,
-daemon-advertised skills, and any daemon-advertised MCP
-resource/prompt catalogs. Use `--skills-json`, `--mcp-resources-json`,
-`--mcp-prompts-json`, `--mcp-read-json`, or `--mcp-prompt-json` when
-another client needs the payload as data. Add `--usage` to prompt or
-skill-mode `glue connect` when you want provider-reported token usage
-on stderr. Stop the daemon with SIGINT/SIGTERM.
+daemon-advertised skills, daemon-advertised roles, and any
+daemon-advertised MCP resource/prompt catalogs. Use `--skills-json`,
+`--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
+`--mcp-read-json`, or `--mcp-prompt-json` when another client needs the
+payload as data. Add `--usage` to prompt or skill-mode `glue connect`
+when you want provider-reported token usage on stderr. Stop the daemon
+with SIGINT/SIGTERM.
 
 Telegram can attach to the same daemon:
 
@@ -574,7 +599,7 @@ near-term follow-up.
   per-call permission prompts for side effects.
 - **Workspace file skills**: `context.work_dir` loads `AGENTS.md`,
   `.agents/skills`, and roles; local and daemon clients can list the
-  catalog and run one skill through Peggy.
+  catalogs, apply roles, and run one skill through Peggy.
 - **Permission tiers** by channel/client: prompt, read-only, or trusted.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses

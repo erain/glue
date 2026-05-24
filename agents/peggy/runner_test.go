@@ -328,6 +328,72 @@ func TestRunSkillsJSON(t *testing.T) {
 	}
 }
 
+func TestRunRolesListsWorkspaceRoles(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	workDir := t.TempDir()
+	roleDir := filepath.Join(workDir, "roles")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roleDir, "reviewer.md"), []byte("---\nname: reviewer\ndescription: Reviews diffs\nmodel: role-model\n---\nReview carefully."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	raw, _ := json.MarshalIndent(map[string]any{
+		"context": map[string]any{"work_dir": workDir},
+	}, "", "  ")
+	_ = os.WriteFile(cfgPath, raw, 0o600)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"roles", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	for _, want := range []string{"reviewer", "description: Reviews diffs", "model: role-model"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", out.String(), want)
+		}
+	}
+}
+
+func TestRunRolesJSON(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	workDir := t.TempDir()
+	roleDir := filepath.Join(workDir, "roles")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roleDir, "reviewer.md"), []byte("---\nname: reviewer\nmodel: role-model\n---\nReview carefully."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	raw, _ := json.MarshalIndent(map[string]any{
+		"context": map[string]any{"work_dir": workDir},
+	}, "", "  ")
+	_ = os.WriteFile(cfgPath, raw, 0o600)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"roles", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var catalog []roleCatalogEntry
+	if err := json.Unmarshal(out.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, out.String())
+	}
+	if len(catalog) != 1 || catalog[0].Name != "reviewer" || catalog[0].Model != "role-model" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
 func TestRunSkillFlagsParse(t *testing.T) {
 	t.Setenv(EnvConfigPath, "")
 	t.Setenv(EnvSoulPath, "")

@@ -95,6 +95,12 @@ type skillCatalogEntry struct {
 	Description string `json:"description,omitempty"`
 }
 
+type roleCatalogEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Model       string `json:"model,omitempty"`
+}
+
 // Run is the top-level CLI entry point. It parses args, loads the
 // settings and identity files, constructs a Peggy, and dispatches a
 // single prompt. Returns a process exit code.
@@ -121,6 +127,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return runSkill(ctx, args[1:], stdin, stdout, stderr)
 		case "skills":
 			return runSkills(args[1:], stdout, stderr)
+		case "roles":
+			return runRoles(args[1:], stdout, stderr)
 		case "status":
 			return runStatus(args[1:], stdout, stderr)
 		case "mcp":
@@ -134,6 +142,7 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		configPath           = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
 		soulPath             = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
 		sessionID            = fs.String("session", "default", "session id (file-backed transcripts key off this)")
+		roleName             = fs.String("role", "", "workspace role name for this prompt")
 		showVersion          = fs.Bool("version", false, "print version and exit")
 		enableCoding         = fs.Bool("coding", false, "enable local coding tools for this prompt")
 		codingWorkDir        = fs.String("workdir", "", "workspace root for --coding (default current directory)")
@@ -146,6 +155,7 @@ Usage:
   peggy [flags] "<prompt text>"
   peggy skill [flags] <name>
   peggy skills [flags]
+  peggy roles [flags]
   peggy status [flags]
   peggy mcp [command]
   peggy serve [flags]
@@ -156,6 +166,7 @@ Examples:
   peggy --config /tmp/peggy.json "what do you know about my Aussie?"
   peggy --coding --workdir . "run the tests and fix the failure"
   peggy skills --config ~/.config/peggy/settings.json
+  peggy roles --config ~/.config/peggy/settings.json
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
   peggy mcp tools --config ~/.config/peggy/settings.json
@@ -230,7 +241,8 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 	}
 	defer p.Close()
 
-	if _, err := p.Prompt(ctx, *sessionID, prompt, stdout); err != nil {
+	promptOptions := promptOptionsForRole(*roleName)
+	if _, err := p.PromptWithOptions(ctx, *sessionID, prompt, stdout, promptOptions...); err != nil {
 		fmt.Fprintf(stderr, "\npeggy: prompt: %v\n", err)
 		return 1
 	}
@@ -247,6 +259,14 @@ func cliPermissionForSettings(settings Settings, stdin io.Reader, stderr io.Writ
 		PermissionTierForChannel(settings.Permissions, PermissionChannelCLI),
 		PermissionChannelCLI,
 	)
+}
+
+func promptOptionsForRole(roleName string) []glue.PromptOption {
+	roleName = strings.TrimSpace(roleName)
+	if roleName == "" {
+		return nil
+	}
+	return []glue.PromptOption{glue.WithRole(roleName)}
 }
 
 func runSkills(args []string, stdout, stderr io.Writer) int {
@@ -307,6 +327,64 @@ Flags:
 	return 0
 }
 
+func runRoles(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy roles", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy roles — list roles discovered from Peggy's configured workspace.
+
+Usage:
+  peggy roles [flags]
+
+Examples:
+  peggy roles --config ~/.config/peggy/settings.json
+  peggy roles --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy roles: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy roles: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy roles: no settings.json found; using built-in defaults")
+	}
+	catalog, err := loadRoleCatalog(settings.Context.WorkDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy roles: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(catalog); err != nil {
+			fmt.Fprintf(stderr, "peggy roles: encode catalog: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeRoleCatalog(stdout, catalog)
+	return 0
+}
+
 func runSkill(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("peggy skill", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -314,6 +392,7 @@ func runSkill(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		configPath           = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
 		soulPath             = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
 		sessionID            = fs.String("session", "default", "session id (file-backed transcripts key off this)")
+		roleName             = fs.String("role", "", "workspace role name for this skill run")
 		enableCoding         = fs.Bool("coding", false, "enable local coding tools for this skill run")
 		codingWorkDir        = fs.String("workdir", "", "workspace root for --coding (default current directory)")
 		codingAllowOverwrite = fs.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
@@ -395,7 +474,8 @@ Flags:
 	}
 	defer p.Close()
 
-	if _, err := p.Skill(ctx, *sessionID, skillName, parsedArgs, stdout); err != nil {
+	promptOptions := promptOptionsForRole(*roleName)
+	if _, err := p.SkillWithOptions(ctx, *sessionID, skillName, parsedArgs, stdout, promptOptions...); err != nil {
 		fmt.Fprintf(stderr, "\npeggy skill: %v\n", err)
 		return 1
 	}
@@ -424,6 +504,28 @@ func loadSkillCatalog(workDir string) ([]skillCatalogEntry, error) {
 	return catalog, nil
 }
 
+func loadRoleCatalog(workDir string) ([]roleCatalogEntry, error) {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return nil, nil
+	}
+	ctx, err := glue.LoadContext(workDir)
+	if err != nil {
+		return nil, err
+	}
+	names := sortedMapKeys(ctx.Roles)
+	catalog := make([]roleCatalogEntry, 0, len(names))
+	for _, name := range names {
+		role := ctx.Roles[name]
+		catalog = append(catalog, roleCatalogEntry{
+			Name:        role.Name,
+			Description: role.Description,
+			Model:       role.Model,
+		})
+	}
+	return catalog, nil
+}
+
 func writeSkillCatalog(w io.Writer, catalog []skillCatalogEntry) {
 	if len(catalog) == 0 {
 		fmt.Fprintln(w, "No Peggy skills configured.")
@@ -436,6 +538,25 @@ func writeSkillCatalog(w io.Writer, catalog []skillCatalogEntry) {
 		fmt.Fprintln(w, entry.Name)
 		if entry.Description != "" {
 			fmt.Fprintf(w, "  description: %s\n", singleLine(entry.Description))
+		}
+	}
+}
+
+func writeRoleCatalog(w io.Writer, catalog []roleCatalogEntry) {
+	if len(catalog) == 0 {
+		fmt.Fprintln(w, "No Peggy roles configured.")
+		return
+	}
+	for i, entry := range catalog {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, entry.Name)
+		if entry.Description != "" {
+			fmt.Fprintf(w, "  description: %s\n", singleLine(entry.Description))
+		}
+		if entry.Model != "" {
+			fmt.Fprintf(w, "  model: %s\n", entry.Model)
 		}
 	}
 }
