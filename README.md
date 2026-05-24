@@ -607,6 +607,7 @@ go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
 - `--prompt` — prompt text (required).
 - `--model` — model id or `gemini/<model>` (default `gemini-2.5-flash`).
 - `--store` — file session store directory (default `.glue/sessions`).
+- `--usage` — print provider-reported token usage to stderr when available.
 - `--env` — `.env` file to load before reading `GEMINI_API_KEY`. Repeatable;
   shell environment wins on conflict.
 
@@ -642,6 +643,8 @@ Use `--base-url`, `--token`, or `--metadata` when connecting to an
 explicit daemon endpoint. Use `--inspect` for a compact authenticated
 status-and-tools preflight, or `--status` / `--tools` to render each
 view separately. Each inspect mode also has a `-json` form for scripts.
+Add `--usage` to `run` or prompt-mode `connect` to print provider-reported
+token usage on stderr without changing streamed stdout.
 
 Peggy can serve the same daemon protocol with the personal-assistant
 agent, settings, memory store, and coding tools loaded once:

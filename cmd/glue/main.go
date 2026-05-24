@@ -95,6 +95,21 @@ type startRunResult struct {
 	EventsURL string `json:"events_url"`
 }
 
+type connectRunDonePayload struct {
+	Text        string         `json:"text"`
+	Message     *glue.Message  `json:"message,omitempty"`
+	NewMessages []glue.Message `json:"new_messages,omitempty"`
+}
+
+type usageSummary struct {
+	HasUsage         bool
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalTokens      int64
+}
+
 type daemonToolCatalog struct {
 	Tools []daemonToolCatalogEntry `json:"tools"`
 }
@@ -194,6 +209,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	prompt := flags.String("prompt", "", "prompt text")
 	model := flags.String("model", defaultModel, "model id or gemini/<model>")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
+	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
 
@@ -239,10 +255,11 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	}
 	if wroteDelta {
 		fmt.Fprintln(stdout)
-		return nil
-	}
-	if response.Text != "" {
+	} else if response.Text != "" {
 		fmt.Fprintln(stdout, response.Text)
+	}
+	if *showUsage {
+		writeUsageSummary(stderr, summarizeUsage(response.NewMessages))
 	}
 	return nil
 }
@@ -320,6 +337,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	model := flags.String("model", "", "per-run model override")
 	role := flags.String("role", "", "per-run role override")
 	maxTurns := flags.Int("max-turns", 0, "per-run loop turn budget")
+	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
 	showTools := flags.Bool("tools", false, "list daemon tools and exit without starting a run")
 	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
@@ -379,7 +397,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *showInspect {
 		return runConnectInspect(ctx, cfg, *inspectJSON, stdout, client)
 	}
-	return runConnect(ctx, cfg, stdin, stdout, stderr, client)
+	return runConnect(ctx, cfg, *showUsage, stdin, stdout, stderr, client)
 }
 
 func resolveConnectConfig(cfg connectConfig) (connectConfig, error) {
@@ -427,7 +445,7 @@ func resolveConnectConfig(cfg connectConfig) (connectConfig, error) {
 	return cfg, nil
 }
 
-func runConnect(ctx context.Context, cfg connectConfig, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+func runConnect(ctx context.Context, cfg connectConfig, showUsage bool, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
 	start, err := startDaemonRun(ctx, cfg, client)
 	if err != nil {
 		return err
@@ -441,7 +459,7 @@ func runConnect(ctx context.Context, cfg connectConfig, stdin io.Reader, stdout 
 		case <-done:
 		}
 	}()
-	return streamDaemonRun(ctx, cfg, start, bufio.NewReader(stdin), stdout, stderr, client)
+	return streamDaemonRun(ctx, cfg, start, showUsage, bufio.NewReader(stdin), stdout, stderr, client)
 }
 
 func runConnectTools(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
@@ -631,7 +649,7 @@ func startDaemonRun(ctx context.Context, cfg connectConfig, client httpDoer) (st
 	return out, nil
 }
 
-func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResult, input *bufio.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResult, showUsage bool, input *bufio.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+start.EventsURL, nil)
 	if err != nil {
 		return err
@@ -686,10 +704,25 @@ func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResul
 		case "run_done":
 			if wroteDelta {
 				fmt.Fprintln(stdout)
-				return nil
+			} else {
+				done, err := decodePayload[connectRunDonePayload](event.Payload)
+				if err != nil {
+					return err
+				}
+				if done.Text != "" {
+					fmt.Fprintln(stdout, done.Text)
+				}
 			}
-			if text := payloadString(event.Payload, "text"); text != "" {
-				fmt.Fprintln(stdout, text)
+			if showUsage {
+				done, err := decodePayload[connectRunDonePayload](event.Payload)
+				if err != nil {
+					return err
+				}
+				messages := done.NewMessages
+				if len(messages) == 0 && done.Message != nil {
+					messages = []glue.Message{*done.Message}
+				}
+				writeUsageSummary(stderr, summarizeUsage(messages))
 			}
 			return nil
 		case "run_error":
@@ -706,6 +739,45 @@ func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResul
 		return err
 	}
 	return errors.New("daemon event stream closed before terminal event")
+}
+
+func summarizeUsage(messages []glue.Message) usageSummary {
+	var summary usageSummary
+	for _, message := range messages {
+		if message.Role != glue.MessageRoleAssistant || message.Usage == nil {
+			continue
+		}
+		usage := message.Usage
+		summary.HasUsage = true
+		summary.InputTokens += usage.InputTokens
+		summary.OutputTokens += usage.OutputTokens
+		summary.CacheReadTokens += usage.CacheReadTokens
+		summary.CacheWriteTokens += usage.CacheWriteTokens
+		total := usage.TotalTokens
+		if total == 0 {
+			total = usage.InputTokens + usage.OutputTokens
+		}
+		summary.TotalTokens += total
+	}
+	return summary
+}
+
+func writeUsageSummary(w io.Writer, summary usageSummary) {
+	if !summary.HasUsage {
+		return
+	}
+	parts := []string{
+		fmt.Sprintf("input=%d", summary.InputTokens),
+		fmt.Sprintf("output=%d", summary.OutputTokens),
+	}
+	if summary.CacheReadTokens != 0 {
+		parts = append(parts, fmt.Sprintf("cache_read=%d", summary.CacheReadTokens))
+	}
+	if summary.CacheWriteTokens != 0 {
+		parts = append(parts, fmt.Sprintf("cache_write=%d", summary.CacheWriteTokens))
+	}
+	parts = append(parts, fmt.Sprintf("total=%d", summary.TotalTokens))
+	fmt.Fprintf(w, "usage: %s\n", strings.Join(parts, " "))
 }
 
 func promptPermission(input *bufio.Reader, stderr io.Writer, perm connectPermissionPayload) (connectPermissionDecision, error) {
@@ -899,6 +971,7 @@ Flags:
   --base-url Connect daemon base URL override.
   --role     Connect role override.
   --max-turns Connect loop turn budget override.
+  --usage   Run/connect mode: print token usage summary to stderr when available.
   --inspect  Connect mode: show daemon status and tools without starting a run.
   --inspect-json
              Connect --inspect mode: print JSON.

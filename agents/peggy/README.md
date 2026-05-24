@@ -181,7 +181,7 @@ session history and memory store.
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
-glue connect --prompt "summarize today's plan" --id cli:daily
+glue connect --prompt "summarize today's plan" --id cli:daily --usage
 ```
 
 Useful `serve` flags:
@@ -199,7 +199,9 @@ Useful `serve` flags:
   over the daemon protocol for the connected client to answer.
 
 Startup output prints the `base_url` and metadata path, never the
-bearer token. Stop the daemon with SIGINT/SIGTERM.
+bearer token. Add `--usage` to prompt-mode `glue connect` when you want
+provider-reported token usage on stderr. Stop the daemon with
+SIGINT/SIGTERM.
 
 Telegram can attach to the same daemon:
 
