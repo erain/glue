@@ -640,6 +640,19 @@ By default, `connect` reads the same metadata file written by `serve`.
 Use `--base-url`, `--token`, or `--metadata` when connecting to an
 explicit daemon endpoint.
 
+Peggy can serve the same daemon protocol with the personal-assistant
+agent, settings, memory store, and coding tools loaded once:
+
+```sh
+go run ./agents/peggy/cmd/peggy serve --coding --workdir .
+go run ./cmd/glue connect --prompt "Say hi to Peggy" --id cli:daily
+```
+
+`peggy serve` writes metadata to the same default path as `glue serve`,
+so `glue connect` works without explicit connection flags. Permission
+requests for Peggy coding tools are brokered over the daemon stream and
+answered by the connected client.
+
 ### Standard flags for downstream agents
 
 Agents that ship their own CLI binary share the same six flags

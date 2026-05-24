@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRun_Version(t *testing.T) {
@@ -150,4 +153,95 @@ func TestRun_CodingFlagsParseAndUseInputAwareRunner(t *testing.T) {
 	if !strings.Contains(errOut.String(), "coding tools enabled") {
 		t.Fatalf("stderr = %q, want coding diagnostic", errOut.String())
 	}
+}
+
+func TestRunServeMetadataDisabledRequiresExplicitToken(t *testing.T) {
+	t.Setenv("GLUE_DAEMON_TOKEN", "")
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	var out, errOut bytes.Buffer
+	code := runWithDeps(context.Background(), []string{
+		"serve",
+		"--metadata", "",
+	}, strings.NewReader(""), &out, &errOut, func(context.Context, serveConfig, http.Handler, io.Writer) error {
+		t.Fatal("serve should not be called")
+		return nil
+	})
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero")
+	}
+	if !strings.Contains(errOut.String(), "metadata disabled requires") {
+		t.Fatalf("stderr = %q, want metadata error", errOut.String())
+	}
+}
+
+func TestRunServeBuildsPeggyDaemonConfig(t *testing.T) {
+	t.Setenv("GLUE_DAEMON_TOKEN", "")
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "openrouter",
+		"store": map[string]any{
+			"type": "file",
+			"path": filepath.Join(t.TempDir(), "sessions"),
+		},
+	})
+	soulPath := filepath.Join(t.TempDir(), "SOUL.md")
+	if err := os.WriteFile(soulPath, []byte("You are Peggy."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+
+	var captured serveConfig
+	var gotHandler bool
+	var out, errOut bytes.Buffer
+	code := runWithDeps(context.Background(), []string{
+		"serve",
+		"--config", cfgPath,
+		"--soul", soulPath,
+		"--listen", "127.0.0.1:12345",
+		"--token", "tok",
+		"--metadata", "",
+		"--permission-timeout", "2s",
+		"--coding",
+		"--workdir", workDir,
+	}, strings.NewReader(""), &out, &errOut, func(_ context.Context, cfg serveConfig, handler http.Handler, _ io.Writer) error {
+		captured = cfg
+		gotHandler = handler != nil
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, errOut.String())
+	}
+	if !gotHandler {
+		t.Fatal("handler was nil")
+	}
+	if captured.ListenAddr != "127.0.0.1:12345" || captured.Token != "tok" || captured.TokenSource != "flag" || captured.MetadataPath != "" {
+		t.Fatalf("serve config = %+v", captured)
+	}
+	if captured.PermissionTimeout != 2*time.Second {
+		t.Fatalf("permission timeout = %s", captured.PermissionTimeout)
+	}
+	if !strings.Contains(errOut.String(), "coding tools enabled for "+workDir) {
+		t.Fatalf("stderr = %q, want coding diagnostic", errOut.String())
+	}
+}
+
+func writeRunnerConfig(t *testing.T, cfg map[string]any) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
 }
