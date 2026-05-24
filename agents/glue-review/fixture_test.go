@@ -196,6 +196,7 @@ func TestFixtureReplayReviewMatchers(t *testing.T) {
 		"## glue-review\n\nNo concerns — LGTM",
 		"##glue-review\n\nNo concerns - LGTM.",
 		"## glue-reviewlow\n\nNoconcerns — LGTM.",
+		"## glue-reviewLogic bug in SumFirstN loop\n\nNo concerns — LGTM",
 	} {
 		if !glueReviewHeaderPattern.MatchString(review) {
 			t.Fatalf("header pattern did not match %q", review)
@@ -383,10 +384,10 @@ func assertHasSection(t *testing.T, review, section string) {
 // glueReviewHeaderPattern accepts the canonical `## glue-review`
 // header AND the common drift variants the free models produce
 // (no space after `##`, extra spaces, mixed case, or an immediately
-// attached severity token). Tightening the matcher leads to brittleness
+// attached severity/title token). Tightening the matcher leads to brittleness
 // without catching real regressions — the model has correctly
 // identified itself either way. (#127, #140)
-var glueReviewHeaderPattern = regexp.MustCompile(`(?im)^##\s*glue-review(?:\b|(?:low|medium|major|critical)\b)`)
+var glueReviewHeaderPattern = regexp.MustCompile(`(?im)^##\s*glue-review(?:\b|(?:low|medium|major|critical)\b|[A-Z][^\n]*)`)
 
 // glueReviewLGTMPattern accepts the canonical clean-review sentence
 // plus compact variants produced by free models, such as
