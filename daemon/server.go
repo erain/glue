@@ -28,6 +28,12 @@ type Host interface {
 	Session(ctx context.Context, id string, options ...glue.SessionOption) (*glue.Session, error)
 }
 
+// ToolCatalogHost is optionally implemented by hosts that can expose the
+// provider-visible tool surface without starting a run.
+type ToolCatalogHost interface {
+	ToolCatalog() []glue.ToolSpec
+}
+
 // Options configures [New].
 type Options struct {
 	// Host is required. A *glue.Agent satisfies this interface.
@@ -170,6 +176,19 @@ type permissionDecisionResponse struct {
 	Accepted     bool   `json:"accepted"`
 }
 
+type toolCatalogResponse struct {
+	Tools []toolCatalogEntry `json:"tools"`
+}
+
+type toolCatalogEntry struct {
+	Name                    string          `json:"name"`
+	Description             string          `json:"description,omitempty"`
+	Parameters              json.RawMessage `json:"parameters,omitempty"`
+	RequiresPermission      bool            `json:"requires_permission"`
+	PermissionAction        string          `json:"permission_action,omitempty"`
+	PermissionTargetPreview string          `json:"permission_target_preview,omitempty"`
+}
+
 // New constructs a daemon Server.
 func New(opts Options) (*Server, error) {
 	if opts.Host == nil {
@@ -217,6 +236,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.authorized(r) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", false)
+		return
+	}
+
+	if r.URL.Path == "/v1/tools" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleTools(w, r)
 		return
 	}
 
@@ -290,6 +318,30 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionI
 		SessionID: sessionID,
 		EventsURL: "/v1/runs/" + url.PathEscape(run.id) + "/events",
 	})
+}
+
+func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
+	host, ok := s.host.(ToolCatalogHost)
+	if !ok {
+		writeJSON(w, http.StatusOK, toolCatalogResponse{Tools: []toolCatalogEntry{}})
+		return
+	}
+	specs := host.ToolCatalog()
+	tools := make([]toolCatalogEntry, 0, len(specs))
+	for _, spec := range specs {
+		entry := toolCatalogEntry{
+			Name:               spec.Name,
+			Description:        spec.Description,
+			Parameters:         append(json.RawMessage(nil), spec.Parameters...),
+			RequiresPermission: spec.RequiresPermission,
+			PermissionAction:   spec.PermissionAction,
+		}
+		if spec.PermissionTarget != nil {
+			entry.PermissionTargetPreview = spec.PermissionTarget(glue.ToolCall{Name: spec.Name})
+		}
+		tools = append(tools, entry)
+	}
+	writeJSON(w, http.StatusOK, toolCatalogResponse{Tools: tools})
 }
 
 func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, req startRunRequest) {
