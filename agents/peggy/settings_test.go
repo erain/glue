@@ -53,6 +53,22 @@ func TestLoadSettings_HappyPathWithDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadSettings_ContextWorkDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeJSON(t, path, map[string]any{
+		"context": map[string]any{"work_dir": "$HOME/workspace"},
+	})
+	s, _, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if got := s.Context.WorkDir; got != filepath.Join(home, "workspace") {
+		t.Fatalf("context.work_dir = %q, want expanded path", got)
+	}
+}
+
 func TestLoadSettings_ExplicitPathMissingIsError(t *testing.T) {
 	t.Setenv(EnvConfigPath, "")
 	_, _, err := LoadSettings(filepath.Join(t.TempDir(), "missing.json"))

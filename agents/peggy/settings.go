@@ -44,6 +44,10 @@ type Settings struct {
 	// discovered tools Peggy can register. Disabled by default.
 	MCP MCPSettings `json:"mcp"`
 
+	// Context configures workspace context discovery for AGENTS.md,
+	// .agents/skills, and roles. Disabled when WorkDir is empty.
+	Context ContextSettings `json:"context"`
+
 	// Permissions configures Peggy's side-effect permission policy.
 	// Defaults to prompt for every channel.
 	Permissions PermissionSettings `json:"permissions"`
@@ -93,6 +97,11 @@ type CodingSettings struct {
 // MCPSettings configures external MCP tool servers.
 type MCPSettings struct {
 	Servers map[string]MCPServerSettings `json:"servers,omitempty"`
+}
+
+// ContextSettings configures Glue project-context discovery for Peggy.
+type ContextSettings struct {
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
 // MCPServerSettings configures one named MCP server. Stdio is the only
@@ -180,6 +189,13 @@ func LoadSettings(path string) (Settings, string, error) {
 			return Settings{}, resolved, err
 		}
 		s.Coding.WorkDir = expanded
+	}
+	if s.Context.WorkDir != "" {
+		expanded, err := expandPath(s.Context.WorkDir)
+		if err != nil {
+			return Settings{}, resolved, err
+		}
+		s.Context.WorkDir = expanded
 	}
 	if len(s.MCP.Servers) > 0 {
 		expanded, err := expandMCPSettings(s.MCP)

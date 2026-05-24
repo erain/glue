@@ -174,6 +174,7 @@ func TestRunStatusDefaults(t *testing.T) {
 		"settings: built-in defaults",
 		"identity: none",
 		"provider: codex (provider default)",
+		"context: disabled",
 		"mcp: 0 configured, 0 enabled",
 	} {
 		if !strings.Contains(text, want) {
@@ -197,6 +198,9 @@ func TestRunStatusJSON(t *testing.T) {
 			"work_dir":         workDir,
 			"allowed_binaries": []string{"git", "go"},
 			"allow_overwrite":  true,
+		},
+		"context": map[string]any{
+			"work_dir": workDir,
 		},
 		"permissions": map[string]any{
 			"default_tier": "prompt",
@@ -246,11 +250,109 @@ func TestRunStatusJSON(t *testing.T) {
 	if !report.Coding.Enabled || report.Coding.WorkDir != workDir || !report.Coding.AllowOverwrite {
 		t.Fatalf("coding = %+v", report.Coding)
 	}
+	if !report.Context.Enabled || report.Context.WorkDir != workDir {
+		t.Fatalf("context = %+v", report.Context)
+	}
 	if report.MCP.Configured != 2 || report.MCP.Enabled != 1 || len(report.MCP.Servers) != 2 {
 		t.Fatalf("mcp = %+v", report.MCP)
 	}
 	if len(report.Channels) != 1 || report.Channels[0] != "telegram" {
 		t.Fatalf("channels = %+v", report.Channels)
+	}
+}
+
+func TestRunSkillsListsWorkspaceSkills(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "triage")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: triage\ndescription: Triage one issue\n---\nInvestigate the issue."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	cfg := map[string]any{
+		"context": map[string]any{"work_dir": workDir},
+	}
+	raw, _ := json.MarshalIndent(cfg, "", "  ")
+	_ = os.WriteFile(cfgPath, raw, 0o600)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"skills", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	for _, want := range []string{"triage", "description: Triage one issue"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", out.String(), want)
+		}
+	}
+}
+
+func TestRunSkillsJSON(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "daily")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: daily\ndescription: Daily plan\n---\nPlan the day."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	raw, _ := json.MarshalIndent(map[string]any{
+		"context": map[string]any{"work_dir": workDir},
+	}, "", "  ")
+	_ = os.WriteFile(cfgPath, raw, 0o600)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"skills", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var catalog []skillCatalogEntry
+	if err := json.Unmarshal(out.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, out.String())
+	}
+	if len(catalog) != 1 || catalog[0].Name != "daily" || catalog[0].Description != "Daily plan" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
+func TestRunSkillFlagsParse(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "triage")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("Investigate the issue."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "settings.json")
+	raw, _ := json.MarshalIndent(map[string]any{
+		"provider": "bogus-provider",
+		"context":  map[string]any{"work_dir": workDir},
+	}, "", "  ")
+	_ = os.WriteFile(cfgPath, raw, 0o600)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"skill", "--config", cfgPath, "--arg", "issue=GLUE-123", "triage"}, &out, &errOut)
+	if code == 2 {
+		t.Fatalf("exit 2 indicates skill flags were not recognised; stderr=%q", errOut.String())
 	}
 }
 
