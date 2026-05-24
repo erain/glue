@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/providers"
 	"github.com/erain/glue/providers/codex"
 	"github.com/erain/glue/providers/gemini"
@@ -17,6 +18,7 @@ import (
 	"github.com/erain/glue/providers/openrouter"
 	filestore "github.com/erain/glue/stores/file"
 	sqlitestore "github.com/erain/glue/stores/sqlite"
+	toolsmcp "github.com/erain/glue/tools/mcp"
 )
 
 // Options configures New. Most fields are optional.
@@ -77,7 +79,7 @@ type Peggy struct {
 	soul     string
 	stderr   io.Writer
 
-	mcpManager io.Closer
+	mcpManager *toolsmcp.Manager
 }
 
 // New builds a Peggy from the supplied Options. Settings defaults
@@ -186,6 +188,78 @@ func (p *Peggy) Settings() Settings { return p.settings }
 // Agent returns the underlying glue agent. Exposed for cross-session
 // queries (Agent.SearchSessions) and for advanced integrations.
 func (p *Peggy) Agent() *glue.Agent { return p.agent }
+
+// Session implements daemon.Host by delegating to Peggy's underlying agent.
+func (p *Peggy) Session(ctx context.Context, id string, options ...glue.SessionOption) (*glue.Session, error) {
+	if p == nil || p.agent == nil {
+		return nil, errors.New("peggy: not initialised")
+	}
+	return p.agent.Session(ctx, id, options...)
+}
+
+// ToolCatalog implements daemon.ToolCatalogHost.
+func (p *Peggy) ToolCatalog() []glue.ToolSpec {
+	if p == nil || p.agent == nil {
+		return nil
+	}
+	return p.agent.ToolCatalog()
+}
+
+// MCPResourceCatalog implements daemon.MCPResourceCatalogHost.
+func (p *Peggy) MCPResourceCatalog(ctx context.Context) ([]daemon.MCPResourceCatalogEntry, error) {
+	if p == nil || p.mcpManager == nil {
+		return nil, nil
+	}
+	resources, err := p.mcpManager.Resources(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]daemon.MCPResourceCatalogEntry, 0, len(resources))
+	for _, resource := range resources {
+		out = append(out, daemon.MCPResourceCatalogEntry{
+			Server:      resource.Server,
+			URI:         resource.URI,
+			Name:        resource.Name,
+			Title:       resource.Title,
+			Description: resource.Description,
+			MIMEType:    resource.MIMEType,
+			Annotations: cloneResourceAnnotations(resource.Annotations),
+			Size:        cloneResourceSize(resource.Size),
+		})
+	}
+	return out, nil
+}
+
+// MCPPromptCatalog implements daemon.MCPPromptCatalogHost.
+func (p *Peggy) MCPPromptCatalog(ctx context.Context) ([]daemon.MCPPromptCatalogEntry, error) {
+	if p == nil || p.mcpManager == nil {
+		return nil, nil
+	}
+	prompts, err := p.mcpManager.Prompts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]daemon.MCPPromptCatalogEntry, 0, len(prompts))
+	for _, prompt := range prompts {
+		entry := daemon.MCPPromptCatalogEntry{
+			Server:      prompt.Server,
+			Name:        prompt.Name,
+			Title:       prompt.Title,
+			Description: prompt.Description,
+			Arguments:   make([]daemon.MCPPromptCatalogArgument, 0, len(prompt.Arguments)),
+		}
+		for _, arg := range prompt.Arguments {
+			entry.Arguments = append(entry.Arguments, daemon.MCPPromptCatalogArgument{
+				Name:        arg.Name,
+				Title:       arg.Title,
+				Description: arg.Description,
+				Required:    arg.Required,
+			})
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
 
 // Close releases resources held by the Peggy. Safe to call multiple
 // times; safe on a nil receiver. When the store implements io.Closer

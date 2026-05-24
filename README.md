@@ -641,10 +641,11 @@ go run ./cmd/glue connect --prompt "Say hi" --id local-dev
 By default, `connect` reads the same metadata file written by `serve`.
 Use `--base-url`, `--token`, or `--metadata` when connecting to an
 explicit daemon endpoint. Use `--inspect` for a compact authenticated
-status-and-tools preflight, or `--status` / `--tools` to render each
-view separately. Each inspect mode also has a `-json` form for scripts.
-Add `--usage` to `run` or prompt-mode `connect` to print provider-reported
-token usage on stderr without changing streamed stdout.
+status-and-catalog preflight, or `--status`, `--tools`,
+`--mcp-resources`, or `--mcp-prompts` to render each view separately.
+Each inspect mode also has a `-json` form for scripts. Add `--usage`
+to `run` or prompt-mode `connect` to print provider-reported token
+usage on stderr without changing streamed stdout.
 
 Peggy can serve the same daemon protocol with the personal-assistant
 agent, settings, memory store, and coding tools loaded once:
@@ -652,6 +653,8 @@ agent, settings, memory store, and coding tools loaded once:
 ```sh
 go run ./agents/peggy/cmd/peggy serve --coding --workdir .
 go run ./cmd/glue connect --inspect
+go run ./cmd/glue connect --mcp-resources
+go run ./cmd/glue connect --mcp-prompts
 go run ./cmd/glue connect --prompt "Say hi to Peggy" --id cli:daily
 ```
 

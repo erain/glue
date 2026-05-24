@@ -4,6 +4,16 @@ All notable changes to the `peggy` agent. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); this project does
 not formally follow SemVer until v1.0.
 
+## Unreleased
+
+### Added
+
+- **Daemon MCP catalogs.** `peggy serve` now exposes authenticated MCP
+  resource and prompt catalog endpoints through the daemon host, and
+  `glue connect --mcp-resources`, `--mcp-prompts`, plus JSON variants
+  render those catalogs for remote clients. `glue connect --inspect`
+  includes MCP catalog sections when the daemon advertises them.
+
 ## v0.4.0 — 2026-05-24
 
 Peggy now has an ecosystem surface for external tools and operator
@@ -58,8 +68,8 @@ before a run starts.
   and dynamic discovery remain deferred.
 - `peggy status` is intentionally config-only. It does not prove that
   provider credentials or MCP endpoints are live.
-- Daemon inspection exposes status and tool catalogs; resource/prompt
-  catalogs are still local CLI inspection surfaces.
+- MCP resource reads and prompt rendering through daemon clients remain
+  deferred.
 
 ## v0.3.0 — 2026-05-24
 

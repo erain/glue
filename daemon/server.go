@@ -34,6 +34,47 @@ type ToolCatalogHost interface {
 	ToolCatalog() []glue.ToolSpec
 }
 
+// MCPResourceCatalogHost is optionally implemented by hosts that can expose
+// MCP resource metadata without starting a run.
+type MCPResourceCatalogHost interface {
+	MCPResourceCatalog(context.Context) ([]MCPResourceCatalogEntry, error)
+}
+
+// MCPPromptCatalogHost is optionally implemented by hosts that can expose MCP
+// prompt metadata without starting a run.
+type MCPPromptCatalogHost interface {
+	MCPPromptCatalog(context.Context) ([]MCPPromptCatalogEntry, error)
+}
+
+// MCPResourceCatalogEntry describes one MCP resource advertised by a host.
+type MCPResourceCatalogEntry struct {
+	Server      string         `json:"server"`
+	URI         string         `json:"uri"`
+	Name        string         `json:"name"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	MIMEType    string         `json:"mime_type,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
+	Size        *int64         `json:"size,omitempty"`
+}
+
+// MCPPromptCatalogEntry describes one MCP prompt advertised by a host.
+type MCPPromptCatalogEntry struct {
+	Server      string                     `json:"server"`
+	Name        string                     `json:"name"`
+	Title       string                     `json:"title,omitempty"`
+	Description string                     `json:"description,omitempty"`
+	Arguments   []MCPPromptCatalogArgument `json:"arguments,omitempty"`
+}
+
+// MCPPromptCatalogArgument describes one argument accepted by an MCP prompt.
+type MCPPromptCatalogArgument struct {
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
 // Options configures [New].
 type Options struct {
 	// Host is required. A *glue.Agent satisfies this interface.
@@ -188,6 +229,14 @@ type toolCatalogResponse struct {
 	Tools []toolCatalogEntry `json:"tools"`
 }
 
+type mcpResourceCatalogResponse struct {
+	Resources []MCPResourceCatalogEntry `json:"resources"`
+}
+
+type mcpPromptCatalogResponse struct {
+	Prompts []MCPPromptCatalogEntry `json:"prompts"`
+}
+
 type toolCatalogEntry struct {
 	Name                    string          `json:"name"`
 	Description             string          `json:"description,omitempty"`
@@ -265,6 +314,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/mcp/resources" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleMCPResources(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/mcp/prompts" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleMCPPrompts(w, r)
+		return
+	}
+
 	if sessionID, ok := parseStartRunPath(r.URL.Path); ok {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -315,18 +382,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if host, ok := s.host.(ToolCatalogHost); ok {
 		toolsCount = len(host.ToolCatalog())
 	}
+	capabilities := []string{
+		"runs",
+		"events",
+		"permissions",
+		"tools",
+		"status",
+	}
+	if _, ok := s.host.(MCPResourceCatalogHost); ok {
+		capabilities = append(capabilities, "mcp_resources")
+	}
+	if _, ok := s.host.(MCPPromptCatalogHost); ok {
+		capabilities = append(capabilities, "mcp_prompts")
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
-		OK:         true,
-		Version:    protocolVersion,
-		ActiveRuns: s.activeRunCount(),
-		ToolsCount: toolsCount,
-		Capabilities: []string{
-			"runs",
-			"events",
-			"permissions",
-			"tools",
-			"status",
-		},
+		OK:           true,
+		Version:      protocolVersion,
+		ActiveRuns:   s.activeRunCount(),
+		ToolsCount:   toolsCount,
+		Capabilities: capabilities,
 	})
 }
 
@@ -379,6 +453,40 @@ func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
 		tools = append(tools, entry)
 	}
 	writeJSON(w, http.StatusOK, toolCatalogResponse{Tools: tools})
+}
+
+func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(MCPResourceCatalogHost)
+	if !ok {
+		writeJSON(w, http.StatusOK, mcpResourceCatalogResponse{Resources: []MCPResourceCatalogEntry{}})
+		return
+	}
+	resources, err := host.MCPResourceCatalog(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if resources == nil {
+		resources = []MCPResourceCatalogEntry{}
+	}
+	writeJSON(w, http.StatusOK, mcpResourceCatalogResponse{Resources: resources})
+}
+
+func (s *Server) handleMCPPrompts(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(MCPPromptCatalogHost)
+	if !ok {
+		writeJSON(w, http.StatusOK, mcpPromptCatalogResponse{Prompts: []MCPPromptCatalogEntry{}})
+		return
+	}
+	prompts, err := host.MCPPromptCatalog(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if prompts == nil {
+		prompts = []MCPPromptCatalogEntry{}
+	}
+	writeJSON(w, http.StatusOK, mcpPromptCatalogResponse{Prompts: prompts})
 }
 
 func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, req startRunRequest) {
