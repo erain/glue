@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,7 +77,36 @@ func startStdioTransport(cfg ServerConfig) (*stdioTransport, error) {
 	return tr, nil
 }
 
-func (t *stdioTransport) Encode(v any) error {
+func (t *stdioTransport) Request(ctx context.Context, req rpcRequest) (rpcResponse, error) {
+	if err := t.encode(req); err != nil {
+		return rpcResponse{}, err
+	}
+	type readResult struct {
+		resp rpcResponse
+		err  error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		resp, err := t.readResponse()
+		ch <- readResult{resp: resp, err: err}
+	}()
+	select {
+	case got := <-ch:
+		return got.resp, got.err
+	case <-ctx.Done():
+		_ = t.Close()
+		return rpcResponse{}, ctx.Err()
+	}
+}
+
+func (t *stdioTransport) Notify(ctx context.Context, req rpcRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return t.encode(req)
+}
+
+func (t *stdioTransport) encode(v any) error {
 	if t == nil || t.enc == nil {
 		return errors.New("mcp: nil stdio transport")
 	}
@@ -86,14 +116,20 @@ func (t *stdioTransport) Encode(v any) error {
 	return nil
 }
 
-func (t *stdioTransport) Decode(resp *rpcResponse) error {
+func (t *stdioTransport) readResponse() (rpcResponse, error) {
 	if t == nil || t.dec == nil {
-		return errors.New("mcp: nil stdio transport")
+		return rpcResponse{}, errors.New("mcp: nil stdio transport")
 	}
-	if err := t.dec.Decode(resp); err != nil {
-		return fmt.Errorf("mcp: read stdio message: %w", err)
+	for {
+		var resp rpcResponse
+		if err := t.dec.Decode(&resp); err != nil {
+			return rpcResponse{}, fmt.Errorf("mcp: read stdio message: %w", err)
+		}
+		if len(resp.ID) == 0 {
+			continue
+		}
+		return resp, nil
 	}
-	return nil
 }
 
 func (t *stdioTransport) Close() error {

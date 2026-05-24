@@ -26,8 +26,8 @@ type Manager struct {
 	tools   []glue.Tool
 }
 
-// NewManager initializes each configured stdio MCP server, discovers its
-// tools, and maps them to glue.Tool values.
+// NewManager initializes each configured MCP server, discovers its tools, and
+// maps them to glue.Tool values.
 func NewManager(ctx context.Context, configs []ServerConfig, _ Options) (*Manager, error) {
 	m := &Manager{}
 	seen := map[string]struct{}{}
@@ -43,7 +43,7 @@ func NewManager(ctx context.Context, configs []ServerConfig, _ Options) (*Manage
 			return nil, fmt.Errorf("mcp: server name %q has no valid tool-name characters", cfg.Name)
 		}
 
-		client, err := NewStdioClient(ctx, cfg)
+		client, err := NewClient(ctx, cfg)
 		if err != nil {
 			_ = m.Close()
 			return nil, fmt.Errorf("mcp: server %q: %w", serverName, err)

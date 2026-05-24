@@ -3,6 +3,7 @@ package peggy
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -62,35 +63,72 @@ func MCPServerConfigs(settings MCPSettings) ([]toolsmcp.ServerConfig, MCPSetting
 		transport := strings.ToLower(strings.TrimSpace(server.Transport))
 		if transport == "" {
 			transport = defaultMCPTransport
-			server.Transport = transport
 		}
+		server.Transport = transport
 		normalized.Servers[name] = server
 		if !server.Enabled {
 			continue
 		}
-		if transport != defaultMCPTransport {
-			return nil, normalized, fmt.Errorf("peggy: mcp.servers.%s transport %q is not supported yet", name, server.Transport)
-		}
-		if strings.TrimSpace(server.Command) == "" {
-			return nil, normalized, fmt.Errorf("peggy: mcp.servers.%s.command is required", name)
-		}
-		server.Command = strings.TrimSpace(server.Command)
 		if server.TimeoutSeconds < 0 {
 			return nil, normalized, fmt.Errorf("peggy: mcp.servers.%s.timeout_seconds must be >= 0", name)
 		}
 		normalized.Servers[name] = server
 
 		cfg := toolsmcp.ServerConfig{
-			Name:    name,
-			Command: server.Command,
-			Args:    append([]string(nil), server.Args...),
-			Env:     append([]string(nil), server.Env...),
-			WorkDir: server.WorkDir,
+			Name:      name,
+			Transport: transport,
 		}
 		if server.TimeoutSeconds > 0 {
 			cfg.Timeout = time.Duration(server.TimeoutSeconds) * time.Second
 		}
+		switch transport {
+		case toolsmcp.TransportStdio:
+			if strings.TrimSpace(server.Command) == "" {
+				return nil, normalized, fmt.Errorf("peggy: mcp.servers.%s.command is required", name)
+			}
+			server.Command = strings.TrimSpace(server.Command)
+			normalized.Servers[name] = server
+			cfg.Command = server.Command
+			cfg.Args = append([]string(nil), server.Args...)
+			cfg.Env = append([]string(nil), server.Env...)
+			cfg.WorkDir = server.WorkDir
+		case toolsmcp.TransportHTTP:
+			if strings.TrimSpace(server.URL) == "" {
+				return nil, normalized, fmt.Errorf("peggy: mcp.servers.%s.url is required", name)
+			}
+			cfg.URL = strings.TrimSpace(server.URL)
+			headers, err := resolveMCPHeaders(name, server.HeadersEnv)
+			if err != nil {
+				return nil, normalized, err
+			}
+			cfg.Headers = headers
+		default:
+			return nil, normalized, fmt.Errorf("peggy: mcp.servers.%s transport %q is not supported", name, server.Transport)
+		}
 		configs = append(configs, cfg)
 	}
 	return configs, normalized, nil
+}
+
+func resolveMCPHeaders(serverName string, headersEnv map[string]string) (map[string]string, error) {
+	if len(headersEnv) == 0 {
+		return nil, nil
+	}
+	headers := make(map[string]string, len(headersEnv))
+	for header, envName := range headersEnv {
+		header = strings.TrimSpace(header)
+		envName = strings.TrimSpace(envName)
+		if header == "" {
+			return nil, fmt.Errorf("peggy: mcp.servers.%s.headers_env contains an empty header name", serverName)
+		}
+		if envName == "" {
+			return nil, fmt.Errorf("peggy: mcp.servers.%s.headers_env.%s is empty", serverName, header)
+		}
+		value, ok := os.LookupEnv(envName)
+		if !ok || value == "" {
+			return nil, fmt.Errorf("peggy: mcp.servers.%s.headers_env.%s env var %s is not set", serverName, header, envName)
+		}
+		headers[header] = value
+	}
+	return headers, nil
 }
