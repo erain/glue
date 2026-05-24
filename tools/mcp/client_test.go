@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -156,6 +157,9 @@ func runMCPHelper(scenario string) error {
 	if err := readInitialized(dec); err != nil {
 		return err
 	}
+	if scenario == "tools" || scenario == "bad_schema" || scenario == "collision" {
+		return runMCPToolScenario(dec, enc, scenario)
+	}
 	if scenario != "rpc_error" {
 		return nil
 	}
@@ -172,6 +176,122 @@ func runMCPHelper(scenario string) error {
 			"data":    map[string]any{"detail": "test"},
 		},
 	})
+}
+
+func runMCPToolScenario(dec *json.Decoder, enc *json.Encoder, scenario string) error {
+	for {
+		var req helperRequest
+		if err := dec.Decode(&req); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		switch req.Method {
+		case "tools/list":
+			if err := writeHelperResult(enc, req.ID, helperToolsList(scenario)); err != nil {
+				return err
+			}
+		case "tools/call":
+			if err := handleHelperToolCall(enc, req); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+		}
+	}
+}
+
+func helperToolsList(scenario string) map[string]any {
+	switch scenario {
+	case "bad_schema":
+		return map[string]any{
+			"tools": []map[string]any{{
+				"name":        "bad.schema",
+				"description": "bad schema",
+				"inputSchema": "not an object",
+			}},
+		}
+	case "collision":
+		return map[string]any{
+			"tools": []map[string]any{
+				{"name": "a-b", "inputSchema": json.RawMessage(`{"type":"object"}`)},
+				{"name": "a_b", "inputSchema": json.RawMessage(`{"type":"object"}`)},
+			},
+		}
+	default:
+		return map[string]any{
+			"tools": []map[string]any{
+				{
+					"name":         "weather.lookup",
+					"title":        "Weather Lookup",
+					"description":  "returns a short forecast",
+					"inputSchema":  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}`),
+					"outputSchema": json.RawMessage(`{"type":"object","properties":{"temperature_c":{"type":"number"}}}`),
+					"annotations":  map[string]any{"readOnlyHint": true},
+				},
+				{"name": "no_schema", "description": "returns structured content"},
+				{"name": "image.tool", "inputSchema": json.RawMessage(`{"type":"object"}`)},
+				{"name": "error.tool", "inputSchema": json.RawMessage(`{"type":"object"}`)},
+				{"name": "rpc.fail", "inputSchema": json.RawMessage(`{"type":"object"}`)},
+			},
+		}
+	}
+}
+
+func handleHelperToolCall(enc *json.Encoder, req helperRequest) error {
+	var params struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return err
+	}
+	switch params.Name {
+	case "weather.lookup":
+		city, _ := params.Arguments["city"].(string)
+		return writeHelperResult(enc, req.ID, map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "weather for " + city,
+			}},
+			"structuredContent": map[string]any{
+				"city":          city,
+				"temperature_c": 21,
+			},
+		})
+	case "no_schema":
+		return writeHelperResult(enc, req.ID, map[string]any{
+			"structuredContent": map[string]any{"answer": 42},
+		})
+	case "image.tool":
+		return writeHelperResult(enc, req.ID, map[string]any{
+			"content": []map[string]any{{
+				"type":     "image",
+				"data":     "abc",
+				"mimeType": "image/png",
+			}},
+		})
+	case "error.tool":
+		return writeHelperResult(enc, req.ID, map[string]any{
+			"isError": true,
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "tool failed",
+			}},
+		})
+	case "rpc.fail":
+		return enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      json.RawMessage(req.ID),
+			"error": map[string]any{
+				"code":    -32002,
+				"message": "call exploded",
+			},
+		})
+	default:
+		return fmt.Errorf("unknown helper tool %q", params.Name)
+	}
 }
 
 func initializeResult(version string) map[string]any {

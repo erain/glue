@@ -2,7 +2,8 @@
 // Protocol servers from glue hosts.
 //
 // This package follows ADR-0011. The first implementation supports JSON-RPC
-// lifecycle negotiation over stdio only. Mapping MCP tools to glue.Tool values,
-// Streamable HTTP, resources, prompts, sampling, elicitation, and OAuth are
-// deferred follow-up surfaces.
+// lifecycle negotiation over stdio, discovery of MCP server tools, and mapping
+// those tools to permission-gated glue.Tool values. Streamable HTTP, Peggy
+// settings, resources, prompts, sampling, elicitation, and OAuth are deferred
+// follow-up surfaces.
 package mcp
