@@ -63,12 +63,14 @@ extends glue toward a different category: long-running, multi-channel,
 memory-bearing agents that may live for days. The framework expansions
 required to support that category — Codex provider, summarizing
 compactor + FTS5 session search, daemon mode, channel adapter pattern,
-Executor / Permission / Hook interfaces — are designed in
-ADRs 0005-0010 and the M3 ADRs that follow them. The
+Executor / Permission / Hook interfaces, and MCP client integration are
+designed in ADRs 0005-0011 and the milestone ADRs that follow them. The
 Executor / Permission / Hook trio is specified in
 [`adr/0009-executor-permission-hook.md`](adr/0009-executor-permission-hook.md).
 The local daemon protocol is specified in
 [`adr/0010-daemon-protocol.md`](adr/0010-daemon-protocol.md).
+MCP client integration is specified in
+[`adr/0011-mcp-client-integration.md`](adr/0011-mcp-client-integration.md).
 The architectural rule that holds the expansion together is in
 ADR-0005 §1: every product concern enters glue only as an interface the
 host fills in.
