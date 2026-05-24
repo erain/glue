@@ -160,6 +160,48 @@ func TestPeggyMCPToolUsesPermissionPath(t *testing.T) {
 	}
 }
 
+func TestPeggyRegistersMCPResourceReadToolWhenEnabled(t *testing.T) {
+	provider := &fakeProvider{text: "ok"}
+	p := newMCPTestPeggy(t, provider, glue.AllowAll{}, mcpTestServer("resources_only", ""))
+
+	if _, err := p.Prompt(context.Background(), "s", "what resources are available?", nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatal("provider not called")
+	}
+	var names []string
+	for _, tool := range provider.requests[0].Tools {
+		names = append(names, tool.Name)
+	}
+	if !containsString(names, "mcp_fake_read_resource") {
+		t.Fatalf("tools = %v, missing mcp_fake_read_resource", names)
+	}
+}
+
+func TestPeggyMCPResourceReadUsesPermissionPath(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("call_1", "mcp_fake_read_resource", `{"uri":"file:///workspace/README.md"}`),
+		peggyTextTurn("done"),
+	}}
+	perm := &recordingPermission{decision: glue.PermissionDecision{Allow: true}}
+	p := newMCPTestPeggy(t, provider, perm, mcpTestServer("resources_only", ""))
+
+	if _, err := p.Prompt(context.Background(), "s", "read resource", nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if len(perm.requests) != 1 {
+		t.Fatalf("permission requests = %d, want 1", len(perm.requests))
+	}
+	req := perm.requests[0]
+	if req.Tool != "mcp_fake_read_resource" || req.Action != "mcp_read_resource" || req.Target != "fake:file:///workspace/README.md" {
+		t.Fatalf("permission request = %+v", req)
+	}
+	if string(req.Args) != `{"uri":"file:///workspace/README.md"}` {
+		t.Fatalf("permission args = %s", req.Args)
+	}
+}
+
 func TestPeggyMCPReadOnlyTierDeniesBeforeExecution(t *testing.T) {
 	callFile := filepath.Join(t.TempDir(), "called")
 	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
@@ -348,8 +390,30 @@ func runPeggyMCPHelper() error {
 			}); err != nil {
 				return err
 			}
+		case "resources/read":
+			if scenario != "resources" && scenario != "resources_only" {
+				return fmt.Errorf("method = %q, want tools/list, tools/call, or resources/list", req.Method)
+			}
+			var params struct {
+				URI string `json:"uri"`
+			}
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				return err
+			}
+			if params.URI != "file:///workspace/README.md" {
+				return fmt.Errorf("resource uri = %q, want file:///workspace/README.md", params.URI)
+			}
+			if err := writePeggyMCPResult(enc, req.ID, map[string]any{
+				"contents": []map[string]any{{
+					"uri":      params.URI,
+					"mimeType": "text/markdown",
+					"text":     "# Project README\n\nHello from Peggy MCP resource.",
+				}},
+			}); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("method = %q, want tools/list, tools/call, or resources/list", req.Method)
+			return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, or resources/read", req.Method)
 		}
 	}
 }

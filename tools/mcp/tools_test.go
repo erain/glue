@@ -175,6 +175,74 @@ func TestManagerListsMCPResources(t *testing.T) {
 	}
 }
 
+func TestManagerReadsMCPResource(t *testing.T) {
+	cfg := helperConfig("resources")
+	cfg.Name = "fake-server"
+	mgr, err := NewManager(context.Background(), []ServerConfig{cfg}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	read, err := mgr.ReadResource(context.Background(), "fake-server", "file:///workspace/README.md")
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if read.Server != "fake-server" || read.URI != "file:///workspace/README.md" {
+		t.Fatalf("read identity = %+v", read)
+	}
+	if len(read.Contents) != 2 {
+		t.Fatalf("contents = %d, want 2: %+v", len(read.Contents), read.Contents)
+	}
+	first := read.Contents[0]
+	if first.Text == nil || !strings.Contains(*first.Text, "Hello from MCP resource") || first.MIMEType != "text/markdown" {
+		t.Fatalf("text content = %+v", first)
+	}
+	if first.Meta["etag"] != "abc123" {
+		t.Fatalf("text meta = %+v", first.Meta)
+	}
+	second := read.Contents[1]
+	if second.Blob == nil || *second.Blob != "aW1hZ2U=" || second.MIMEType != "image/png" {
+		t.Fatalf("blob content = %+v", second)
+	}
+}
+
+func TestManagerExposesResourceReadTool(t *testing.T) {
+	cfg := helperConfig("resources")
+	cfg.Name = "fake-server"
+	mgr, err := NewManager(context.Background(), []ServerConfig{cfg}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	tool := requireTool(t, mgr.Tools(), "mcp_fake_server_read_resource")
+	if !tool.RequiresPermission {
+		t.Fatal("RequiresPermission = false, want true")
+	}
+	if tool.PermissionAction != "mcp_read_resource" {
+		t.Fatalf("PermissionAction = %q, want mcp_read_resource", tool.PermissionAction)
+	}
+	args := json.RawMessage(`{"uri":"file:///workspace/README.md"}`)
+	if got := tool.PermissionTarget(glue.ToolCall{Arguments: args}); got != "fake-server:file:///workspace/README.md" {
+		t.Fatalf("PermissionTarget = %q", got)
+	}
+
+	result, err := tool.Execute(context.Background(), glue.ToolCall{Name: tool.Name, Arguments: args})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("IsError = true")
+	}
+	if len(result.Content) != 2 || !strings.Contains(result.Content[0].Text, "Hello from MCP resource") {
+		t.Fatalf("content = %#v", result.Content)
+	}
+	if result.Metadata["mcp_resource_uri"] != "file:///workspace/README.md" {
+		t.Fatalf("metadata = %#v", result.Metadata)
+	}
+}
+
 func TestManagerSkipsServersWithoutResources(t *testing.T) {
 	mgr, err := NewManager(context.Background(), []ServerConfig{helperConfig("tools")}, Options{})
 	if err != nil {
@@ -197,9 +265,7 @@ func TestManagerSupportsResourceOnlyServers(t *testing.T) {
 		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close()
-	if len(mgr.Tools()) != 0 {
-		t.Fatalf("tools = %+v, want none", mgr.Tools())
-	}
+	requireTool(t, mgr.Tools(), "mcp_fake_read_resource")
 
 	resources, err := mgr.Resources(context.Background())
 	if err != nil {

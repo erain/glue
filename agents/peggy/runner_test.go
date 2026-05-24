@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	toolsmcp "github.com/erain/glue/tools/mcp"
 )
 
 func TestRun_Version(t *testing.T) {
@@ -299,6 +301,67 @@ func TestRunMCPResourcesJSON(t *testing.T) {
 	}
 	if entry.Size == nil || *entry.Size != 1234 {
 		t.Fatalf("size = %+v", entry.Size)
+	}
+}
+
+func TestRunMCPReadRequiresFlags(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "read"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "--server is required") {
+		t.Fatalf("stderr = %q, want server diagnostic", errOut.String())
+	}
+}
+
+func TestRunMCPReadResource(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("resources_only", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "read", "--config", cfgPath, "--server", "fake", "--uri", "file:///workspace/README.md"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"file:///workspace/README.md",
+		"server: fake",
+		"requested_uri: file:///workspace/README.md",
+		"mime_type: text/markdown",
+		"Hello from Peggy MCP resource.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestRunMCPReadJSON(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("resources_only", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "read", "--config", cfgPath, "--server", "fake", "--uri", "file:///workspace/README.md", "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var read toolsmcp.ResourceRead
+	if err := json.Unmarshal(out.Bytes(), &read); err != nil {
+		t.Fatalf("decode read: %v\nstdout=%s", err, out.String())
+	}
+	if read.Server != "fake" || read.URI != "file:///workspace/README.md" || len(read.Contents) != 1 {
+		t.Fatalf("read = %+v", read)
+	}
+	if read.Contents[0].Text == nil || !strings.Contains(*read.Contents[0].Text, "Peggy MCP resource") {
+		t.Fatalf("contents = %+v", read.Contents)
 	}
 }
 

@@ -21,6 +21,7 @@ A long-running personal-assistant agent built on the
 - per-call permission prompts for side-effecting coding tools in the
   CLI, Telegram, and daemon clients
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
+- opt-in MCP tools plus resource listing and resource reads
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
@@ -137,7 +138,7 @@ and emits a stderr diagnostic.
 | `mcp.servers.<name>.work_dir` | current process dir | Working directory for the stdio server. `~` and `$HOME` expand. |
 | `mcp.servers.<name>.url` | none | Streamable HTTP MCP endpoint URL. Required for `transport: "http"`. |
 | `mcp.servers.<name>.headers_env` | `{}` | Map HTTP header names to env var names. Peggy resolves the env vars at startup and does not write secret values back to settings. |
-| `mcp.servers.<name>.timeout_seconds` | `30` | Timeout for initialize, `tools/list`, and individual `tools/call` requests. |
+| `mcp.servers.<name>.timeout_seconds` | `30` | Timeout for initialize, `tools/list`, `tools/call`, `resources/list`, and `resources/read` requests. |
 | `permissions.default_tier` | `prompt` | Permission tier for side-effecting tools when a channel has no override. One of `prompt`, `read_only`, or `trusted`. |
 | `permissions.channels.<name>` | inherited | Channel override keyed by `cli`, `telegram`, or a future daemon client prefix. |
 
@@ -148,6 +149,7 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy mcp read [flags]
 peggy mcp resources [flags]
 peggy mcp tools [flags]
 peggy serve [flags]
@@ -341,24 +343,29 @@ For HTTP servers, keep tokens in environment variables and point
 ```
 
 Discovered MCP tools are exposed to the model as namespaced tools such
-as `mcp_filesystem_read_file`. Permission prompts use the existing
-channel tier settings: `prompt` asks the owning client, `read_only`
-denies before execution, and `trusted` allows the call subject to the
-server configuration and timeout.
+as `mcp_filesystem_read_file`. Resource-capable servers also expose a
+permission-gated `mcp_<server>_read_resource` tool that reads a URI
+from that server. Permission prompts use the existing channel tier
+settings: `prompt` asks the owning client, `read_only` denies before
+execution, and `trusted` allows the call subject to the server
+configuration and timeout.
 
 Inspect the configured MCP surface without constructing a model
 provider or running a prompt:
 
 ```sh
+peggy mcp read --config ~/.config/peggy/settings.json --server filesystem --uri file:///workspace/README.md
+peggy mcp read --config ~/.config/peggy/settings.json --server filesystem --uri file:///workspace/README.md --json
 peggy mcp resources --config ~/.config/peggy/settings.json
 peggy mcp resources --config ~/.config/peggy/settings.json --json
 peggy mcp tools --config ~/.config/peggy/settings.json
 peggy mcp tools --config ~/.config/peggy/settings.json --json
 ```
 
-`peggy mcp resources` lists resource metadata only; it does not fetch
-resource contents. Servers that do not advertise resource support are
-skipped.
+`peggy mcp resources` lists resource metadata only. `peggy mcp read`
+fetches one resource URI for operator inspection. Servers that do not
+advertise resource support are skipped for listing and cannot serve
+resource reads.
 
 The permission choices are intentionally small:
 
