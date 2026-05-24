@@ -21,7 +21,7 @@ type Update struct {
 }
 
 // Message is the text message variant we care about. Photo, voice,
-// document, etc. are out of scope for v0.1.
+// document, etc. are deferred follow-ups.
 type Message struct {
 	MessageID int64  `json:"message_id"`
 	From      *User  `json:"from,omitempty"`

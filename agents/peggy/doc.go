@@ -11,9 +11,10 @@
 //   - settings.json — JSON config (provider, model, store path,
 //     compaction knobs).
 //
-// v0.1 is single-prompt CLI ("peggy '<text>'"). REPL, Telegram
-// channel, coding skills, and the daemon mode arrive in later
-// milestones. Tracker: https://github.com/erain/glue/issues/110.
+// v0.2 ships the single-prompt CLI, Telegram channel, durable memory,
+// and opt-in local coding tools with per-call permission prompts. The
+// daemon mode arrives in a later milestone. Tracker:
+// https://github.com/erain/glue/issues/110.
 //
 // Design rule (per ADR-0005): every product concern lives in this
 // package and not in core glue. The framework supplies interfaces

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -178,6 +179,88 @@ func TestPeggyCodingShellDenyIsModelVisibleToolError(t *testing.T) {
 	if !toolResult.IsError || !strings.Contains(toolResult.Content[0].Text, "not now") {
 		t.Fatalf("tool result = %#v, want denial tool error", toolResult)
 	}
+}
+
+func TestPeggyCodingReleaseSmoke(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	workDir := t.TempDir()
+	runGit(t, workDir, "init")
+	runGit(t, workDir, "branch", "-M", "main")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workDir, "add", "README.md")
+	runGit(t, workDir, "-c", "user.email=peggy@example.invalid", "-c", "user.name=Peggy Test", "commit", "-m", "base")
+	runGit(t, workDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(workDir, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workDir, "add", "feature.txt")
+	runGit(t, workDir, "-c", "user.email=peggy@example.invalid", "-c", "user.name=Peggy Test", "commit", "-m", "feature")
+
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("c1", "read_file", `{"path":"README.md"}`),
+		toolCallTurn("c2", "write_file", `{"path":"note.txt","content":"hello from v0.2"}`),
+		toolCallTurn("c3", "shell_exec", `{"argv":["go","version"],"max_output_bytes":256}`),
+		toolCallTurn("c4", "git_diff_branch", `{"base":"main","max_bytes":4096}`),
+		toolCallTurn("c5", "git_log_branch", `{"base":"main","limit":2}`),
+		peggyTextTurn("release smoke done"),
+	}}
+	perm := &recordingPermission{decision: glue.PermissionDecision{Allow: true}}
+	p := newCodingTestPeggy(t, provider, workDir, perm)
+
+	if _, err := p.Prompt(context.Background(), "release-smoke", "exercise coding tools", nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if got, want := len(perm.requests), 2; got != want {
+		t.Fatalf("permission requests = %d, want %d", got, want)
+	}
+	if perm.requests[0].Tool != "write_file" || perm.requests[1].Tool != "shell_exec" {
+		t.Fatalf("permission tools = %s, %s; want write_file, shell_exec", perm.requests[0].Tool, perm.requests[1].Tool)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "note.txt"))
+	if err != nil {
+		t.Fatalf("read note.txt: %v", err)
+	}
+	if string(data) != "hello from v0.2" {
+		t.Fatalf("note.txt = %q", data)
+	}
+	if !strings.Contains(lastToolText(t, provider.requests[1]), "base") {
+		t.Fatalf("read_file result missing content: %q", lastToolText(t, provider.requests[1]))
+	}
+	if !strings.Contains(lastToolText(t, provider.requests[3]), "go version") {
+		t.Fatalf("shell_exec result missing go version: %q", lastToolText(t, provider.requests[3]))
+	}
+	if !strings.Contains(lastToolText(t, provider.requests[4]), "feature.txt") {
+		t.Fatalf("git_diff_branch result missing feature file: %q", lastToolText(t, provider.requests[4]))
+	}
+	if !strings.Contains(lastToolText(t, provider.requests[5]), "feature") {
+		t.Fatalf("git_log_branch result missing feature commit: %q", lastToolText(t, provider.requests[5]))
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+}
+
+func lastToolText(t *testing.T, req glue.ProviderRequest) string {
+	t.Helper()
+	if len(req.Messages) == 0 {
+		t.Fatal("provider request has no messages")
+	}
+	msg := req.Messages[len(req.Messages)-1]
+	if msg.Role != glue.MessageRoleTool || len(msg.Content) == 0 {
+		t.Fatalf("last message = %#v, want tool result", msg)
+	}
+	return msg.Content[0].Text
 }
 
 func containsString(haystack []string, needle string) bool {

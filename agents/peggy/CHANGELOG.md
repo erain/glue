@@ -4,6 +4,59 @@ All notable changes to the `peggy` agent. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); this project does
 not formally follow SemVer until v1.0.
 
+## v0.2.0 — 2026-05-23
+
+Peggy can now act as a permission-gated coding assistant in trusted
+local workspaces. The release completes M2 from tracker
+[#110](https://github.com/erain/glue/issues/110): she can read files,
+write files, run allowlisted commands, inspect git branch context, and
+ask before side effects from both CLI and Telegram.
+
+### Added
+
+- **Opt-in local coding mode.** `peggy --coding --workdir <repo>` and
+  the `coding` block in `settings.json` register five tools:
+  `read_file`, `write_file`, `shell_exec`, `git_diff_branch`, and
+  `git_log_branch`.
+- **Permission-gated side effects.** `write_file` and `shell_exec`
+  require a `glue.Permission` decision. Read-only file and git tools
+  do not prompt.
+- **CLI permission prompter.** The single-prompt CLI asks on stderr /
+  stdin with deny, allow-once, allow-for-session, and
+  allow-for-target choices. Remembered decisions are process-local.
+- **Telegram permission prompter.** `peggy-telegram` handles
+  `callback_query` updates and confirms side-effecting coding tools
+  with inline keyboard buttons in the same allowlisted chat that
+  triggered the request.
+- **Coding safety defaults.** `shell_exec` is argv-only, refuses
+  pathful binaries, and is constrained by a basename allowlist.
+  `write_file` is workspace-rooted, blocks sensitive path patterns,
+  refuses symlink escapes, writes atomically, and refuses overwrites
+  unless both host policy and model intent allow them.
+- **Framework primitives for future sandboxes and orchestration.**
+  `glue.Executor`, `glue.Permission`, `glue.Hook`, loop composition,
+  `tools/shell.Exec`, `tools/fs.FileWrite`, and `glue.SubagentTool`
+  landed behind Peggy's product surface.
+
+### Changed
+
+- `peggy.Version` is now `0.2.0`.
+- Peggy README and Telegram README now document coding-mode setup,
+  permission behavior, and the local-only trust boundary.
+- Release smoke coverage now drives read/write/shell/git coding tools
+  through Peggy with a fake provider and permission recorder.
+
+### Known limitations
+
+- Coding mode is a trusted-local workflow. v0.2 uses
+  `glue.LocalExecutor`; stronger sandboxing remains deferred behind
+  the `Executor` interface.
+- Remembered permission choices are process-local. Persistent
+  per-user / per-channel permission policy is a follow-up.
+- Peggy is still one channel process at a time. The M3 daemon will let
+  CLI, Telegram, and future clients share one long-running process.
+- No MCP client yet; that remains M4.
+
 ## v0.1.0 — 2026-05-16
 
 First public release. Peggy is a long-running personal-assistant
@@ -88,4 +141,4 @@ sessions and is reachable from the CLI or Telegram. Tracker:
   by hand at release time and pinned by a test.
 
 [Tracker #110](https://github.com/erain/glue/issues/110) is the
-canonical roadmap. M2 ("she can code") is the next milestone.
+canonical roadmap. M3 ("multi-channel daemon") is the next milestone.
