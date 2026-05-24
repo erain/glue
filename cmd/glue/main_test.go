@@ -982,6 +982,223 @@ func TestRunCLIConnectListsMCPPromptsJSON(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectReadsMCPResource(t *testing.T) {
+	var sawRead bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mcp/resources/read":
+			sawRead = true
+			if r.Method != http.MethodPost {
+				t.Fatalf("read method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("read auth = %q", auth)
+			}
+			var req daemon.MCPReadResourceRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req.Server != "filesystem" || req.URI != "file:///workspace/README.md" {
+				t.Fatalf("read request = %+v", req)
+			}
+			text := "# Project README\n\nHello from daemon."
+			writeJSONResponse(t, w, http.StatusOK, daemon.MCPResourceReadResponse{
+				Server: req.Server,
+				URI:    req.URI,
+				Contents: []daemon.MCPResourceContent{{
+					URI:      req.URI,
+					MIMEType: "text/markdown",
+					Text:     &text,
+					Meta:     map[string]any{"source": "test"},
+				}},
+			})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-read",
+		"--server", "filesystem",
+		"--uri", "file:///workspace/README.md",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawRead || sawRun {
+		t.Fatalf("sawRead=%v sawRun=%v", sawRead, sawRun)
+	}
+	for _, want := range []string{
+		"file:///workspace/README.md",
+		"server: filesystem",
+		"requested_uri: file:///workspace/README.md",
+		"mime_type: text/markdown",
+		`meta: {"source":"test"}`,
+		"Hello from daemon.",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectReadsMCPResourceJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/mcp/resources/read" {
+			http.NotFound(w, r)
+			return
+		}
+		text := "hello"
+		writeJSONResponse(t, w, http.StatusOK, daemon.MCPResourceReadResponse{
+			Server: "filesystem",
+			URI:    "file:///workspace/README.md",
+			Contents: []daemon.MCPResourceContent{{
+				URI:  "file:///workspace/README.md",
+				Text: &text,
+			}},
+		})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-read-json",
+		"--server", "filesystem",
+		"--uri", "file:///workspace/README.md",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var read daemon.MCPResourceReadResponse
+	if err := json.Unmarshal(stdout.Bytes(), &read); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if read.Server != "filesystem" || len(read.Contents) != 1 || read.Contents[0].Text == nil {
+		t.Fatalf("read = %+v", read)
+	}
+}
+
+func TestRunCLIConnectRendersMCPPrompt(t *testing.T) {
+	var sawPrompt bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mcp/prompts/get":
+			sawPrompt = true
+			if r.Method != http.MethodPost {
+				t.Fatalf("prompt method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("prompt auth = %q", auth)
+			}
+			var req daemon.MCPPromptRenderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req.Server != "linear" || req.Name != "daily_brief" || req.Arguments["topic"] != "Go" {
+				t.Fatalf("prompt request = %+v", req)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.MCPPromptRenderResponse{
+				Server:      req.Server,
+				Name:        req.Name,
+				Description: "Rendered daily briefing prompt",
+				Messages: []daemon.MCPPromptMessage{{
+					Role:    "user",
+					Content: json.RawMessage(`{"type":"text","text":"Brief me on Go."}`),
+				}},
+			})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-prompt",
+		"--server", "linear",
+		"--name", "daily_brief",
+		"--arg", "topic=Go",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawPrompt || sawRun {
+		t.Fatalf("sawPrompt=%v sawRun=%v", sawPrompt, sawRun)
+	}
+	for _, want := range []string{
+		"daily_brief",
+		"server: linear",
+		"description: Rendered daily briefing prompt",
+		"messages:",
+		"Brief me on Go.",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectRendersMCPPromptJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/mcp/prompts/get" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemon.MCPPromptRenderResponse{
+			Server: "linear",
+			Name:   "daily_brief",
+			Messages: []daemon.MCPPromptMessage{{
+				Role:    "user",
+				Content: json.RawMessage(`{"type":"text","text":"Brief me."}`),
+			}},
+		})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--mcp-prompt-json",
+		"--server", "linear",
+		"--name", "daily_brief",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var rendered daemon.MCPPromptRenderResponse
+	if err := json.Unmarshal(stdout.Bytes(), &rendered); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if rendered.Server != "linear" || rendered.Name != "daily_brief" || len(rendered.Messages) != 1 {
+		t.Fatalf("rendered = %+v", rendered)
+	}
+}
+
 func TestRunCLIConnectShowsStatus(t *testing.T) {
 	var sawStatus bool
 	var sawRun bool

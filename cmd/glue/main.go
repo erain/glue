@@ -49,6 +49,15 @@ func (e *envFiles) Set(value string) error {
 	return nil
 }
 
+type repeatedStrings []string
+
+func (r *repeatedStrings) String() string { return strings.Join(*r, ",") }
+
+func (r *repeatedStrings) Set(value string) error {
+	*r = append(*r, value)
+	return nil
+}
+
 type serveFunc func(context.Context, serveConfig, http.Handler, io.Writer) error
 
 type serveConfig struct {
@@ -354,12 +363,21 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	mcpResourcesJSON := flags.Bool("mcp-resources-json", false, "print --mcp-resources output as JSON")
 	showMCPPrompts := flags.Bool("mcp-prompts", false, "list daemon MCP prompts and exit without starting a run")
 	mcpPromptsJSON := flags.Bool("mcp-prompts-json", false, "print --mcp-prompts output as JSON")
+	showMCPRead := flags.Bool("mcp-read", false, "read one daemon MCP resource and exit without starting a run")
+	mcpReadJSON := flags.Bool("mcp-read-json", false, "print --mcp-read output as JSON")
+	showMCPPrompt := flags.Bool("mcp-prompt", false, "render one daemon MCP prompt and exit without starting a run")
+	mcpPromptJSON := flags.Bool("mcp-prompt-json", false, "print --mcp-prompt output as JSON")
+	mcpServer := flags.String("server", "", "MCP server name for --mcp-read or --mcp-prompt")
+	mcpURI := flags.String("uri", "", "MCP resource URI for --mcp-read")
+	mcpName := flags.String("name", "", "MCP prompt name for --mcp-prompt")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
 	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
 	inspectJSON := flags.Bool("inspect-json", false, "print --inspect output as JSON")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
+	var mcpArgs repeatedStrings
+	flags.Var(&mcpArgs, "arg", "MCP prompt argument key=value; repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -373,6 +391,12 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *mcpPromptsJSON {
 		*showMCPPrompts = true
 	}
+	if *mcpReadJSON {
+		*showMCPRead = true
+	}
+	if *mcpPromptJSON {
+		*showMCPPrompt = true
+	}
 	if *statusJSON {
 		*showStatus = true
 	}
@@ -380,13 +404,13 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		*showInspect = true
 	}
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showMCPResources, *showMCPPrompts, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --mcp-resources, --mcp-prompts, --status, or --inspect")
+		return errors.New("choose only one of --tools, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --status, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" {
 		return errors.New("missing required --prompt")
@@ -416,6 +440,16 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if *showMCPPrompts {
 		return runConnectMCPPrompts(ctx, cfg, *mcpPromptsJSON, stdout, client)
+	}
+	if *showMCPRead {
+		return runConnectMCPRead(ctx, cfg, *mcpServer, *mcpURI, *mcpReadJSON, stdout, client)
+	}
+	if *showMCPPrompt {
+		argsMap, err := parseConnectMCPArgs(mcpArgs)
+		if err != nil {
+			return err
+		}
+		return runConnectMCPPrompt(ctx, cfg, *mcpServer, *mcpName, argsMap, *mcpPromptJSON, stdout, client)
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
@@ -527,6 +561,50 @@ func runConnectMCPPrompts(ctx context.Context, cfg connectConfig, jsonOutput boo
 		return enc.Encode(catalog)
 	}
 	writeDaemonMCPPromptCatalog(stdout, catalog.Prompts)
+	return nil
+}
+
+func runConnectMCPRead(ctx context.Context, cfg connectConfig, server, uri string, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	server = strings.TrimSpace(server)
+	uri = strings.TrimSpace(uri)
+	if server == "" {
+		return errors.New("--server is required for --mcp-read")
+	}
+	if uri == "" {
+		return errors.New("--uri is required for --mcp-read")
+	}
+	read, err := requestDaemonMCPResourceRead(ctx, cfg, server, uri, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(read)
+	}
+	writeDaemonMCPResourceRead(stdout, read)
+	return nil
+}
+
+func runConnectMCPPrompt(ctx context.Context, cfg connectConfig, server, name string, args map[string]string, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	server = strings.TrimSpace(server)
+	name = strings.TrimSpace(name)
+	if server == "" {
+		return errors.New("--server is required for --mcp-prompt")
+	}
+	if name == "" {
+		return errors.New("--name is required for --mcp-prompt")
+	}
+	rendered, err := requestDaemonMCPPrompt(ctx, cfg, server, name, args, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rendered)
+	}
+	writeDaemonMCPPrompt(stdout, rendered)
 	return nil
 }
 
@@ -701,6 +779,66 @@ func fetchDaemonMCPPrompts(ctx context.Context, cfg connectConfig, client httpDo
 	return catalog, nil
 }
 
+func requestDaemonMCPResourceRead(ctx context.Context, cfg connectConfig, server, uri string, client httpDoer) (daemon.MCPResourceReadResponse, error) {
+	payload := daemon.MCPReadResourceRequest{Server: server, URI: uri}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return daemon.MCPResourceReadResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/v1/mcp/resources/read", &body)
+	if err != nil {
+		return daemon.MCPResourceReadResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemon.MCPResourceReadResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.MCPResourceReadResponse{}, fmt.Errorf("daemon MCP resource read: %s", httpStatusError(resp))
+	}
+	var read daemon.MCPResourceReadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&read); err != nil {
+		return daemon.MCPResourceReadResponse{}, err
+	}
+	if read.Contents == nil {
+		read.Contents = []daemon.MCPResourceContent{}
+	}
+	return read, nil
+}
+
+func requestDaemonMCPPrompt(ctx context.Context, cfg connectConfig, server, name string, args map[string]string, client httpDoer) (daemon.MCPPromptRenderResponse, error) {
+	payload := daemon.MCPPromptRenderRequest{Server: server, Name: name, Arguments: args}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return daemon.MCPPromptRenderResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/v1/mcp/prompts/get", &body)
+	if err != nil {
+		return daemon.MCPPromptRenderResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemon.MCPPromptRenderResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.MCPPromptRenderResponse{}, fmt.Errorf("daemon MCP prompt: %s", httpStatusError(resp))
+	}
+	var rendered daemon.MCPPromptRenderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rendered); err != nil {
+		return daemon.MCPPromptRenderResponse{}, err
+	}
+	if rendered.Messages == nil {
+		rendered.Messages = []daemon.MCPPromptMessage{}
+	}
+	return rendered, nil
+}
+
 func writeDaemonToolCatalog(w io.Writer, tools []daemonToolCatalogEntry) {
 	writeDaemonToolCatalogIndented(w, tools, "")
 }
@@ -802,6 +940,77 @@ func writeDaemonMCPPromptCatalogIndented(w io.Writer, prompts []daemon.MCPPrompt
 	}
 }
 
+func writeDaemonMCPResourceRead(w io.Writer, read daemon.MCPResourceReadResponse) {
+	if len(read.Contents) == 0 {
+		fmt.Fprintln(w, "No daemon MCP resource contents returned.")
+		return
+	}
+	for i, item := range read.Contents {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, item.URI)
+		fmt.Fprintf(w, "  server: %s\n", read.Server)
+		fmt.Fprintf(w, "  requested_uri: %s\n", read.URI)
+		if item.MIMEType != "" {
+			fmt.Fprintf(w, "  mime_type: %s\n", item.MIMEType)
+		}
+		if len(item.Meta) > 0 {
+			raw, err := json.Marshal(item.Meta)
+			if err == nil {
+				fmt.Fprintf(w, "  meta: %s\n", compactJSON(raw))
+			}
+		}
+		switch {
+		case item.Text != nil:
+			fmt.Fprintln(w, "  text:")
+			for _, line := range strings.Split(*item.Text, "\n") {
+				fmt.Fprintf(w, "    %s\n", line)
+			}
+		case item.Blob != nil:
+			fmt.Fprintf(w, "  blob: %s\n", *item.Blob)
+		}
+	}
+}
+
+func writeDaemonMCPPrompt(w io.Writer, rendered daemon.MCPPromptRenderResponse) {
+	fmt.Fprintln(w, rendered.Name)
+	fmt.Fprintf(w, "  server: %s\n", rendered.Server)
+	if rendered.Description != "" {
+		fmt.Fprintf(w, "  description: %s\n", oneLine(rendered.Description))
+	}
+	if len(rendered.Messages) == 0 {
+		fmt.Fprintln(w, "  messages: []")
+		return
+	}
+	fmt.Fprintln(w, "  messages:")
+	for _, message := range rendered.Messages {
+		fmt.Fprintf(w, "    - role: %s\n", message.Role)
+		if text, ok := daemonPromptTextContent(message.Content); ok {
+			fmt.Fprintln(w, "      text:")
+			for _, line := range strings.Split(text, "\n") {
+				fmt.Fprintf(w, "        %s\n", line)
+			}
+			continue
+		}
+		fmt.Fprintf(w, "      content: %s\n", compactJSON(message.Content))
+	}
+}
+
+func daemonPromptTextContent(raw json.RawMessage) (string, bool) {
+	var content struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return "", false
+	}
+	if content.Type != "text" {
+		return "", false
+	}
+	return content.Text, true
+}
+
 func daemonHasCapability(status daemonStatus, capability string) bool {
 	for _, existing := range status.Capabilities {
 		if existing == capability {
@@ -809,6 +1018,22 @@ func daemonHasCapability(status daemonStatus, capability string) bool {
 		}
 	}
 	return false
+}
+
+func parseConnectMCPArgs(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	args := make(map[string]string, len(values))
+	for _, raw := range values {
+		key, value, ok := strings.Cut(raw, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("--arg must be key=value")
+		}
+		args[key] = value
+	}
+	return args, nil
 }
 
 func oneLine(s string) string {
@@ -1165,6 +1390,8 @@ func printUsage(w io.Writer) {
   glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-resources [--mcp-resources-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-prompts [--mcp-prompts-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --mcp-read --server <name> --uri <uri> [--mcp-read-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --mcp-prompt --server <name> --name <prompt> [--arg key=value] [--mcp-prompt-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
@@ -1201,6 +1428,18 @@ Flags:
              Connect mode: list daemon MCP prompts and exit without starting a run.
   --mcp-prompts-json
              Connect --mcp-prompts mode: print JSON.
+  --mcp-read
+             Connect mode: read one daemon MCP resource and exit without starting a run.
+  --mcp-read-json
+             Connect --mcp-read mode: print JSON.
+  --mcp-prompt
+             Connect mode: render one daemon MCP prompt and exit without starting a run.
+  --mcp-prompt-json
+             Connect --mcp-prompt mode: print JSON.
+  --server   MCP server name for --mcp-read or --mcp-prompt.
+  --uri      MCP resource URI for --mcp-read.
+  --name     MCP prompt name for --mcp-prompt.
+  --arg      MCP prompt argument key=value. Repeatable.
   --env      Load env vars from a .env file. Repeatable; shell env wins.
 `)
 }

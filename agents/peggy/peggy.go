@@ -2,6 +2,7 @@ package peggy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -259,6 +260,64 @@ func (p *Peggy) MCPPromptCatalog(ctx context.Context) ([]daemon.MCPPromptCatalog
 		out = append(out, entry)
 	}
 	return out, nil
+}
+
+// MCPReadResource implements daemon.MCPResourceReaderHost.
+func (p *Peggy) MCPReadResource(ctx context.Context, req daemon.MCPReadResourceRequest) (daemon.MCPResourceReadResponse, error) {
+	if p == nil || p.mcpManager == nil {
+		return daemon.MCPResourceReadResponse{}, errors.New("peggy: MCP is not initialised")
+	}
+	read, err := p.mcpManager.ReadResource(ctx, req.Server, req.URI)
+	if err != nil {
+		return daemon.MCPResourceReadResponse{}, err
+	}
+	contents := make([]daemon.MCPResourceContent, 0, len(read.Contents))
+	for _, content := range read.Contents {
+		contents = append(contents, daemon.MCPResourceContent{
+			URI:      content.URI,
+			MIMEType: content.MIMEType,
+			Text:     cloneStringPointer(content.Text),
+			Blob:     cloneStringPointer(content.Blob),
+			Meta:     cloneResourceAnnotations(content.Meta),
+		})
+	}
+	return daemon.MCPResourceReadResponse{
+		Server:   read.Server,
+		URI:      read.URI,
+		Contents: contents,
+	}, nil
+}
+
+// MCPRenderPrompt implements daemon.MCPPromptRendererHost.
+func (p *Peggy) MCPRenderPrompt(ctx context.Context, req daemon.MCPPromptRenderRequest) (daemon.MCPPromptRenderResponse, error) {
+	if p == nil || p.mcpManager == nil {
+		return daemon.MCPPromptRenderResponse{}, errors.New("peggy: MCP is not initialised")
+	}
+	rendered, err := p.mcpManager.GetPrompt(ctx, req.Server, req.Name, req.Arguments)
+	if err != nil {
+		return daemon.MCPPromptRenderResponse{}, err
+	}
+	messages := make([]daemon.MCPPromptMessage, 0, len(rendered.Messages))
+	for _, message := range rendered.Messages {
+		messages = append(messages, daemon.MCPPromptMessage{
+			Role:    message.Role,
+			Content: append(json.RawMessage(nil), message.Content...),
+		})
+	}
+	return daemon.MCPPromptRenderResponse{
+		Server:      rendered.Server,
+		Name:        rendered.Name,
+		Description: rendered.Description,
+		Messages:    messages,
+	}, nil
+}
+
+func cloneStringPointer(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 // Close releases resources held by the Peggy. Safe to call multiple

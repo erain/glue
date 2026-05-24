@@ -198,6 +198,8 @@ peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
 glue connect --mcp-resources
 glue connect --mcp-prompts
+glue connect --mcp-read --server filesystem --uri file:///workspace/README.md
+glue connect --mcp-prompt --server linear --name summarize_issue --arg issue=GLUE-123
 glue connect --prompt "summarize today's plan" --id cli:daily --usage
 ```
 
@@ -218,9 +220,10 @@ Useful `serve` flags:
 Startup output prints the `base_url` and metadata path, never the
 bearer token. `glue connect --inspect` includes status, tools, and any
 daemon-advertised MCP resource/prompt catalogs. Use
-`--mcp-resources-json` or `--mcp-prompts-json` when another client needs
-the catalog as data. Add `--usage` to prompt-mode `glue connect` when
-you want provider-reported token usage on stderr. Stop the daemon with
+`--mcp-resources-json`, `--mcp-prompts-json`, `--mcp-read-json`, or
+`--mcp-prompt-json` when another client needs the MCP payload as data.
+Add `--usage` to prompt-mode `glue connect` when you want
+provider-reported token usage on stderr. Stop the daemon with
 SIGINT/SIGTERM.
 
 Telegram can attach to the same daemon:
@@ -396,6 +399,10 @@ glue connect --mcp-resources
 glue connect --mcp-resources-json
 glue connect --mcp-prompts
 glue connect --mcp-prompts-json
+glue connect --mcp-read --server filesystem --uri file:///workspace/README.md
+glue connect --mcp-read-json --server filesystem --uri file:///workspace/README.md
+glue connect --mcp-prompt --server linear --name summarize_issue --arg issue=GLUE-123
+glue connect --mcp-prompt-json --server linear --name summarize_issue --arg issue=GLUE-123
 ```
 
 The permission choices are intentionally small:
