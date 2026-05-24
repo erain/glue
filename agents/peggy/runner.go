@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +39,51 @@ type serveConfig struct {
 	ShutdownTimeout   time.Duration
 }
 
+type statusReport struct {
+	Version     string             `json:"version"`
+	Settings    statusFile         `json:"settings"`
+	Identity    statusFile         `json:"identity"`
+	Provider    statusProvider     `json:"provider"`
+	Store       StoreSettings      `json:"store"`
+	Compaction  CompactionSettings `json:"compaction"`
+	Coding      statusCoding       `json:"coding"`
+	Permissions PermissionSettings `json:"permissions"`
+	Channels    []string           `json:"channels,omitempty"`
+	MCP         statusMCP          `json:"mcp"`
+}
+
+type statusFile struct {
+	Path  string `json:"path,omitempty"`
+	Found bool   `json:"found"`
+	Bytes int    `json:"bytes,omitempty"`
+}
+
+type statusProvider struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type statusCoding struct {
+	Enabled         bool     `json:"enabled"`
+	WorkDir         string   `json:"work_dir,omitempty"`
+	AllowedBinaries []string `json:"allowed_binaries,omitempty"`
+	AllowOverwrite  bool     `json:"allow_overwrite"`
+}
+
+type statusMCP struct {
+	Configured int               `json:"configured"`
+	Enabled    int               `json:"enabled"`
+	Servers    []statusMCPServer `json:"servers,omitempty"`
+}
+
+type statusMCPServer struct {
+	Name      string `json:"name"`
+	Enabled   bool   `json:"enabled"`
+	Transport string `json:"transport"`
+	Command   string `json:"command,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
 // Run is the top-level CLI entry point. It parses args, loads the
 // settings and identity files, constructs a Peggy, and dispatches a
 // single prompt. Returns a process exit code.
@@ -60,6 +106,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		switch args[0] {
 		case "serve":
 			return runServe(ctx, args[1:], stdout, stderr, serve)
+		case "status":
+			return runStatus(args[1:], stdout, stderr)
 		case "mcp":
 			return runMCP(ctx, args[1:], stdout, stderr)
 		}
@@ -81,7 +129,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 
 Usage:
   peggy [flags] "<prompt text>"
-  peggy mcp tools [flags]
+  peggy status [flags]
+  peggy mcp [command]
   peggy serve [flags]
 
 Examples:
@@ -89,6 +138,7 @@ Examples:
   peggy --session work "remind me about the migration plan"
   peggy --config /tmp/peggy.json "what do you know about my Aussie?"
   peggy --coding --workdir . "run the tests and fix the failure"
+  peggy status --config ~/.config/peggy/settings.json
   peggy mcp tools --config ~/.config/peggy/settings.json
   peggy serve --config ~/.config/peggy/settings.json
 
@@ -174,6 +224,238 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 	}
 	fmt.Fprintln(stdout) // trailing newline so shell prompts don't run on
 	return 0
+}
+
+func runStatus(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		soulPath   = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy status — show local Peggy readiness.
+
+Usage:
+  peggy status [flags]
+
+Examples:
+  peggy status
+  peggy status --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md
+  peggy status --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy status: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy status: %v\n", err)
+		return 1
+	}
+	soul, soulPathUsed, err := LoadSoul(*soulPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy status: %v\n", err)
+		return 1
+	}
+	report := buildStatusReport(settings, settingsPath, soul, soulPathUsed)
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "peggy status: encode status: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeStatusReport(stdout, report)
+	return 0
+}
+
+func buildStatusReport(settings Settings, settingsPath, soul, soulPath string) statusReport {
+	channels := sortedMapKeys(settings.Channels)
+	mcpServers := buildStatusMCP(settings.MCP)
+	return statusReport{
+		Version: Version,
+		Settings: statusFile{
+			Path:  settingsPath,
+			Found: settingsPath != "",
+			Bytes: fileSize(settingsPath),
+		},
+		Identity: statusFile{
+			Path:  soulPath,
+			Found: soulPath != "",
+			Bytes: len([]byte(soul)),
+		},
+		Provider: statusProvider{
+			Name:  settings.Provider,
+			Model: statusModel(settings.Model),
+		},
+		Store:       settings.Store,
+		Compaction:  settings.Compaction,
+		Coding:      buildStatusCoding(settings.Coding),
+		Permissions: settings.Permissions,
+		Channels:    channels,
+		MCP:         mcpServers,
+	}
+}
+
+func buildStatusCoding(coding CodingSettings) statusCoding {
+	workDir := coding.WorkDir
+	if coding.Enabled && strings.TrimSpace(workDir) == "" {
+		workDir = "."
+	}
+	return statusCoding{
+		Enabled:         coding.Enabled,
+		WorkDir:         workDir,
+		AllowedBinaries: append([]string(nil), coding.AllowedBinaries...),
+		AllowOverwrite:  coding.AllowOverwrite,
+	}
+}
+
+func buildStatusMCP(settings MCPSettings) statusMCP {
+	names := make([]string, 0, len(settings.Servers))
+	for name := range settings.Servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := statusMCP{Configured: len(names)}
+	for _, name := range names {
+		server := settings.Servers[name]
+		transport := strings.TrimSpace(server.Transport)
+		if transport == "" {
+			transport = "stdio"
+		}
+		entry := statusMCPServer{
+			Name:      name,
+			Enabled:   server.Enabled,
+			Transport: transport,
+			Command:   server.Command,
+			URL:       server.URL,
+		}
+		if entry.Enabled {
+			out.Enabled++
+		}
+		out.Servers = append(out.Servers, entry)
+	}
+	return out
+}
+
+func writeStatusReport(w io.Writer, report statusReport) {
+	fmt.Fprintf(w, "Peggy %s\n", report.Version)
+	if report.Settings.Found {
+		fmt.Fprintf(w, "settings: %s (%d bytes)\n", report.Settings.Path, report.Settings.Bytes)
+	} else {
+		fmt.Fprintln(w, "settings: built-in defaults")
+	}
+	if report.Identity.Found {
+		fmt.Fprintf(w, "identity: %s (%d bytes)\n", report.Identity.Path, report.Identity.Bytes)
+	} else {
+		fmt.Fprintln(w, "identity: none")
+	}
+	fmt.Fprintf(w, "provider: %s %s\n", report.Provider.Name, report.Provider.Model)
+	fmt.Fprintf(w, "store: %s %s\n", report.Store.Type, report.Store.Path)
+	fmt.Fprintf(w, "compaction: threshold=%d target=%d keep=%d\n", report.Compaction.Threshold, report.Compaction.TargetTokens, report.Compaction.KeepRecent)
+	writeStatusCoding(w, report.Coding)
+	writeStatusPermissions(w, report.Permissions)
+	if len(report.Channels) > 0 {
+		fmt.Fprintf(w, "channels: %s\n", strings.Join(report.Channels, ", "))
+	} else {
+		fmt.Fprintln(w, "channels: none")
+	}
+	writeStatusMCP(w, report.MCP)
+}
+
+func writeStatusCoding(w io.Writer, coding statusCoding) {
+	state := "disabled"
+	if coding.Enabled {
+		state = "enabled"
+	}
+	fmt.Fprintf(w, "coding: %s", state)
+	if coding.WorkDir != "" {
+		fmt.Fprintf(w, " work_dir=%s", coding.WorkDir)
+	}
+	if coding.AllowOverwrite {
+		fmt.Fprint(w, " allow_overwrite=true")
+	}
+	fmt.Fprintln(w)
+	if len(coding.AllowedBinaries) > 0 {
+		fmt.Fprintf(w, "coding_binaries: %s\n", strings.Join(coding.AllowedBinaries, ", "))
+	}
+}
+
+func writeStatusPermissions(w io.Writer, permissions PermissionSettings) {
+	fmt.Fprintf(w, "permissions: default=%s", permissions.DefaultTier)
+	keys := sortedStringMapKeys(permissions.Channels)
+	for _, key := range keys {
+		fmt.Fprintf(w, " %s=%s", key, permissions.Channels[key])
+	}
+	fmt.Fprintln(w)
+}
+
+func writeStatusMCP(w io.Writer, mcp statusMCP) {
+	fmt.Fprintf(w, "mcp: %d configured, %d enabled\n", mcp.Configured, mcp.Enabled)
+	for _, server := range mcp.Servers {
+		state := "disabled"
+		if server.Enabled {
+			state = "enabled"
+		}
+		fmt.Fprintf(w, "  - %s: %s transport=%s", server.Name, state, server.Transport)
+		if server.Command != "" {
+			fmt.Fprintf(w, " command=%s", server.Command)
+		}
+		if server.URL != "" {
+			fmt.Fprintf(w, " url=%s", server.URL)
+		}
+		fmt.Fprintln(w)
+	}
+}
+
+func statusModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "(provider default)"
+	}
+	return model
+}
+
+func fileSize(path string) int {
+	if path == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return int(info.Size())
+}
+
+func sortedMapKeys[V any](m map[string]V) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedStringMapKeys(m map[string]string) []string {
+	return sortedMapKeys(m)
 }
 
 type mcpToolCatalogEntry struct {
