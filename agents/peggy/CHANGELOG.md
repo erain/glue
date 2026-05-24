@@ -4,6 +4,57 @@ All notable changes to the `peggy` agent. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); this project does
 not formally follow SemVer until v1.0.
 
+## v0.3.0 — 2026-05-24
+
+Peggy can now run as one local daemon shared by terminal and Telegram
+clients. The release completes M3 from tracker
+[#110](https://github.com/erain/glue/issues/110): one long-running
+Peggy process owns the provider, memory/session store, coding tools,
+and permission cache while clients attach over the local HTTP+SSE
+daemon protocol.
+
+### Added
+
+- **Local daemon mode.** `peggy serve` starts Peggy behind the
+  ADR-0010 HTTP+SSE daemon protocol, writes local connection metadata,
+  supports generated or explicit bearer tokens, and shuts down cleanly
+  on SIGINT/SIGTERM.
+- **Terminal daemon client.** `glue connect` attaches to `peggy serve`,
+  starts runs, streams assistant text, brokers permission requests in
+  the terminal, and cancels the run on SIGINT.
+- **Telegram daemon-client mode.** `peggy-telegram --daemon` keeps the
+  Telegram allowlist and inline permission buttons while using the
+  shared Peggy daemon for provider, memory, coding tools, and
+  permission cache.
+- **Daemon-brokered permissions.** Side-effecting coding tools emit
+  `permission_request` events and wait for the owning client to answer
+  over the daemon protocol.
+- **Channel-scoped permission tiers.** Peggy settings can assign
+  `prompt`, `read_only`, or `trusted` behavior per channel/client,
+  e.g. trusted local terminal with prompted or read-only Telegram.
+- **Client-scoped remembered daemon decisions.** A remembered Telegram
+  allow no longer silently authorizes terminal requests, or vice versa.
+
+### Changed
+
+- `peggy.Version` is now `0.3.0`.
+- Peggy README, Telegram README, and the top-level README now document
+  the multi-channel daemon happy path and permission-tier setup.
+- Release smoke coverage now drives the daemon path with trusted CLI
+  and read-only Telegram tiers using a fake provider.
+
+### Known limitations
+
+- The daemon is local-first and protected by a bearer token; it is not
+  a hosted multi-user auth model.
+- Runs are still stream-owned. Detached/background runs and replay
+  endpoints are future work.
+- Remembered permission decisions are in-memory and disappear when the
+  daemon restarts. Persistent per-user policy remains a follow-up.
+- Telegram replies are still one final message per turn; edit-in-place
+  streaming is deferred.
+- No MCP client yet; that remains M4.
+
 ## v0.2.0 — 2026-05-23
 
 Peggy can now act as a permission-gated coding assistant in trusted
@@ -141,4 +192,4 @@ sessions and is reachable from the CLI or Telegram. Tracker:
   by hand at release time and pinned by a test.
 
 [Tracker #110](https://github.com/erain/glue/issues/110) is the
-canonical roadmap. M3 ("multi-channel daemon") is the next milestone.
+canonical roadmap. M4 ("ecosystem") is the next milestone.

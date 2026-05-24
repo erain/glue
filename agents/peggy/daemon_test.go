@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,70 @@ func TestPeggyDaemonCodingPermissionViaDaemon(t *testing.T) {
 	}
 }
 
+func TestPeggyV03ReleaseSmoke(t *testing.T) {
+	workDir := t.TempDir()
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("c1", "write_file", `{"path":"cli.txt","content":"trusted cli"}`),
+		peggyTextTurn("cli done"),
+		toolCallTurn("c2", "write_file", `{"path":"telegram.txt","content":"blocked telegram"}`),
+		peggyTextTurn("telegram done"),
+	}}
+	p, err := New(Options{
+		Settings: Settings{
+			Coding: CodingSettings{
+				Enabled:        true,
+				WorkDir:        workDir,
+				AllowOverwrite: true,
+			},
+			Permissions: PermissionSettings{
+				DefaultTier: string(PermissionTierPrompt),
+				Channels: map[string]string{
+					PermissionChannelCLI:      string(PermissionTierTrusted),
+					PermissionChannelTelegram: string(PermissionTierReadOnly),
+				},
+			},
+		},
+		Provider: provider,
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	srv, err := daemon.New(daemon.Options{
+		Host:             p.Agent(),
+		Token:            "tok",
+		PermissionPolicy: NewDaemonPermissionPolicy(p.Settings().Permissions),
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	cliStart := startPeggyDaemonRunWithClient(t, ts.URL, "default", "cli:test")
+	cliEvents := collectPeggyDaemonEvents(t, ts.URL, cliStart.RunID, cliStart.EventsURL)
+	if eventSeen(cliEvents, "permission_request") {
+		t.Fatalf("cli events = %v, want trusted tier without prompt", eventTypes(cliEvents))
+	}
+	if got := readFileString(t, filepath.Join(workDir, "cli.txt")); got != "trusted cli" {
+		t.Fatalf("cli.txt = %q", got)
+	}
+
+	telegramStart := startPeggyDaemonRunWithClient(t, ts.URL, "telegram:123", "telegram:123")
+	telegramEvents := collectPeggyDaemonEvents(t, ts.URL, telegramStart.RunID, telegramStart.EventsURL)
+	if eventSeen(telegramEvents, "permission_request") {
+		t.Fatalf("telegram events = %v, want read_only tier without prompt", eventTypes(telegramEvents))
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "telegram.txt")); err == nil {
+		t.Fatal("telegram.txt exists; read_only tier should deny write_file")
+	}
+	if !strings.Contains(toolEndTextFromDaemon(t, telegramEvents), "telegram channel is read-only") {
+		t.Fatalf("telegram tool error missing read_only reason")
+	}
+}
+
 type startRunResponse struct {
 	RunID     string `json:"run_id"`
 	EventsURL string `json:"events_url"`
@@ -68,8 +133,13 @@ type startRunResponse struct {
 
 func startPeggyDaemonRun(t *testing.T, baseURL string) startRunResponse {
 	t.Helper()
-	body := bytes.NewBufferString(`{"text":"write the note","client_id":"cli:test","max_turns":3}`)
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/sessions/default/runs", body)
+	return startPeggyDaemonRunWithClient(t, baseURL, "default", "cli:test")
+}
+
+func startPeggyDaemonRunWithClient(t *testing.T, baseURL, sessionID, clientID string) startRunResponse {
+	t.Helper()
+	body := bytes.NewBufferString(`{"text":"write the note","client_id":` + strconv.Quote(clientID) + `,"max_turns":3}`)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/sessions/"+sessionID+"/runs", body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,4 +261,33 @@ func readFileString(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func toolEndTextFromDaemon(t *testing.T, events []daemon.EventEnvelope) string {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != "tool_end" {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("tool_end payload = %#v", event.Payload)
+		}
+		result, ok := payload["tool_result"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool_end missing result: %#v", payload)
+		}
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("tool_end missing content: %#v", result)
+		}
+		part, ok := content[0].(map[string]any)
+		if !ok {
+			t.Fatalf("tool_end content = %#v", content[0])
+		}
+		text, _ := part["text"].(string)
+		return text
+	}
+	t.Fatal("missing tool_end event")
+	return ""
 }
