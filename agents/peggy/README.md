@@ -22,7 +22,7 @@ A long-running personal-assistant agent built on the
   OpenRouter, NVIDIA build
 
 Tracker: [#110](https://github.com/erain/glue/issues/110). M3
-("multi-channel daemon") is the next milestone.
+("multi-channel daemon") is active.
 
 ## Quickstart
 
@@ -44,6 +44,11 @@ peggy "Hello — what should I be working on today?"
 # 5. Optional: let Peggy work in a trusted repo.
 cd /path/to/repo
 peggy --coding --workdir . "read the failing test and propose a fix"
+
+# 6. Optional: keep one Peggy process running and connect to it.
+go install github.com/erain/glue/cmd/glue@latest  # if needed
+peggy serve --coding --workdir .
+glue connect --prompt "what should I do next?" --id cli:daily
 ```
 
 To reach her from your phone, set up Telegram next — see
@@ -121,6 +126,7 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy serve [flags]
 
   --config <path>    Override the settings.json path.
   --soul <path>      Override the SOUL.md path.
@@ -139,6 +145,37 @@ peggy [flags] "<prompt text>"
 
 The prompt is whatever non-flag args you pass — quoting is your
 shell's job. Multi-word prompts work without quoting too.
+
+## Daemon Mode
+
+`peggy serve` starts one local Peggy process behind the shared
+HTTP+SSE daemon protocol from
+[`ADR-0010`](../../docs/adr/0010-daemon-protocol.md). It loads the
+same `settings.json` and `SOUL.md` as the single-prompt CLI, keeps one
+provider/store in memory, and lets daemon clients share the same
+session history and memory store.
+
+```sh
+peggy serve --config ~/.config/peggy/settings.json
+glue connect --prompt "summarize today's plan" --id cli:daily
+```
+
+Useful `serve` flags:
+
+- `--listen` — local listen address (default `127.0.0.1:0`).
+- `--token` — bearer token. Defaults to `GLUE_DAEMON_TOKEN` or a
+  generated token.
+- `--metadata` — connection metadata path. Defaults to the same
+  `glue/daemon.json` user-config path that `glue connect` reads.
+  Pass an empty value only with `--token` or `GLUE_DAEMON_TOKEN`.
+- `--permission-timeout` — maximum time a side-effecting tool waits
+  for a client decision.
+- `--coding`, `--workdir`, `--coding-allow-overwrite` — same coding
+  tool controls as the prompt CLI, but permission prompts are emitted
+  over the daemon protocol for the connected client to answer.
+
+Startup output prints the `base_url` and metadata path, never the
+bearer token. Stop the daemon with SIGINT/SIGTERM.
 
 ## Coding Tools
 
@@ -293,9 +330,10 @@ external transports. The pattern is designed in
 Per tracker [#110](https://github.com/erain/glue/issues/110), in
 priority order:
 
-- **M3 — multi-channel daemon.** `cmd/glue serve` so a single
-  long-running Peggy serves a TUI, Telegram, and future clients
-  concurrently. Per-channel permission tiers.
+- **M3 — multi-channel daemon.** `peggy serve` plus daemon clients so
+  one long-running Peggy serves a terminal, Telegram, and future
+  clients concurrently. Next up: Telegram daemon-client mode and
+  per-channel permission tiers.
 - **M4 — ecosystem.** MCP client (stdio + HTTP), cost tracking,
   `providers/anthropic` when budget allows.
 

@@ -12,19 +12,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -67,12 +63,7 @@ type serveConfig struct {
 	ShutdownTimeout   time.Duration
 }
 
-type daemonMetadata struct {
-	Version int    `json:"version"`
-	BaseURL string `json:"base_url"`
-	Token   string `json:"token"`
-	PID     int    `json:"pid"`
-}
+type daemonMetadata = daemon.Metadata
 
 type httpDoer interface {
 	Do(*http.Request) (*http.Response, error)
@@ -593,87 +584,22 @@ func normalizeModel(model string) string {
 }
 
 func serveDaemon(ctx context.Context, cfg serveConfig, handler http.Handler, stdout io.Writer) error {
-	if cfg.ShutdownTimeout <= 0 {
-		cfg.ShutdownTimeout = defaultShutdownTimeout
-	}
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		return err
-	}
-	baseURL := "http://" + ln.Addr().String()
-	if cfg.MetadataPath != "" {
-		if err := writeDaemonMetadata(cfg.MetadataPath, daemonMetadata{
-			Version: 1,
-			BaseURL: baseURL,
-			Token:   cfg.Token,
-			PID:     os.Getpid(),
-		}); err != nil {
-			_ = ln.Close()
-			return err
-		}
-	}
-
-	fmt.Fprintln(stdout, "glue daemon listening")
-	fmt.Fprintf(stdout, "base_url: %s\n", baseURL)
-	if cfg.MetadataPath != "" {
-		fmt.Fprintf(stdout, "metadata: %s\n", cfg.MetadataPath)
-		fmt.Fprintf(stdout, "token: written to metadata file (%s)\n", cfg.TokenSource)
-	} else {
-		fmt.Fprintf(stdout, "token: configured (%s); metadata file disabled\n", cfg.TokenSource)
-	}
-
-	server := &http.Server{Handler: handler}
-	errCh := make(chan error, 1)
-	go func() {
-		err := server.Serve(ln)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		errCh <- err
-	}()
-
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			_ = server.Close()
-			return err
-		}
-		return <-errCh
-	}
+	return daemon.ServeLocal(ctx, daemon.LocalConfig{
+		Name:            "glue daemon",
+		ListenAddr:      cfg.ListenAddr,
+		Token:           cfg.Token,
+		TokenSource:     cfg.TokenSource,
+		MetadataPath:    cfg.MetadataPath,
+		ShutdownTimeout: cfg.ShutdownTimeout,
+	}, handler, stdout)
 }
 
 func resolveDaemonToken(flagValue string) (token, source string, err error) {
-	if token := strings.TrimSpace(flagValue); token != "" {
-		return token, "flag", nil
-	}
-	if token := strings.TrimSpace(os.Getenv("GLUE_DAEMON_TOKEN")); token != "" {
-		return token, "GLUE_DAEMON_TOKEN", nil
-	}
-	token, err = randomToken()
-	if err != nil {
-		return "", "", err
-	}
-	return token, "generated", nil
-}
-
-func randomToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
+	return daemon.ResolveToken(flagValue)
 }
 
 func defaultMetadataPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil || strings.TrimSpace(dir) == "" {
-		return filepath.Join(".glue", "daemon.json")
-	}
-	return filepath.Join(dir, "glue", "daemon.json")
+	return daemon.DefaultMetadataPath()
 }
 
 func defaultClientID() string {
@@ -681,38 +607,11 @@ func defaultClientID() string {
 }
 
 func readDaemonMetadata(path string) (daemonMetadata, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return daemonMetadata{}, err
-	}
-	var meta daemonMetadata
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return daemonMetadata{}, err
-	}
-	if meta.Version != 1 {
-		return daemonMetadata{}, fmt.Errorf("metadata %s: unsupported version %d", path, meta.Version)
-	}
-	return meta, nil
+	return daemon.ReadMetadata(path)
 }
 
 func writeDaemonMetadata(path string, meta daemonMetadata) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Chmod(path, 0o600)
+	return daemon.WriteMetadata(path, meta)
 }
 
 func decodePayload[T any](payload any) (T, error) {

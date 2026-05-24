@@ -5,10 +5,14 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/erain/glue/agents/peggy"
 )
 
 func main() {
-	os.Exit(peggy.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(peggy.Run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
