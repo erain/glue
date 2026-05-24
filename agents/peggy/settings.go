@@ -40,6 +40,10 @@ type Settings struct {
 	// default; enable only for trusted local workspaces.
 	Coding CodingSettings `json:"coding"`
 
+	// Permissions configures Peggy's side-effect permission policy.
+	// Defaults to prompt for every channel.
+	Permissions PermissionSettings `json:"permissions"`
+
 	// Channels carries per-channel configuration subtrees keyed by
 	// channel name (e.g. "telegram"). Each channel package decodes
 	// its own subtree via a DecodeConfig helper. Empty means "no
@@ -80,6 +84,13 @@ type CodingSettings struct {
 	// write_file. The model must also pass overwrite=true and the
 	// Permission implementation must allow the call.
 	AllowOverwrite bool `json:"allow_overwrite"`
+}
+
+// PermissionSettings configures Peggy permission tiers. Channel keys are
+// lower-case names such as "cli" and "telegram".
+type PermissionSettings struct {
+	DefaultTier string            `json:"default_tier"`
+	Channels    map[string]string `json:"channels,omitempty"`
 }
 
 // Environment variables consulted when paths aren't given explicitly.
@@ -129,6 +140,9 @@ func LoadSettings(path string) (Settings, string, error) {
 		return Settings{}, resolved, fmt.Errorf("peggy: parse %s: %w", resolved, err)
 	}
 	s = fillDefaults(s)
+	if err := validatePermissionSettings(s.Permissions); err != nil {
+		return Settings{}, resolved, err
+	}
 	if s.Store.Path != "" {
 		expanded, err := expandPath(s.Store.Path)
 		if err != nil {
@@ -252,5 +266,6 @@ func fillDefaults(s Settings) Settings {
 	if len(s.Coding.AllowedBinaries) == 0 {
 		s.Coding.AllowedBinaries = append([]string(nil), DefaultCodingAllowedBinaries...)
 	}
+	s.Permissions = normalizePermissionSettings(s.Permissions)
 	return s
 }

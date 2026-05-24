@@ -101,6 +101,13 @@ and emits a stderr diagnostic.
     "threshold": 200,
     "target_tokens": 8000,
     "keep_recent": 8
+  },
+  "permissions": {
+    "default_tier": "prompt",
+    "channels": {
+      "cli": "trusted",
+      "telegram": "prompt"
+    }
   }
 }
 ```
@@ -118,6 +125,8 @@ and emits a stderr diagnostic.
 | `coding.work_dir` | current directory | Workspace root for `read_file`, `write_file`, `shell_exec`, and git helpers. `~` and `$HOME` expand. |
 | `coding.allowed_binaries` | `go`, `git`, `make`, `node`, `npm`, `python`, `python3` | Basename allowlist for `shell_exec`; model calls cannot run arbitrary paths. |
 | `coding.allow_overwrite` | `false` | Host policy for replacing existing files. The model must still pass `overwrite: true`, and the permission prompt must allow the call. |
+| `permissions.default_tier` | `prompt` | Permission tier for side-effecting tools when a channel has no override. One of `prompt`, `read_only`, or `trusted`. |
+| `permissions.channels.<name>` | inherited | Channel override keyed by `cli`, `telegram`, or a future daemon client prefix. |
 
 Missing `settings.json` is non-fatal — Peggy uses the built-in
 defaults above and emits a stderr diagnostic.
@@ -187,6 +196,11 @@ In daemon-client mode, Telegram keeps its chat allowlist and inline
 permission buttons, but Peggy, memory, coding tools, and remembered
 permission scopes live in the daemon process.
 
+Permission tiers apply in daemon mode by daemon `client_id`: `cli:*`
+uses the `cli` tier and `telegram:<chat_id>` uses the `telegram` tier.
+Use this to keep a trusted local terminal fast while making Telegram
+ask every time, or to make Telegram read-only.
+
 ## Coding Tools
 
 Coding mode is opt-in. Enable it in `settings.json` with
@@ -240,6 +254,34 @@ The permission choices are intentionally small:
   and session id.
 - `allow target` — remember this tool/action/target for the current
   process and session id.
+
+Peggy also supports product-level permission tiers:
+
+- `prompt` — current behavior. Ask the owning client and honor
+  remembered scopes.
+- `read_only` — deny side-effecting tools before any terminal prompt
+  or Telegram inline keyboard is shown.
+- `trusted` — allow side-effecting tools without prompting. Existing
+  tool controls still apply: workspace root, binary allowlist,
+  overwrite policy, timeouts, and output limits.
+
+Example:
+
+```json
+{
+  "permissions": {
+    "default_tier": "prompt",
+    "channels": {
+      "cli": "trusted",
+      "telegram": "read_only"
+    }
+  }
+}
+```
+
+Remembered daemon permission decisions are scoped to the daemon client
+that made them, so a Telegram allow does not silently authorize a
+terminal request.
 
 Coding mode is a trusted-local workflow. The tool layer constrains
 paths, binaries, overwrites, output size, and permissions, but v0.2

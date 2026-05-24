@@ -171,13 +171,37 @@ Telegram with inline keyboard buttons:
 
 Permission requests are sent only to the same allowlisted chat whose
 message triggered the prompt. Decisions remembered for a session or
-target live only in the running `peggy-telegram` process. If the bot is
-stopped, the request times out, or the callback comes from a
+target live only in the running `peggy-telegram` process in standalone
+mode, or in the running `peggy serve` process in daemon-client mode.
+Daemon remembered decisions are scoped to the daemon client id, so a
+Telegram allow does not silently authorize a terminal request. If the
+bot is stopped, the request times out, or the callback comes from a
 non-allowlisted chat, Peggy denies the side effect and surfaces that
 denial to the model as a tool result.
 
 Read-only tools such as `read_file`, `git_diff_branch`, and
 `git_log_branch` do not prompt.
+
+Peggy-level permission tiers can make Telegram stricter or looser than
+other clients:
+
+```json
+{
+  "permissions": {
+    "default_tier": "prompt",
+    "channels": {
+      "cli": "trusted",
+      "telegram": "read_only"
+    }
+  }
+}
+```
+
+`prompt` keeps the inline keyboard flow, `read_only` denies
+side-effecting tools before any Telegram prompt is sent, and `trusted`
+allows side-effecting tools without prompting. `trusted` still keeps the
+coding tool constraints from Peggy settings, including workspace root,
+binary allowlist, overwrite policy, timeouts, and output limits.
 
 ## What Peggy on Telegram supports today
 
@@ -195,11 +219,13 @@ Read-only tools such as `read_file`, `git_diff_branch`, and
   session transcript / sqlite store.
 - Inline-keyboard permission prompts for side-effecting coding tools
   in allowlisted chats.
+- Optional Peggy permission tiers for prompt/read-only/trusted channel
+  behavior.
 
 ## What's coming
 
 - Edit-in-place streaming for replies (delta → edited message).
-- Persistent per-user permission policy.
+- Persistent per-user permission policy across daemon restarts.
 - Webhook-mode (push-based) for low-latency hosted setups.
 - `Agent.SearchSessions` channel-prefix filter so the user can scope
   recall to "things we talked about on Telegram."

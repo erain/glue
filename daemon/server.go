@@ -36,6 +36,12 @@ type Options struct {
 	// Token is required for every route except /v1/health.
 	Token string
 
+	// PermissionPolicy, when non-nil, can allow, deny, or defer
+	// side-effecting tool permission requests before the daemon emits a
+	// permission_request event. The daemon package remains channel-blind:
+	// hosts that need channel/client policy decide from the supplied context.
+	PermissionPolicy PermissionPolicy
+
 	// Now supplies event timestamps. Nil uses time.Now.
 	Now func() time.Time
 
@@ -47,10 +53,56 @@ type Options struct {
 	PermissionTimeout time.Duration
 }
 
+// PermissionPolicy optionally decides side-effecting tool permission requests
+// before the daemon asks the run owner over HTTP.
+type PermissionPolicy interface {
+	DecidePermission(context.Context, PermissionContext, glue.PermissionRequest) (PermissionPolicyDecision, error)
+}
+
+// PermissionPolicyFunc adapts a function into a [PermissionPolicy].
+type PermissionPolicyFunc func(context.Context, PermissionContext, glue.PermissionRequest) (PermissionPolicyDecision, error)
+
+// DecidePermission implements [PermissionPolicy].
+func (f PermissionPolicyFunc) DecidePermission(ctx context.Context, info PermissionContext, req glue.PermissionRequest) (PermissionPolicyDecision, error) {
+	if f == nil {
+		return PermissionPolicyDecision{}, nil
+	}
+	return f(ctx, info, req)
+}
+
+// PermissionContext describes the daemon run that owns a permission request.
+type PermissionContext struct {
+	RunID     string
+	SessionID string
+	ClientID  string
+}
+
+// PermissionPolicyAction is the host policy outcome for one permission
+// request.
+type PermissionPolicyAction int
+
+const (
+	// PermissionPolicyPrompt keeps the existing daemon behavior: use cached
+	// remembered decisions or ask the owning client over HTTP.
+	PermissionPolicyPrompt PermissionPolicyAction = iota
+	// PermissionPolicyAllow allows the side effect without asking the client.
+	PermissionPolicyAllow
+	// PermissionPolicyDeny denies the side effect without asking the client.
+	PermissionPolicyDeny
+)
+
+// PermissionPolicyDecision is returned by [PermissionPolicy].
+type PermissionPolicyDecision struct {
+	Action      PermissionPolicyAction
+	Reason      string
+	RememberFor glue.RememberScope
+}
+
 // Server is an http.Handler for the local daemon protocol.
 type Server struct {
 	host              Host
 	token             string
+	permissionPolicy  PermissionPolicy
 	now               func() time.Time
 	newID             func(prefix string) string
 	permissionTimeout time.Duration
@@ -142,6 +194,7 @@ func New(opts Options) (*Server, error) {
 	return &Server{
 		host:              opts.Host,
 		token:             token,
+		permissionPolicy:  opts.PermissionPolicy,
 		now:               now,
 		newID:             newID,
 		permissionTimeout: permissionTimeout,
@@ -496,7 +549,10 @@ func (p runPermission) Decide(ctx context.Context, req glue.PermissionRequest) (
 }
 
 func (s *Server) decidePermission(ctx context.Context, run *run, req glue.PermissionRequest) (glue.PermissionDecision, error) {
-	if decision, ok := s.cachedPermission(req); ok {
+	if decision, handled, err := s.applyPermissionPolicy(ctx, run, req); err != nil || handled {
+		return decision, err
+	}
+	if decision, ok := s.cachedPermission(run, req); ok {
 		return decision, nil
 	}
 
@@ -524,29 +580,66 @@ func (s *Server) decidePermission(ctx context.Context, run *run, req glue.Permis
 	defer timer.Stop()
 	select {
 	case decision := <-pending.done:
-		s.rememberPermission(req, decision)
+		s.rememberPermission(run, req, decision)
 		return decision, nil
 	case <-timer.C:
 		if !run.expirePermission(permissionID, pending) {
 			decision := <-pending.done
-			s.rememberPermission(req, decision)
+			s.rememberPermission(run, req, decision)
 			return decision, nil
 		}
 		return glue.PermissionDecision{Allow: false, Reason: "permission denied: daemon permission request timed out"}, nil
 	case <-ctx.Done():
 		if !run.expirePermission(permissionID, pending) {
 			decision := <-pending.done
-			s.rememberPermission(req, decision)
+			s.rememberPermission(run, req, decision)
 			return decision, nil
 		}
 		return glue.PermissionDecision{}, ctx.Err()
 	}
 }
 
-func (s *Server) cachedPermission(req glue.PermissionRequest) (glue.PermissionDecision, bool) {
-	sessionKey := permissionSessionKey(req)
-	targetKey := permissionTargetKey(req)
-	foreverKey := permissionForeverKey(req)
+func (s *Server) applyPermissionPolicy(ctx context.Context, run *run, req glue.PermissionRequest) (glue.PermissionDecision, bool, error) {
+	if s.permissionPolicy == nil {
+		return glue.PermissionDecision{}, false, nil
+	}
+	info := PermissionContext{}
+	if run != nil {
+		info.RunID = run.id
+		info.SessionID = run.sessionID
+		info.ClientID = run.clientID
+	}
+	if info.SessionID == "" {
+		info.SessionID = req.SessionID
+	}
+	policyDecision, err := s.permissionPolicy.DecidePermission(ctx, info, req)
+	if err != nil {
+		return glue.PermissionDecision{}, true, err
+	}
+	switch policyDecision.Action {
+	case PermissionPolicyPrompt:
+		return glue.PermissionDecision{}, false, nil
+	case PermissionPolicyAllow:
+		return glue.PermissionDecision{
+			Allow:       true,
+			Reason:      policyDecision.Reason,
+			RememberFor: policyDecision.RememberFor,
+		}, true, nil
+	case PermissionPolicyDeny:
+		reason := strings.TrimSpace(policyDecision.Reason)
+		if reason == "" {
+			reason = "permission denied by daemon policy"
+		}
+		return glue.PermissionDecision{Allow: false, Reason: reason}, true, nil
+	default:
+		return glue.PermissionDecision{}, true, fmt.Errorf("daemon: invalid permission policy action %d", policyDecision.Action)
+	}
+}
+
+func (s *Server) cachedPermission(run *run, req glue.PermissionRequest) (glue.PermissionDecision, bool) {
+	sessionKey := permissionSessionKey(run, req)
+	targetKey := permissionTargetKey(run, req)
+	foreverKey := permissionForeverKey(run, req)
 	s.permMu.Lock()
 	defer s.permMu.Unlock()
 	if _, ok := s.foreverAllows[foreverKey]; ok {
@@ -561,7 +654,7 @@ func (s *Server) cachedPermission(req glue.PermissionRequest) (glue.PermissionDe
 	return glue.PermissionDecision{}, false
 }
 
-func (s *Server) rememberPermission(req glue.PermissionRequest, decision glue.PermissionDecision) {
+func (s *Server) rememberPermission(run *run, req glue.PermissionRequest, decision glue.PermissionDecision) {
 	if !decision.Allow {
 		return
 	}
@@ -569,24 +662,34 @@ func (s *Server) rememberPermission(req glue.PermissionRequest, decision glue.Pe
 	defer s.permMu.Unlock()
 	switch decision.RememberFor {
 	case glue.RememberSession:
-		s.sessionAllows[permissionSessionKey(req)] = struct{}{}
+		s.sessionAllows[permissionSessionKey(run, req)] = struct{}{}
 	case glue.RememberSessionTarget:
-		s.targetAllows[permissionTargetKey(req)] = struct{}{}
+		s.targetAllows[permissionTargetKey(run, req)] = struct{}{}
 	case glue.RememberForever:
-		s.foreverAllows[permissionForeverKey(req)] = struct{}{}
+		s.foreverAllows[permissionForeverKey(run, req)] = struct{}{}
 	}
 }
 
-func permissionSessionKey(req glue.PermissionRequest) string {
-	return req.SessionID + "\x00" + req.Tool + "\x00" + req.Action
+func permissionSessionKey(run *run, req glue.PermissionRequest) string {
+	return permissionOwnerKey(run, req) + "\x00" + req.SessionID + "\x00" + req.Tool + "\x00" + req.Action
 }
 
-func permissionTargetKey(req glue.PermissionRequest) string {
-	return permissionSessionKey(req) + "\x00" + req.Target
+func permissionTargetKey(run *run, req glue.PermissionRequest) string {
+	return permissionSessionKey(run, req) + "\x00" + req.Target
 }
 
-func permissionForeverKey(req glue.PermissionRequest) string {
-	return req.Tool + "\x00" + req.Action + "\x00" + req.Target
+func permissionForeverKey(run *run, req glue.PermissionRequest) string {
+	return permissionOwnerKey(run, req) + "\x00" + req.Tool + "\x00" + req.Action + "\x00" + req.Target
+}
+
+func permissionOwnerKey(run *run, req glue.PermissionRequest) string {
+	if run != nil && strings.TrimSpace(run.clientID) != "" {
+		return "client:" + strings.TrimSpace(run.clientID)
+	}
+	if run != nil && strings.TrimSpace(run.sessionID) != "" {
+		return "session:" + strings.TrimSpace(run.sessionID)
+	}
+	return "session:" + strings.TrimSpace(req.SessionID)
 }
 
 func parseRememberScope(raw string) (glue.RememberScope, bool) {

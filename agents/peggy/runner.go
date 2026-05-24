@@ -132,7 +132,11 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 
 	var permission glue.Permission
 	if settings.Coding.Enabled {
-		permission = NewCLIPermission(CLIPermissionOptions{Stdin: stdin, Stderr: stderr})
+		permission = NewTieredPermission(
+			NewCLIPermission(CLIPermissionOptions{Stdin: stdin, Stderr: stderr}),
+			PermissionTierForChannel(settings.Permissions, PermissionChannelCLI),
+			PermissionChannelCLI,
+		)
 		workDir := settings.Coding.WorkDir
 		if strings.TrimSpace(workDir) == "" {
 			workDir = "."
@@ -255,6 +259,7 @@ Flags:
 	handler, err := daemon.New(daemon.Options{
 		Host:              p.Agent(),
 		Token:             token,
+		PermissionPolicy:  NewDaemonPermissionPolicy(settings.Permissions),
 		PermissionTimeout: *permissionTimeout,
 	})
 	if err != nil {
