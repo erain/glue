@@ -18,6 +18,12 @@ not formally follow SemVer until v1.0.
   or render one MCP prompt with
   `glue connect --mcp-prompt --server <name> --name <prompt> --arg key=value`;
   both modes have JSON variants.
+- **Workspace file skills.** Peggy settings now support
+  `context.work_dir` for loading Glue workspace context, including
+  `.agents/skills/<name>/SKILL.md`. `peggy skills` lists discovered
+  skills without constructing a provider. `peggy skill` runs one
+  skill through a Peggy session with repeatable `--arg key=value`
+  values, and library callers can use `Peggy.Skill`.
 
 ## v0.4.0 — 2026-05-24
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +97,52 @@ func TestPeggy_SoulFlowsIntoSystemPrompt(t *testing.T) {
 	sys := fp.requests[0].SystemPrompt
 	if !strings.Contains(sys, "Australian Shepherds") {
 		t.Errorf("system prompt missing SOUL content: %q", sys)
+	}
+}
+
+func TestPeggy_SkillUsesWorkspaceSkill(t *testing.T) {
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "triage")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: triage\ndescription: Triage one issue\n---\nInvestigate the issue and propose next steps."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakeProvider{text: "triaged"}
+	p, err := New(Options{
+		Settings: Settings{Context: ContextSettings{WorkDir: workDir}},
+		Provider: fp,
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	var stdout bytes.Buffer
+	text, err := p.Skill(context.Background(), "default", "triage", map[string]string{"issue": "GLUE-123"}, &stdout)
+	if err != nil {
+		t.Fatalf("Skill: %v", err)
+	}
+	if text != "triaged" || !strings.Contains(stdout.String(), "triaged") {
+		t.Fatalf("skill output text=%q stdout=%q", text, stdout.String())
+	}
+	if len(fp.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(fp.requests))
+	}
+	req := fp.requests[0]
+	if !strings.Contains(req.SystemPrompt, "triage") || !strings.Contains(req.SystemPrompt, "Triage one issue") {
+		t.Fatalf("system prompt missing skill catalog: %q", req.SystemPrompt)
+	}
+	if len(req.Messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(req.Messages))
+	}
+	prompt := req.Messages[0].Content[0].Text
+	for _, want := range []string{"Investigate the issue", `"issue": "GLUE-123"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("skill prompt = %q, missing %q", prompt, want)
+		}
 	}
 }
 

@@ -174,6 +174,7 @@ func New(opts Options) (*Peggy, error) {
 		SystemPrompt:        finalSystem,
 		Tools:               tools,
 		Store:               store,
+		WorkDir:             settings.Context.WorkDir,
 		Permission:          opts.Permission,
 		Compactor:           compactor,
 		CompactionThreshold: settings.Compaction.Threshold,
@@ -358,6 +359,31 @@ func (p *Peggy) Prompt(ctx context.Context, sessionID, text string, stdout io.Wr
 		opts = append(opts, glue.WithStreamWriter(stdout))
 	}
 	res, err := session.Prompt(ctx, text, opts...)
+	if err != nil {
+		return "", err
+	}
+	return res.Text, nil
+}
+
+// Skill runs one named Glue skill against the given session id. Args are
+// appended to the skill prompt as formatted JSON by the Glue session layer.
+func (p *Peggy) Skill(ctx context.Context, sessionID, name string, args any, stdout io.Writer) (string, error) {
+	if p == nil || p.agent == nil {
+		return "", errors.New("peggy: not initialised")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("peggy: empty skill name")
+	}
+	session, err := p.agent.Session(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	opts := []glue.PromptOption{}
+	if stdout != nil {
+		opts = append(opts, glue.WithStreamWriter(stdout))
+	}
+	res, err := session.Skill(ctx, name, args, opts...)
 	if err != nil {
 		return "", err
 	}

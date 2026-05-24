@@ -46,6 +46,7 @@ type statusReport struct {
 	Provider    statusProvider     `json:"provider"`
 	Store       StoreSettings      `json:"store"`
 	Compaction  CompactionSettings `json:"compaction"`
+	Context     statusContext      `json:"context"`
 	Coding      statusCoding       `json:"coding"`
 	Permissions PermissionSettings `json:"permissions"`
 	Channels    []string           `json:"channels,omitempty"`
@@ -70,6 +71,11 @@ type statusCoding struct {
 	AllowOverwrite  bool     `json:"allow_overwrite"`
 }
 
+type statusContext struct {
+	Enabled bool   `json:"enabled"`
+	WorkDir string `json:"work_dir,omitempty"`
+}
+
 type statusMCP struct {
 	Configured int               `json:"configured"`
 	Enabled    int               `json:"enabled"`
@@ -82,6 +88,11 @@ type statusMCPServer struct {
 	Transport string `json:"transport"`
 	Command   string `json:"command,omitempty"`
 	URL       string `json:"url,omitempty"`
+}
+
+type skillCatalogEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // Run is the top-level CLI entry point. It parses args, loads the
@@ -106,6 +117,10 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		switch args[0] {
 		case "serve":
 			return runServe(ctx, args[1:], stdout, stderr, serve)
+		case "skill":
+			return runSkill(ctx, args[1:], stdin, stdout, stderr)
+		case "skills":
+			return runSkills(args[1:], stdout, stderr)
 		case "status":
 			return runStatus(args[1:], stdout, stderr)
 		case "mcp":
@@ -129,6 +144,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 
 Usage:
   peggy [flags] "<prompt text>"
+  peggy skill [flags] <name>
+  peggy skills [flags]
   peggy status [flags]
   peggy mcp [command]
   peggy serve [flags]
@@ -138,6 +155,8 @@ Examples:
   peggy --session work "remind me about the migration plan"
   peggy --config /tmp/peggy.json "what do you know about my Aussie?"
   peggy --coding --workdir . "run the tests and fix the failure"
+  peggy skills --config ~/.config/peggy/settings.json
+  peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
   peggy mcp tools --config ~/.config/peggy/settings.json
   peggy serve --config ~/.config/peggy/settings.json
@@ -190,14 +209,7 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 		fmt.Fprintf(stderr, "peggy: identity loaded from %s (%d bytes)\n", soulPathUsed, len(soul))
 	}
 
-	var permission glue.Permission
-	if settings.Coding.Enabled || MCPEnabled(settings.MCP) {
-		permission = NewTieredPermission(
-			NewCLIPermission(CLIPermissionOptions{Stdin: stdin, Stderr: stderr}),
-			PermissionTierForChannel(settings.Permissions, PermissionChannelCLI),
-			PermissionChannelCLI,
-		)
-	}
+	permission := cliPermissionForSettings(settings, stdin, stderr)
 	if settings.Coding.Enabled {
 		workDir := settings.Coding.WorkDir
 		if strings.TrimSpace(workDir) == "" {
@@ -224,6 +236,208 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 	}
 	fmt.Fprintln(stdout) // trailing newline so shell prompts don't run on
 	return 0
+}
+
+func cliPermissionForSettings(settings Settings, stdin io.Reader, stderr io.Writer) glue.Permission {
+	if !settings.Coding.Enabled && !MCPEnabled(settings.MCP) {
+		return nil
+	}
+	return NewTieredPermission(
+		NewCLIPermission(CLIPermissionOptions{Stdin: stdin, Stderr: stderr}),
+		PermissionTierForChannel(settings.Permissions, PermissionChannelCLI),
+		PermissionChannelCLI,
+	)
+}
+
+func runSkills(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy skills", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy skills — list skills discovered from Peggy's configured workspace.
+
+Usage:
+  peggy skills [flags]
+
+Examples:
+  peggy skills --config ~/.config/peggy/settings.json
+  peggy skills --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy skills: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy skills: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy skills: no settings.json found; using built-in defaults")
+	}
+	catalog, err := loadSkillCatalog(settings.Context.WorkDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy skills: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(catalog); err != nil {
+			fmt.Fprintf(stderr, "peggy skills: encode catalog: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeSkillCatalog(stdout, catalog)
+	return 0
+}
+
+func runSkill(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy skill", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath           = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		soulPath             = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
+		sessionID            = fs.String("session", "default", "session id (file-backed transcripts key off this)")
+		enableCoding         = fs.Bool("coding", false, "enable local coding tools for this skill run")
+		codingWorkDir        = fs.String("workdir", "", "workspace root for --coding (default current directory)")
+		codingAllowOverwrite = fs.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
+		skillArgs            stringListFlag
+	)
+	fs.Var(&skillArgs, "arg", "skill argument as key=value (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy skill — run one skill discovered from Peggy's configured workspace.
+
+Usage:
+  peggy skill [flags] <name>
+
+Examples:
+  peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
+  peggy skill --session work daily_plan
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "peggy skill: exactly one skill name is required")
+		return 2
+	}
+	skillName := strings.TrimSpace(fs.Arg(0))
+	if skillName == "" {
+		fmt.Fprintln(stderr, "peggy skill: skill name is required")
+		return 2
+	}
+	parsedArgs, err := parsePromptArgs(skillArgs)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy skill: %v\n", err)
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy skill: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy skill: no settings.json found; using built-in defaults")
+	}
+	applyCodingFlags(&settings, *enableCoding, *codingWorkDir, *codingAllowOverwrite)
+
+	soul, soulPathUsed, err := LoadSoul(*soulPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy skill: %v\n", err)
+		return 1
+	}
+	if soul == "" {
+		fmt.Fprintln(stderr, "peggy skill: no SOUL.md found; running without identity context")
+	} else {
+		fmt.Fprintf(stderr, "peggy skill: identity loaded from %s (%d bytes)\n", soulPathUsed, len(soul))
+	}
+	if settings.Coding.Enabled {
+		workDir := settings.Coding.WorkDir
+		if strings.TrimSpace(workDir) == "" {
+			workDir = "."
+		}
+		fmt.Fprintf(stderr, "peggy skill: coding tools enabled for %s\n", workDir)
+	}
+
+	p, err := New(Options{
+		Settings:   settings,
+		Soul:       soul,
+		Stderr:     stderr,
+		Permission: cliPermissionForSettings(settings, stdin, stderr),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy skill: setup: %v\n", err)
+		return 1
+	}
+	defer p.Close()
+
+	if _, err := p.Skill(ctx, *sessionID, skillName, parsedArgs, stdout); err != nil {
+		fmt.Fprintf(stderr, "\npeggy skill: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout)
+	return 0
+}
+
+func loadSkillCatalog(workDir string) ([]skillCatalogEntry, error) {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return nil, nil
+	}
+	ctx, err := glue.LoadContext(workDir)
+	if err != nil {
+		return nil, err
+	}
+	names := sortedMapKeys(ctx.Skills)
+	catalog := make([]skillCatalogEntry, 0, len(names))
+	for _, name := range names {
+		skill := ctx.Skills[name]
+		catalog = append(catalog, skillCatalogEntry{
+			Name:        skill.Name,
+			Description: skill.Description,
+		})
+	}
+	return catalog, nil
+}
+
+func writeSkillCatalog(w io.Writer, catalog []skillCatalogEntry) {
+	if len(catalog) == 0 {
+		fmt.Fprintln(w, "No Peggy skills configured.")
+		return
+	}
+	for i, entry := range catalog {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, entry.Name)
+		if entry.Description != "" {
+			fmt.Fprintf(w, "  description: %s\n", singleLine(entry.Description))
+		}
+	}
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
@@ -305,10 +519,19 @@ func buildStatusReport(settings Settings, settingsPath, soul, soulPath string) s
 		},
 		Store:       settings.Store,
 		Compaction:  settings.Compaction,
+		Context:     buildStatusContext(settings.Context),
 		Coding:      buildStatusCoding(settings.Coding),
 		Permissions: settings.Permissions,
 		Channels:    channels,
 		MCP:         mcpServers,
+	}
+}
+
+func buildStatusContext(contextSettings ContextSettings) statusContext {
+	workDir := strings.TrimSpace(contextSettings.WorkDir)
+	return statusContext{
+		Enabled: workDir != "",
+		WorkDir: workDir,
 	}
 }
 
@@ -368,6 +591,7 @@ func writeStatusReport(w io.Writer, report statusReport) {
 	fmt.Fprintf(w, "provider: %s %s\n", report.Provider.Name, report.Provider.Model)
 	fmt.Fprintf(w, "store: %s %s\n", report.Store.Type, report.Store.Path)
 	fmt.Fprintf(w, "compaction: threshold=%d target=%d keep=%d\n", report.Compaction.Threshold, report.Compaction.TargetTokens, report.Compaction.KeepRecent)
+	writeStatusContext(w, report.Context)
 	writeStatusCoding(w, report.Coding)
 	writeStatusPermissions(w, report.Permissions)
 	if len(report.Channels) > 0 {
@@ -376,6 +600,14 @@ func writeStatusReport(w io.Writer, report statusReport) {
 		fmt.Fprintln(w, "channels: none")
 	}
 	writeStatusMCP(w, report.MCP)
+}
+
+func writeStatusContext(w io.Writer, contextSettings statusContext) {
+	if !contextSettings.Enabled {
+		fmt.Fprintln(w, "context: disabled")
+		return
+	}
+	fmt.Fprintf(w, "context: enabled work_dir=%s\n", contextSettings.WorkDir)
 }
 
 func writeStatusCoding(w io.Writer, coding statusCoding) {

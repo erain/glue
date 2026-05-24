@@ -4,7 +4,7 @@
 > remembers you across sessions, and curates facts on her own.
 
 A long-running personal-assistant agent built on the
-[glue](../..) framework. **v0.4** ships:
+[glue](../..) framework. Current builds include:
 
 - a single-prompt **CLI** (`peggy`)
 - a **Telegram bot** binary (`peggy-telegram`) with a chat-id allowlist
@@ -22,7 +22,9 @@ A long-running personal-assistant agent built on the
   CLI, Telegram, and daemon clients
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
 - opt-in MCP stdio/HTTP tools plus resource and prompt inspection
-- local readiness status for config, identity, memory, coding, and MCP setup
+- workspace file skills loaded from `.agents/skills/<name>/SKILL.md`
+- local readiness status for config, identity, memory, context,
+  coding, and MCP setup
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
@@ -108,6 +110,9 @@ and emits a stderr diagnostic.
     "target_tokens": 8000,
     "keep_recent": 8
   },
+  "context": {
+    "work_dir": "~/workspace"
+  },
   "permissions": {
     "default_tier": "prompt",
     "channels": {
@@ -127,6 +132,7 @@ and emits a stderr diagnostic.
 | `compaction.threshold` | `200` | Message-count gate. Compaction only runs when the in-memory transcript exceeds this. |
 | `compaction.target_tokens` | `8000` | Soft cap on transcript size before summarization. Word-count heuristic; not a real tokenizer. |
 | `compaction.keep_recent` | `8` | Most-recent messages retained verbatim through compaction. |
+| `context.work_dir` | empty | Workspace root for `AGENTS.md`, `.agents/skills`, and roles. `~` and `$HOME` expand. |
 | `coding.enabled` | `false` | Register local coding tools. Enable only for trusted local workspaces. |
 | `coding.work_dir` | current directory | Workspace root for `read_file`, `write_file`, `shell_exec`, and git helpers. `~` and `$HOME` expand. |
 | `coding.allowed_binaries` | `go`, `git`, `make`, `node`, `npm`, `python`, `python3` | Basename allowlist for `shell_exec`; model calls cannot run arbitrary paths. |
@@ -150,6 +156,8 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy skill [flags] <name>
+peggy skills [flags]
 peggy mcp prompt [flags]
 peggy mcp prompts [flags]
 peggy mcp read [flags]
@@ -175,6 +183,50 @@ peggy status [flags]
 
 The prompt is whatever non-flag args you pass — quoting is your
 shell's job. Multi-word prompts work without quoting too.
+
+## File Skills
+
+Point `context.work_dir` at a workspace to let Peggy discover reusable
+project context:
+
+```json
+{
+  "context": {
+    "work_dir": "/path/to/workspace"
+  }
+}
+```
+
+Peggy loads `AGENTS.md` into the system prompt and scans skills under
+`.agents/skills/<name>/SKILL.md`. A skill file is Markdown with
+optional frontmatter:
+
+```markdown
+---
+name: triage
+description: Triage one issue and propose next actions
+---
+
+Read the issue context, identify missing information, and return a
+short implementation plan with risks.
+```
+
+List discovered skills without constructing a model provider:
+
+```sh
+peggy skills --config ~/.config/peggy/settings.json
+peggy skills --config ~/.config/peggy/settings.json --json
+```
+
+Run one skill through a normal Peggy session:
+
+```sh
+peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
+```
+
+Repeat `--arg key=value` to pass small structured inputs. Skill runs
+use the same provider, identity, memory, session store, MCP setup, and
+optional `--coding` controls as normal Peggy prompts.
 
 `peggy status` prints a local readiness summary without constructing a
 provider, starting a prompt, or connecting to MCP servers:
@@ -509,13 +561,16 @@ near-term follow-up.
 - Opt-in **local coding mode** for CLI and Telegram: read files, write
   files, run allowlisted commands, and inspect git branch context with
   per-call permission prompts for side effects.
+- **Workspace file skills**: `context.work_dir` loads `AGENTS.md`,
+  `.agents/skills`, and roles; `peggy skills` lists the catalog and
+  `peggy skill --arg key=value <name>` runs one skill through Peggy.
 - **Permission tiers** by channel/client: prompt, read-only, or trusted.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
   your existing ChatGPT subscription via `codex login` — no per-token
   bill.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.3 summary and
+See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.4 summary and
 known limitations.
 
 ## Channels
@@ -543,13 +598,15 @@ external transports. The pattern is designed in
 Per tracker [#110](https://github.com/erain/glue/issues/110), in
 priority order:
 
-- **M4 — ecosystem.** MCP client (stdio + HTTP), cost tracking,
+- **M5 — file skills and workspace context.** Make Peggy a richer
+  operator over glue project context: file-backed skills, role-aware
+  runs, and daemon/client discovery for reusable workflows.
+- **Later ecosystem polish.** Cost tracking and
   `providers/anthropic` when budget allows.
 
-Near-term follow-ups that may slip into v0.3.x patches: a `peggy
-memories` subcommand (list / export / forget), edit-in-place
-Telegram streaming, FTS5 prefix-match on session ids for
-channel-scoped recall.
+Near-term follow-ups that may ship as patches: a `peggy memories`
+subcommand (list / export / forget), edit-in-place Telegram
+streaming, FTS5 prefix-match on session ids for channel-scoped recall.
 
 ## As a library
 
@@ -567,6 +624,9 @@ if err != nil { /* … */ }
 defer p.Close()
 
 text, err := p.Prompt(ctx, "session-id", "hello", os.Stdout)
+
+text, err = p.Skill(ctx, "session-id", "triage",
+    map[string]string{"issue": "GLUE-123"}, os.Stdout)
 ```
 
 See [`peggy.go`](peggy.go) for the full API.
