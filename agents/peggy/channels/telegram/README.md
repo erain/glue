@@ -50,6 +50,39 @@ gated by a chat-id allowlist. Built on the pattern designed in
 
    SIGINT / SIGTERM stops cleanly.
 
+### Daemon-client mode
+
+Standalone mode builds Peggy inside the `peggy-telegram` process. To
+share one long-running Peggy process with terminal clients, start the
+daemon first and run Telegram as a daemon client:
+
+```sh
+peggy serve --coding --workdir /path/to/repo
+peggy-telegram --daemon
+```
+
+`--daemon` reads the same metadata file written by `peggy serve` and
+`glue serve`. Override discovery with `--daemon-base-url`,
+`--daemon-token`, or `--daemon-metadata`; the token also falls back to
+`GLUE_DAEMON_TOKEN`. Telegram still enforces `allow_chats` before any
+daemon request is sent.
+
+You can also put daemon settings under `channels.telegram.daemon`:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "allow_chats": [123456789],
+      "daemon": {
+        "enabled": true,
+        "metadata": "~/.config/glue/daemon.json"
+      }
+    }
+  }
+}
+```
+
 ### Coding setup
 
 `peggy-telegram` uses the same `settings.json` as the CLI. To let
@@ -92,7 +125,13 @@ shows inline buttons for `Deny`, `Allow once`, `Allow session`, and
       "bot_token_env": "PEGGY_TELEGRAM_TOKEN",
       "allow_chats": [123456789],
       "long_poll_timeout_seconds": 30,
-      "api_base_url": ""
+      "api_base_url": "",
+      "daemon": {
+        "enabled": false,
+        "metadata": "~/.config/glue/daemon.json",
+        "base_url": "",
+        "token": ""
+      }
     }
   }
 }
@@ -104,6 +143,10 @@ shows inline buttons for `Deny`, `Allow once`, `Allow session`, and
 | `allow_chats` | `[]` (refuse-all) | Telegram chat ids permitted to reach the agent. |
 | `long_poll_timeout_seconds` | `30` | Seconds the server waits before returning an empty update set. Clamped to 60. |
 | `api_base_url` | `https://api.telegram.org` | Override for tests / private mirrors. |
+| `daemon.enabled` | `false` | When true, Telegram connects to a running Peggy daemon instead of constructing Peggy in-process. |
+| `daemon.metadata` | glue daemon metadata path | Connection metadata written by `peggy serve` / `glue serve`. |
+| `daemon.base_url` | metadata | Explicit daemon base URL override. |
+| `daemon.token` | metadata or `GLUE_DAEMON_TOKEN` | Explicit bearer token override. Prefer metadata/env over committing tokens. |
 
 ## Session-id namespacing
 
@@ -141,8 +184,8 @@ Read-only tools such as `read_file`, `git_diff_branch`, and
 - Text-message-only inbound and outbound. Photos / voice / documents /
   stickers are dropped.
 - Long-polling. Webhook-mode is a follow-up.
-- One Telegram bot per process. Multi-bot in one process is an M3
-  concern.
+- One Telegram bot per process. It can run standalone or as a daemon
+  client for one shared Peggy process.
 - Replies are sent as one message per turn, after the model finishes.
   Edit-in-place streaming and "thinking…" placeholders are a
   follow-up (Telegram rate-limits message edits and the trade-offs

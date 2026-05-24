@@ -177,6 +177,16 @@ Useful `serve` flags:
 Startup output prints the `base_url` and metadata path, never the
 bearer token. Stop the daemon with SIGINT/SIGTERM.
 
+Telegram can attach to the same daemon:
+
+```sh
+peggy-telegram --daemon
+```
+
+In daemon-client mode, Telegram keeps its chat allowlist and inline
+permission buttons, but Peggy, memory, coding tools, and remembered
+permission scopes live in the daemon process.
+
 ## Coding Tools
 
 Coding mode is opt-in. Enable it in `settings.json` with
@@ -314,7 +324,7 @@ external transports. The pattern is designed in
 - Each channel lives in its own package under
   `agents/peggy/channels/<name>`. Telegram is the first concrete
   channel — see [`channels/telegram/README.md`](channels/telegram/README.md)
-  for the bot setup and the `peggy-telegram` binary.
+  for the bot setup, standalone mode, and daemon-client mode.
 - Channels satisfy a small `peggy.Channel` interface and call into
   the existing `Peggy.Prompt` API. They never modify core `glue`.
 - Channels namespace their session ids (`telegram:12345` etc.) so a
@@ -332,8 +342,7 @@ priority order:
 
 - **M3 — multi-channel daemon.** `peggy serve` plus daemon clients so
   one long-running Peggy serves a terminal, Telegram, and future
-  clients concurrently. Next up: Telegram daemon-client mode and
-  per-channel permission tiers.
+  clients concurrently. Next up: per-channel permission tiers.
 - **M4 — ecosystem.** MCP client (stdio + HTTP), cost tracking,
   `providers/anthropic` when budget allows.
 
