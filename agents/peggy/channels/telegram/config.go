@@ -3,6 +3,8 @@ package telegram
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/erain/glue/daemon"
 )
 
 // Config is the decoded form of settings.json's
@@ -27,6 +29,18 @@ type Config struct {
 	// https://api.telegram.org. Used by tests to point at an
 	// httptest.NewServer.
 	APIBaseURL string `json:"api_base_url"`
+
+	// Daemon configures optional daemon-client mode. Standalone mode
+	// remains the default when Enabled is false.
+	Daemon DaemonClientConfig `json:"daemon,omitempty"`
+}
+
+// DaemonClientConfig configures Telegram's optional daemon-client mode.
+type DaemonClientConfig struct {
+	Enabled      bool   `json:"enabled,omitempty"`
+	BaseURL      string `json:"base_url,omitempty"`
+	Token        string `json:"token,omitempty"`
+	MetadataPath string `json:"metadata,omitempty"`
 }
 
 const (
@@ -57,6 +71,9 @@ func DecodeConfig(raw json.RawMessage) (Config, error) {
 	}
 	if c.APIBaseURL == "" {
 		c.APIBaseURL = defaultAPIBaseURL
+	}
+	if c.Daemon.MetadataPath == "" {
+		c.Daemon.MetadataPath = daemon.DefaultMetadataPath()
 	}
 	return c, nil
 }

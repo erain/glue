@@ -653,6 +653,13 @@ so `glue connect` works without explicit connection flags. Permission
 requests for Peggy coding tools are brokered over the daemon stream and
 answered by the connected client.
 
+Telegram can attach to that same daemon while preserving its chat
+allowlist and inline permission buttons:
+
+```sh
+go run ./agents/peggy/cmd/peggy-telegram --daemon
+```
+
 ### Standard flags for downstream agents
 
 Agents that ship their own CLI binary share the same six flags

@@ -34,6 +34,10 @@ func run(parent context.Context, args []string, stdout, stderr io.Writer) int {
 		configPath  = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
 		soulPath    = fs.String("soul", "", "path to identity Markdown")
 		showVersion = fs.Bool("version", false, "print version and exit")
+		daemonMode  = fs.Bool("daemon", false, "connect to a running peggy serve daemon instead of constructing Peggy in-process")
+		daemonURL   = fs.String("daemon-base-url", "", "Peggy daemon base URL; defaults to metadata when --daemon is set")
+		daemonToken = fs.String("daemon-token", "", "Peggy daemon bearer token; defaults to metadata or GLUE_DAEMON_TOKEN")
+		daemonMeta  = fs.String("daemon-metadata", "", "Peggy daemon metadata JSON path; defaults to glue daemon metadata path")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, `peggy-telegram — Peggy reachable on Telegram.
@@ -80,6 +84,38 @@ Flags:
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy-telegram: %v\n", err)
 		return 1
+	}
+	if *daemonURL != "" {
+		cfg.Daemon.BaseURL = *daemonURL
+	}
+	if *daemonToken != "" {
+		cfg.Daemon.Token = *daemonToken
+	}
+	if *daemonMeta != "" {
+		cfg.Daemon.MetadataPath = *daemonMeta
+	}
+	if *daemonMode || cfg.Daemon.Enabled {
+		cfg.Daemon.Enabled = true
+		daemonClient, err := telegram.NewDaemonClient(cfg.Daemon, nil, stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "peggy-telegram: daemon: %v\n", err)
+			return 1
+		}
+		ch, err := telegram.New(telegram.Options{Daemon: daemonClient, Config: cfg, Stderr: stderr})
+		if err != nil {
+			fmt.Fprintf(stderr, "peggy-telegram: %v\n", err)
+			return 1
+		}
+		ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+
+		fmt.Fprintln(stderr, "peggy-telegram: listening for Telegram updates via daemon; SIGINT to stop.")
+		if err := ch.Run(ctx); err != nil {
+			fmt.Fprintf(stderr, "peggy-telegram: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stderr, "peggy-telegram: stopped.")
+		return 0
 	}
 	var permission *telegram.Permission
 	if settings.Coding.Enabled {

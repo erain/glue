@@ -19,10 +19,16 @@ import (
 const ChannelName = "telegram"
 
 // Options configures a Channel. Most fields are optional with sensible
-// defaults; the only required pieces are Peggy and a populated Config.
+// defaults. Standalone mode requires Peggy; daemon-client mode requires
+// Daemon.
 type Options struct {
 	// Peggy is the agent that handles inbound messages. Required.
+	// Ignored when Daemon is non-nil.
 	Peggy *peggy.Peggy
+
+	// Daemon handles inbound messages by talking to a running Peggy
+	// daemon. When set, Peggy may be nil.
+	Daemon *DaemonClient
 
 	// Config is the decoded settings.channels.telegram block.
 	Config Config
@@ -48,6 +54,7 @@ type Options struct {
 // Channel is the peggy.Channel implementation for Telegram.
 type Channel struct {
 	peggy   *peggy.Peggy
+	daemon  *DaemonClient
 	cfg     Config
 	api     *API
 	allowed map[int64]struct{}
@@ -59,8 +66,8 @@ type Channel struct {
 // missing — the bot token in particular surfaces early rather than
 // failing silently inside the poll loop.
 func New(opts Options) (*Channel, error) {
-	if opts.Peggy == nil {
-		return nil, errors.New("telegram: Peggy is required")
+	if opts.Peggy == nil && opts.Daemon == nil {
+		return nil, errors.New("telegram: Peggy or Daemon is required")
 	}
 	cfg, err := DecodeConfig(nil) // re-apply defaults defensively
 	if err != nil {
@@ -101,6 +108,7 @@ func New(opts Options) (*Channel, error) {
 
 	ch := &Channel{
 		peggy:   opts.Peggy,
+		daemon:  opts.Daemon,
 		cfg:     cfg,
 		api:     NewAPI(cfg.APIBaseURL, token, opts.HTTPClient),
 		allowed: allowed,
@@ -183,6 +191,9 @@ func (c *Channel) handleCallback(ctx context.Context, cb CallbackQuery) {
 	if c.perm != nil && c.perm.handleCallback(ctx, cb) {
 		return
 	}
+	if c.daemon != nil && c.daemon.HandleCallback(ctx, cb, c.api) {
+		return
+	}
 }
 
 func (c *Channel) sleep(ctx context.Context, d time.Duration) bool {
@@ -211,7 +222,13 @@ func (c *Channel) handleUpdate(ctx context.Context, u Update) {
 
 	sessionID := peggy.ChannelSessionID(ChannelName, strconv.FormatInt(chatID, 10))
 	var buf bytes.Buffer
-	text, err := c.peggy.Prompt(ctx, sessionID, u.Message.Text, &buf)
+	var text string
+	var err error
+	if c.daemon != nil {
+		text, err = c.daemon.Prompt(ctx, sessionID, u.Message.Text, c.api, chatID)
+	} else {
+		text, err = c.peggy.Prompt(ctx, sessionID, u.Message.Text, &buf)
+	}
 	if err != nil {
 		fmt.Fprintf(c.stderr, "telegram: prompt failed for chat %d: %v\n", chatID, err)
 		// Reply with a short error rather than going silent — the user
