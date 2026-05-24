@@ -15,8 +15,9 @@ import (
 // Update is one entry from getUpdates. Only the fields glue needs are
 // modeled; everything else is ignored.
 type Update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *Message `json:"message,omitempty"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
 }
 
 // Message is the text message variant we care about. Photo, voice,
@@ -41,6 +42,26 @@ type Chat struct {
 	ID    int64  `json:"id"`
 	Type  string `json:"type"`
 	Title string `json:"title,omitempty"`
+}
+
+// CallbackQuery is the inline-keyboard callback variant used by
+// permission prompts.
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *User    `json:"from,omitempty"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data,omitempty"`
+}
+
+// InlineKeyboardMarkup is Telegram's inline keyboard payload shape.
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+// InlineKeyboardButton is one inline keyboard button.
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data"`
 }
 
 // API is the minimal Telegram Bot API client used by the channel.
@@ -84,15 +105,38 @@ func (a *API) GetUpdates(ctx context.Context, offset int64, timeoutSeconds int) 
 // SendMessage sends a text message to chatID. text is truncated to
 // telegramMessageLimit bytes (Telegram's hard cap).
 func (a *API) SendMessage(ctx context.Context, chatID int64, text string) error {
+	return a.SendMessageWithReplyMarkup(ctx, chatID, text, nil)
+}
+
+// SendMessageWithReplyMarkup sends a text message with optional Telegram
+// reply_markup such as [InlineKeyboardMarkup].
+func (a *API) SendMessageWithReplyMarkup(ctx context.Context, chatID int64, text string, replyMarkup any) error {
 	if len(text) > telegramMessageLimit {
 		text = text[:telegramMessageLimit-len(truncationSuffix)] + truncationSuffix
 	}
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
-	})
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	body, _ := json.Marshal(payload)
 	_, err := a.do(ctx, "sendMessage", body, func(b []byte) ([]Update, error) {
 		// sendMessage's result is the sent Message; we don't need it.
+		return nil, nil
+	})
+	return err
+}
+
+// AnswerCallbackQuery acknowledges an inline-keyboard callback. text may be
+// empty.
+func (a *API) AnswerCallbackQuery(ctx context.Context, callbackQueryID, text string) error {
+	body, _ := json.Marshal(map[string]any{
+		"callback_query_id": callbackQueryID,
+		"text":              text,
+	})
+	_, err := a.do(ctx, "answerCallbackQuery", body, func(b []byte) ([]Update, error) {
 		return nil, nil
 	})
 	return err

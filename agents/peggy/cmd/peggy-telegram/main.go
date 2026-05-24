@@ -76,10 +76,21 @@ Flags:
 		return 1
 	}
 
+	cfg, err := telegram.DecodeConfig(settings.Channels[telegram.ChannelName])
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy-telegram: %v\n", err)
+		return 1
+	}
+	var permission *telegram.Permission
+	if settings.Coding.Enabled {
+		permission = telegram.NewPermission(telegram.PermissionOptions{Stderr: stderr})
+	}
+
 	p, err := peggy.New(peggy.Options{
-		Settings: settings,
-		Soul:     soul,
-		Stderr:   stderr,
+		Settings:   settings,
+		Soul:       soul,
+		Stderr:     stderr,
+		Permission: permission,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy-telegram: setup: %v\n", err)
@@ -87,12 +98,7 @@ Flags:
 	}
 	defer p.Close()
 
-	cfg, err := telegram.DecodeConfig(settings.Channels[telegram.ChannelName])
-	if err != nil {
-		fmt.Fprintf(stderr, "peggy-telegram: %v\n", err)
-		return 1
-	}
-	ch, err := telegram.New(telegram.Options{Peggy: p, Config: cfg, Stderr: stderr})
+	ch, err := telegram.New(telegram.Options{Peggy: p, Config: cfg, Stderr: stderr, Permission: permission})
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy-telegram: %v\n", err)
 		return 1

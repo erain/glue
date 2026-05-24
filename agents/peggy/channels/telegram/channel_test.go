@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,6 +44,38 @@ func (p *fakeProvider) Stream(_ context.Context, req glue.ProviderRequest) (<-ch
 		Role:    glue.MessageRoleAssistant,
 		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: text}},
 	}}
+	close(ch)
+	return ch, nil
+}
+
+type toolProvider struct {
+	mu       sync.Mutex
+	requests []glue.ProviderRequest
+	calls    int
+}
+
+func (p *toolProvider) Stream(_ context.Context, req glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	call := p.calls
+	p.calls++
+	p.mu.Unlock()
+	ch := make(chan glue.ProviderEvent, 4)
+	ch <- glue.ProviderEvent{Type: glue.ProviderEventStart}
+	if call == 0 {
+		ch <- glue.ProviderEvent{Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{
+			ID:        "c1",
+			Name:      "write_file",
+			Arguments: []byte(`{"path":"note.txt","content":"hello from telegram"}`),
+		}}
+		ch <- glue.ProviderEvent{Type: glue.ProviderEventDone}
+	} else {
+		ch <- glue.ProviderEvent{Type: glue.ProviderEventTextDelta, Delta: "done"}
+		ch <- glue.ProviderEvent{Type: glue.ProviderEventDone, Message: &glue.Message{
+			Role:    glue.MessageRoleAssistant,
+			Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: "done"}},
+		}}
+	}
 	close(ch)
 	return ch, nil
 }
@@ -125,9 +158,32 @@ func (f *telegramFixture) lastSendText() string {
 	return ""
 }
 
+func (f *telegramFixture) sendBody(index int) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if index < 0 || index >= len(f.sendBodies) {
+		return nil
+	}
+	return append([]byte(nil), f.sendBodies[index]...)
+}
+
+func (f *telegramFixture) appendUpdates(updates []Update) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updates = append(f.updates, updates)
+}
+
 func messageUpdate(updateID int64, chatID int64, text string) Update {
 	return Update{UpdateID: updateID, Message: &Message{
 		MessageID: updateID, Chat: Chat{ID: chatID, Type: "private"}, Text: text, Date: time.Now().Unix(),
+	}}
+}
+
+func callbackUpdate(updateID int64, chatID int64, data string) Update {
+	return Update{UpdateID: updateID, CallbackQuery: &CallbackQuery{
+		ID:      fmt.Sprintf("cb-%d", updateID),
+		Message: &Message{MessageID: updateID, Chat: Chat{ID: chatID, Type: "private"}, Text: "permission", Date: time.Now().Unix()},
+		Data:    data,
 	}}
 }
 
@@ -188,6 +244,67 @@ func TestChannel_AllowedChatPromptsAndReplies(t *testing.T) {
 	}
 	if msgs := sess.Messages(); len(msgs) == 0 {
 		t.Errorf("namespaced session has no messages — session-id routing broken")
+	}
+}
+
+func TestChannel_TelegramPermissionCallbackUnblocksPrompt(t *testing.T) {
+	workDir := t.TempDir()
+	provider := &toolProvider{}
+	store := filestore.New(filepath.Join(t.TempDir(), "sessions"))
+	perm := NewPermission(PermissionOptions{Timeout: 2 * time.Second})
+	p, err := peggy.New(peggy.Options{
+		Settings: peggy.Settings{Coding: peggy.CodingSettings{
+			Enabled:         true,
+			WorkDir:         workDir,
+			AllowOverwrite:  true,
+			AllowedBinaries: []string{"go"},
+		}},
+		Provider:           provider,
+		Store:              store,
+		DisableMemoryTools: true,
+		Permission:         perm,
+	})
+	if err != nil {
+		t.Fatalf("peggy.New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	fix := newTelegramFixture(t, [][]Update{{messageUpdate(1, 555, "write the file")}})
+	ch, err := New(Options{
+		Peggy:      p,
+		Token:      "secret",
+		Permission: perm,
+		Config: Config{
+			AllowChats:             []int64{555},
+			APIBaseURL:             fix.server.URL,
+			LongPollTimeoutSeconds: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- ch.Run(ctx) }()
+
+	waitFor(t, func() bool { return fix.sendCount() >= 1 })
+	callbackData := callbackDataForButton(t, fix.sendBody(0), "Allow once")
+	fix.appendUpdates([]Update{callbackUpdate(2, 555, callbackData)})
+	waitFor(t, func() bool { return fix.sendCount() >= 2 })
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "note.txt"))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "hello from telegram" {
+		t.Fatalf("written content = %q", data)
+	}
+	if got := fix.lastSendText(); got != "done" {
+		t.Fatalf("final send text = %q, want done", got)
 	}
 }
 
