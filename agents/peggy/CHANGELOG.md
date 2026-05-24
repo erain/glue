@@ -13,6 +13,11 @@ not formally follow SemVer until v1.0.
   `glue connect --mcp-resources`, `--mcp-prompts`, plus JSON variants
   render those catalogs for remote clients. `glue connect --inspect`
   includes MCP catalog sections when the daemon advertises them.
+- **Daemon MCP read/render actions.** Remote clients can read one MCP
+  resource with `glue connect --mcp-read --server <name> --uri <uri>`
+  or render one MCP prompt with
+  `glue connect --mcp-prompt --server <name> --name <prompt> --arg key=value`;
+  both modes have JSON variants.
 
 ## v0.4.0 — 2026-05-24
 
@@ -68,8 +73,8 @@ before a run starts.
   and dynamic discovery remain deferred.
 - `peggy status` is intentionally config-only. It does not prove that
   provider credentials or MCP endpoints are live.
-- MCP resource reads and prompt rendering through daemon clients remain
-  deferred.
+- MCP subscriptions, prompt auto-use policy, OAuth, elicitation,
+  sampling, and dynamic discovery remain deferred.
 
 ## v0.3.0 — 2026-05-24
 

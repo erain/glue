@@ -179,6 +179,45 @@ func TestPeggyDaemonExposesMCPCatalogs(t *testing.T) {
 	}
 }
 
+func TestPeggyDaemonReadsMCPResourceAndRendersPrompt(t *testing.T) {
+	p, err := New(Options{
+		Settings: Settings{
+			MCP: MCPSettings{Servers: map[string]MCPServerSettings{
+				"filesystem": mcpTestServer("resources_only", ""),
+				"briefs":     mcpTestServer("prompts_only", ""),
+			}},
+		},
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var read daemon.MCPResourceReadResponse
+	postPeggyDaemonJSON(t, ts.URL+"/v1/mcp/resources/read", `{"server":"filesystem","uri":"file:///workspace/README.md"}`, &read)
+	if read.Server != "filesystem" || len(read.Contents) != 1 || read.Contents[0].Text == nil || !strings.Contains(*read.Contents[0].Text, "Hello from Peggy MCP resource") {
+		t.Fatalf("read = %+v", read)
+	}
+
+	var rendered daemon.MCPPromptRenderResponse
+	postPeggyDaemonJSON(t, ts.URL+"/v1/mcp/prompts/get", `{"server":"briefs","name":"daily_brief","arguments":{"topic":"Go"}}`, &rendered)
+	if rendered.Server != "briefs" || rendered.Name != "daily_brief" || len(rendered.Messages) != 1 || !strings.Contains(string(rendered.Messages[0].Content), "Brief me on Go.") {
+		t.Fatalf("rendered = %+v", rendered)
+	}
+}
+
 type startRunResponse struct {
 	RunID     string `json:"run_id"`
 	EventsURL string `json:"events_url"`
@@ -198,6 +237,27 @@ func getPeggyDaemonJSON(t *testing.T, url string, out any) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s status = %d, want %d", url, resp.StatusCode, http.StatusOK)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func postPeggyDaemonJSON(t *testing.T, url, body string, out any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s status = %d, want %d", url, resp.StatusCode, http.StatusOK)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		t.Fatal(err)

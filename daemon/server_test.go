@@ -94,6 +94,44 @@ func (h mcpCatalogHost) MCPPromptCatalog(context.Context) ([]MCPPromptCatalogEnt
 	return h.prompts, nil
 }
 
+type mcpActionHost struct{}
+
+func (mcpActionHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (mcpActionHost) MCPReadResource(_ context.Context, req MCPReadResourceRequest) (MCPResourceReadResponse, error) {
+	if req.Server != "filesystem" || req.URI != "file:///workspace/README.md" {
+		return MCPResourceReadResponse{}, fmt.Errorf("unexpected read request: %+v", req)
+	}
+	text := "# Project README\n\nHello from daemon."
+	return MCPResourceReadResponse{
+		Server: req.Server,
+		URI:    req.URI,
+		Contents: []MCPResourceContent{{
+			URI:      req.URI,
+			MIMEType: "text/markdown",
+			Text:     &text,
+			Meta:     map[string]any{"source": "test"},
+		}},
+	}, nil
+}
+
+func (mcpActionHost) MCPRenderPrompt(_ context.Context, req MCPPromptRenderRequest) (MCPPromptRenderResponse, error) {
+	if req.Server != "linear" || req.Name != "daily_brief" || req.Arguments["topic"] != "Go" {
+		return MCPPromptRenderResponse{}, fmt.Errorf("unexpected prompt request: %+v", req)
+	}
+	return MCPPromptRenderResponse{
+		Server:      req.Server,
+		Name:        req.Name,
+		Description: "Rendered daily briefing prompt",
+		Messages: []MCPPromptMessage{{
+			Role:    "user",
+			Content: json.RawMessage(`{"type":"text","text":"Brief me on Go."}`),
+		}},
+	}, nil
+}
+
 func TestServerAuthAndHealth(t *testing.T) {
 	srv := newTestServer(t, glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}}))
 	ts := httptest.NewServer(srv)
@@ -292,6 +330,74 @@ func TestServerMCPCatalogsUnsupportedHost(t *testing.T) {
 	}
 	if len(prompts.Prompts) != 0 {
 		t.Fatalf("prompts = %+v, want empty", prompts.Prompts)
+	}
+}
+
+func TestServerMCPReadResourceAndRenderPrompt(t *testing.T) {
+	srv := newTestServer(t, mcpActionHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/mcp/resources/read", "", `{"server":"filesystem","uri":"file:///workspace/README.md"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated read status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/mcp/resources/read", "token", `{"server":"filesystem","uri":"file:///workspace/README.md"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var read MCPResourceReadResponse
+	if err := json.NewDecoder(resp.Body).Decode(&read); err != nil {
+		t.Fatal(err)
+	}
+	if read.Server != "filesystem" || read.URI != "file:///workspace/README.md" || len(read.Contents) != 1 || read.Contents[0].Text == nil {
+		t.Fatalf("read = %+v", read)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/mcp/prompts/get", "token", `{"server":"linear","name":"daily_brief","arguments":{"topic":"Go"}}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prompt status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var rendered MCPPromptRenderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.Server != "linear" || rendered.Name != "daily_brief" || len(rendered.Messages) != 1 || !strings.Contains(string(rendered.Messages[0].Content), "Brief me on Go.") {
+		t.Fatalf("rendered = %+v", rendered)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	var status statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"mcp_resource_read", "mcp_prompt_get"} {
+		if !contains(status.Capabilities, want) {
+			t.Fatalf("capabilities = %v, missing %q", status.Capabilities, want)
+		}
+	}
+}
+
+func TestServerMCPActionValidation(t *testing.T) {
+	srv := newTestServer(t, mcpActionHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/mcp/resources/read", "token", `{"server":"filesystem"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("read validation status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/mcp/prompts/get", "token", `{"server":"linear"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("prompt validation status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
 

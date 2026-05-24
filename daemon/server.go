@@ -46,6 +46,18 @@ type MCPPromptCatalogHost interface {
 	MCPPromptCatalog(context.Context) ([]MCPPromptCatalogEntry, error)
 }
 
+// MCPResourceReaderHost is optionally implemented by hosts that can read one
+// MCP resource without starting a run.
+type MCPResourceReaderHost interface {
+	MCPReadResource(context.Context, MCPReadResourceRequest) (MCPResourceReadResponse, error)
+}
+
+// MCPPromptRendererHost is optionally implemented by hosts that can render one
+// MCP prompt without starting a run.
+type MCPPromptRendererHost interface {
+	MCPRenderPrompt(context.Context, MCPPromptRenderRequest) (MCPPromptRenderResponse, error)
+}
+
 // MCPResourceCatalogEntry describes one MCP resource advertised by a host.
 type MCPResourceCatalogEntry struct {
 	Server      string         `json:"server"`
@@ -73,6 +85,51 @@ type MCPPromptCatalogArgument struct {
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required,omitempty"`
+}
+
+// MCPReadResourceRequest selects one resource URI from one configured server.
+type MCPReadResourceRequest struct {
+	Server string `json:"server"`
+	URI    string `json:"uri"`
+}
+
+// MCPResourceReadResponse contains the contents returned by an MCP
+// resources/read request.
+type MCPResourceReadResponse struct {
+	Server   string               `json:"server"`
+	URI      string               `json:"uri"`
+	Contents []MCPResourceContent `json:"contents"`
+}
+
+// MCPResourceContent is one text or blob content item returned from a resource.
+type MCPResourceContent struct {
+	URI      string         `json:"uri"`
+	MIMEType string         `json:"mime_type,omitempty"`
+	Text     *string        `json:"text,omitempty"`
+	Blob     *string        `json:"blob,omitempty"`
+	Meta     map[string]any `json:"_meta,omitempty"`
+}
+
+// MCPPromptRenderRequest selects one prompt from one configured server.
+type MCPPromptRenderRequest struct {
+	Server    string            `json:"server"`
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments,omitempty"`
+}
+
+// MCPPromptRenderResponse contains the messages returned by an MCP prompts/get
+// request.
+type MCPPromptRenderResponse struct {
+	Server      string             `json:"server"`
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Messages    []MCPPromptMessage `json:"messages"`
+}
+
+// MCPPromptMessage is one rendered prompt message.
+type MCPPromptMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 // Options configures [New].
@@ -323,12 +380,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/mcp/resources/read" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleMCPReadResource(w, r)
+		return
+	}
+
 	if r.URL.Path == "/v1/mcp/prompts" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
 			return
 		}
 		s.handleMCPPrompts(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/mcp/prompts/get" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleMCPRenderPrompt(w, r)
 		return
 	}
 
@@ -394,6 +469,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	if _, ok := s.host.(MCPPromptCatalogHost); ok {
 		capabilities = append(capabilities, "mcp_prompts")
+	}
+	if _, ok := s.host.(MCPResourceReaderHost); ok {
+		capabilities = append(capabilities, "mcp_resource_read")
+	}
+	if _, ok := s.host.(MCPPromptRendererHost); ok {
+		capabilities = append(capabilities, "mcp_prompt_get")
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		OK:           true,
@@ -487,6 +568,70 @@ func (s *Server) handleMCPPrompts(w http.ResponseWriter, r *http.Request) {
 		prompts = []MCPPromptCatalogEntry{}
 	}
 	writeJSON(w, http.StatusOK, mcpPromptCatalogResponse{Prompts: prompts})
+}
+
+func (s *Server) handleMCPReadResource(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(MCPResourceReaderHost)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "MCP resource reads are not supported by this host", false)
+		return
+	}
+	var req MCPReadResourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body", false)
+		return
+	}
+	req.Server = strings.TrimSpace(req.Server)
+	req.URI = strings.TrimSpace(req.URI)
+	if req.Server == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "server is required", false)
+		return
+	}
+	if req.URI == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "uri is required", false)
+		return
+	}
+	read, err := host.MCPReadResource(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if read.Contents == nil {
+		read.Contents = []MCPResourceContent{}
+	}
+	writeJSON(w, http.StatusOK, read)
+}
+
+func (s *Server) handleMCPRenderPrompt(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(MCPPromptRendererHost)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "MCP prompt rendering is not supported by this host", false)
+		return
+	}
+	var req MCPPromptRenderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body", false)
+		return
+	}
+	req.Server = strings.TrimSpace(req.Server)
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Server == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "server is required", false)
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "name is required", false)
+		return
+	}
+	rendered, err := host.MCPRenderPrompt(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if rendered.Messages == nil {
+		rendered.Messages = []MCPPromptMessage{}
+	}
+	writeJSON(w, http.StatusOK, rendered)
 }
 
 func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, req startRunRequest) {
