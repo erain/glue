@@ -183,6 +183,9 @@ func TestFixtureReplayRetryClassifiers(t *testing.T) {
 	if !isRetryableFixtureReplayError(fmt.Errorf("rc=1 stderr=[failover] openrouter failed: context deadline exceeded")) {
 		t.Fatal("context deadline from live upstream should be retryable")
 	}
+	if !isRetryableFixtureReplayError(fmt.Errorf("rc=1 stderr=openrouter: http 404: Model not found provider_name=OpenInference")) {
+		t.Fatal("OpenRouter free-router model miss should be retryable")
+	}
 	if !isUpstreamRateLimit(fmt.Errorf("openrouter http 429: Rate limit exceeded")) {
 		t.Fatal("429 rate limit should be classified as upstream rate limit")
 	}
@@ -245,7 +248,15 @@ func isRetryableFixtureReplayError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "invalid JSON arguments") ||
 		(strings.Contains(msg, "tool call") && strings.Contains(msg, "invalid JSON")) ||
-		strings.Contains(msg, "context deadline exceeded")
+		strings.Contains(msg, "context deadline exceeded") ||
+		isOpenRouterModelRoutingMiss(msg)
+}
+
+func isOpenRouterModelRoutingMiss(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "openrouter") &&
+		strings.Contains(msg, "model not found") &&
+		strings.Contains(msg, "openinference")
 }
 
 func isRetryableFixtureReplayReview(review string) bool {

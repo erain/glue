@@ -201,12 +201,14 @@ func runMCP(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, `peggy mcp — inspect Peggy's configured MCP surface.
 
 Usage:
+  peggy mcp read [flags]
   peggy mcp resources [flags]
   peggy mcp tools [flags]
 
 Commands:
+  read       Read one resource URI from an enabled MCP server.
   resources  List resources discovered from enabled MCP servers.
-  tools    List tools discovered from enabled MCP servers.
+  tools      List tools discovered from enabled MCP servers.
 `)
 	}
 	if len(args) == 0 {
@@ -217,6 +219,8 @@ Commands:
 	case "-h", "--help", "help":
 		usage()
 		return 0
+	case "read":
+		return runMCPRead(ctx, args[1:], stdout, stderr)
 	case "resources":
 		return runMCPResources(ctx, args[1:], stdout, stderr)
 	case "tools":
@@ -226,6 +230,81 @@ Commands:
 		usage()
 		return 2
 	}
+}
+
+func runMCPRead(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy mcp read", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		serverName = fs.String("server", "", "configured MCP server name")
+		uri        = fs.String("uri", "", "MCP resource URI to read")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy mcp read — read one resource from an enabled MCP server.
+
+Usage:
+  peggy mcp read --server <name> --uri <uri> [flags]
+
+Examples:
+  peggy mcp read --config ~/.config/peggy/settings.json --server filesystem --uri file:///workspace/README.md
+  peggy mcp read --server filesystem --uri file:///workspace/README.md --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy mcp read: positional args not supported")
+		return 2
+	}
+	if strings.TrimSpace(*serverName) == "" {
+		fmt.Fprintln(stderr, "peggy mcp read: --server is required")
+		return 2
+	}
+	if strings.TrimSpace(*uri) == "" {
+		fmt.Fprintln(stderr, "peggy mcp read: --uri is required")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp read: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy mcp read: no settings.json found; using built-in defaults")
+	}
+
+	read, manager, _, err := MCPReadResource(ctx, settings.MCP, *serverName, *uri)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp read: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp read: close: %v\n", err)
+		}
+	}()
+
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(read); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp read: encode resource: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMCPResourceRead(stdout, read)
+	return 0
 }
 
 func runMCPResources(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -446,6 +525,39 @@ func writeMCPResourceCatalog(w io.Writer, catalog []mcpResourceCatalogEntry) {
 			if err == nil {
 				fmt.Fprintf(w, "  annotations: %s\n", compactJSONLine(raw))
 			}
+		}
+	}
+}
+
+func writeMCPResourceRead(w io.Writer, read toolsmcp.ResourceRead) {
+	if len(read.Contents) == 0 {
+		fmt.Fprintln(w, "No MCP resource contents returned.")
+		return
+	}
+	for i, item := range read.Contents {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, item.URI)
+		fmt.Fprintf(w, "  server: %s\n", read.Server)
+		fmt.Fprintf(w, "  requested_uri: %s\n", read.URI)
+		if item.MIMEType != "" {
+			fmt.Fprintf(w, "  mime_type: %s\n", item.MIMEType)
+		}
+		if len(item.Meta) > 0 {
+			raw, err := json.Marshal(item.Meta)
+			if err == nil {
+				fmt.Fprintf(w, "  meta: %s\n", compactJSONLine(raw))
+			}
+		}
+		switch {
+		case item.Text != nil:
+			fmt.Fprintln(w, "  text:")
+			for _, line := range strings.Split(*item.Text, "\n") {
+				fmt.Fprintf(w, "    %s\n", line)
+			}
+		case item.Blob != nil:
+			fmt.Fprintf(w, "  blob: %s\n", *item.Blob)
 		}
 	}
 }

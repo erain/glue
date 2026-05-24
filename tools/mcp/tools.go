@@ -14,6 +14,7 @@ import (
 )
 
 var emptyObjectSchema = json.RawMessage(`{"type":"object","additionalProperties":false}`)
+var readResourceSchema = json.RawMessage(`{"type":"object","properties":{"uri":{"type":"string","description":"MCP resource URI to read from this server."}},"required":["uri"],"additionalProperties":false}`)
 
 // Options configures an MCP manager. It is intentionally empty for the first
 // stdio/tool-mapping slice so future compatibility options have a stable home.
@@ -64,6 +65,9 @@ func NewManager(ctx context.Context, configs []ServerConfig, _ Options) (*Manage
 			}
 			m.tools = append(m.tools, tools...)
 		}
+		if hasCapability(client.InitializeResult(), "resources") {
+			m.tools = append(m.tools, mapResourceReadTool(client, cfg, serverName, serverPart, seen))
+		}
 	}
 	return m, nil
 }
@@ -88,6 +92,22 @@ type Resource struct {
 	Size        *int64         `json:"size,omitempty"`
 }
 
+// ResourceRead contains the contents returned by an MCP resources/read call.
+type ResourceRead struct {
+	Server   string            `json:"server"`
+	URI      string            `json:"uri"`
+	Contents []ResourceContent `json:"contents"`
+}
+
+// ResourceContent is one text or blob content item returned from a resource.
+type ResourceContent struct {
+	URI      string         `json:"uri"`
+	MIMEType string         `json:"mime_type,omitempty"`
+	Text     *string        `json:"text,omitempty"`
+	Blob     *string        `json:"blob,omitempty"`
+	Meta     map[string]any `json:"_meta,omitempty"`
+}
+
 // Resources lists resource metadata from servers that advertise MCP resource
 // support. It does not read resource contents.
 func (m *Manager) Resources(ctx context.Context) ([]Resource, error) {
@@ -106,6 +126,31 @@ func (m *Manager) Resources(ctx context.Context) ([]Resource, error) {
 		out = append(out, resources...)
 	}
 	return out, nil
+}
+
+// ReadResource reads a resource URI from one named configured MCP server.
+func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) (ResourceRead, error) {
+	if m == nil {
+		return ResourceRead{}, errors.New("mcp: manager is nil")
+	}
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		return ResourceRead{}, errors.New("mcp: resource server is required")
+	}
+	uri = strings.TrimSpace(uri)
+	if uri == "" {
+		return ResourceRead{}, errors.New("mcp: resource uri is required")
+	}
+	for _, server := range m.servers {
+		if server.name != serverName {
+			continue
+		}
+		if !hasCapability(server.client.InitializeResult(), "resources") {
+			return ResourceRead{}, fmt.Errorf("mcp: server %q does not support resources", serverName)
+		}
+		return readResource(ctx, server.client, server.cfg, serverName, uri)
+	}
+	return ResourceRead{}, fmt.Errorf("mcp: server %q is not configured", serverName)
 }
 
 // Close releases all MCP client transports owned by the manager.
@@ -131,6 +176,10 @@ type listResourcesResult struct {
 	NextCursor string               `json:"nextCursor,omitempty"`
 }
 
+type readResourceResult struct {
+	Contents []resourceContentDefinition `json:"contents"`
+}
+
 type toolDefinition struct {
 	Name         string          `json:"name"`
 	Title        string          `json:"title,omitempty"`
@@ -150,6 +199,14 @@ type resourceDefinition struct {
 	Size        *int64         `json:"size,omitempty"`
 }
 
+type resourceContentDefinition struct {
+	URI      string         `json:"uri"`
+	MIMEType string         `json:"mimeType,omitempty"`
+	Text     *string        `json:"text,omitempty"`
+	Blob     *string        `json:"blob,omitempty"`
+	Meta     map[string]any `json:"_meta,omitempty"`
+}
+
 type callToolResult struct {
 	Content           []json.RawMessage `json:"content,omitempty"`
 	StructuredContent json.RawMessage   `json:"structuredContent,omitempty"`
@@ -159,6 +216,10 @@ type callToolResult struct {
 type callToolParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type readResourceParams struct {
+	URI string `json:"uri"`
 }
 
 func listGlueTools(ctx context.Context, client *Client, cfg ServerConfig, serverName, serverPart string, seen map[string]struct{}) ([]glue.Tool, error) {
@@ -210,6 +271,50 @@ func listResources(ctx context.Context, client *Client, cfg ServerConfig, server
 	}
 }
 
+func readResource(ctx context.Context, client *Client, cfg ServerConfig, serverName, uri string) (ResourceRead, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeoutFor(cfg))
+	defer cancel()
+
+	var result readResourceResult
+	if err := client.Request(reqCtx, "resources/read", readResourceParams{URI: uri}, &result); err != nil {
+		return ResourceRead{}, err
+	}
+
+	contents := make([]ResourceContent, 0, len(result.Contents))
+	for _, def := range result.Contents {
+		content, err := mapResourceContent(def)
+		if err != nil {
+			return ResourceRead{}, err
+		}
+		contents = append(contents, content)
+	}
+	return ResourceRead{
+		Server:   serverName,
+		URI:      uri,
+		Contents: contents,
+	}, nil
+}
+
+func mapResourceContent(def resourceContentDefinition) (ResourceContent, error) {
+	uri := strings.TrimSpace(def.URI)
+	if uri == "" {
+		return ResourceContent{}, errors.New("mcp: resource content uri is required")
+	}
+	if def.Text == nil && def.Blob == nil {
+		return ResourceContent{}, fmt.Errorf("mcp: resource content %q must include text or blob", uri)
+	}
+	if def.Text != nil && def.Blob != nil {
+		return ResourceContent{}, fmt.Errorf("mcp: resource content %q includes both text and blob", uri)
+	}
+	return ResourceContent{
+		URI:      uri,
+		MIMEType: strings.TrimSpace(def.MIMEType),
+		Text:     cloneString(def.Text),
+		Blob:     cloneString(def.Blob),
+		Meta:     cloneMap(def.Meta),
+	}, nil
+}
+
 func mapResource(serverName string, def resourceDefinition) (Resource, error) {
 	uri := strings.TrimSpace(def.URI)
 	name := strings.TrimSpace(def.Name)
@@ -229,6 +334,34 @@ func mapResource(serverName string, def resourceDefinition) (Resource, error) {
 		Annotations: cloneMap(def.Annotations),
 		Size:        cloneInt64(def.Size),
 	}, nil
+}
+
+func mapResourceReadTool(client *Client, cfg ServerConfig, serverName, serverPart string, seen map[string]struct{}) glue.Tool {
+	glueName := reserveGeneratedToolName("mcp_"+serverPart+"_read_resource", seen)
+	remote := resourceReadTool{
+		client:     client,
+		serverName: serverName,
+		glueName:   glueName,
+		timeout:    timeoutFor(cfg),
+	}
+
+	return glue.Tool{
+		ToolSpec: glue.ToolSpec{
+			Name:               glueName,
+			Description:        fmt.Sprintf("Read MCP resource contents from server %s by URI.", serverName),
+			Parameters:         append(json.RawMessage(nil), readResourceSchema...),
+			RequiresPermission: true,
+			PermissionAction:   "mcp_read_resource",
+			PermissionTarget: func(call glue.ToolCall) string {
+				uri := resourceURIFromArgs(call.Arguments)
+				if uri == "" {
+					return serverName
+				}
+				return serverName + ":" + uri
+			},
+		},
+		Execute: remote.execute,
+	}
 }
 
 func mapTool(client *Client, cfg ServerConfig, serverName, serverPart string, def toolDefinition, seen map[string]struct{}) (glue.Tool, error) {
@@ -279,6 +412,56 @@ func mapTool(client *Client, cfg ServerConfig, serverName, serverPart string, de
 		},
 		Execute: remote.execute,
 	}, nil
+}
+
+type resourceReadTool struct {
+	client     *Client
+	serverName string
+	glueName   string
+	timeout    time.Duration
+}
+
+func (t resourceReadTool) execute(ctx context.Context, call glue.ToolCall) (glue.ToolResult, error) {
+	uri := resourceURIFromArgs(call.Arguments)
+	if uri == "" {
+		return glue.ErrorResult(errors.New("mcp: resource uri is required")), nil
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+
+	read, err := readResource(reqCtx, t.client, ServerConfig{Timeout: t.timeout}, t.serverName, uri)
+	if err != nil {
+		var rpcErr *RPCError
+		if errors.As(err, &rpcErr) {
+			return glue.ErrorResult(err), nil
+		}
+		return glue.ToolResult{}, err
+	}
+	return t.mapResult(read), nil
+}
+
+func (t resourceReadTool) mapResult(read ResourceRead) glue.ToolResult {
+	metadata := map[string]any{
+		"mcp_server":        t.serverName,
+		"mcp_resource_uri":  read.URI,
+		"mcp_glue_tool":     t.glueName,
+		"mcp_resource_read": resourceContentsMetadata(read.Contents),
+	}
+
+	content := make([]glue.ContentPart, 0, len(read.Contents))
+	for _, item := range read.Contents {
+		switch {
+		case item.Text != nil:
+			content = append(content, glue.ContentPart{Type: glue.ContentTypeText, Text: *item.Text})
+		case item.Blob != nil:
+			content = append(content, glue.ContentPart{Type: glue.ContentTypeText, Text: resourceBlobContentLine(item)})
+		}
+	}
+	return glue.ToolResult{
+		Content:  content,
+		Metadata: metadata,
+	}
 }
 
 type remoteTool struct {
@@ -381,6 +564,30 @@ func hasCapability(init InitializeResult, name string) bool {
 	return ok
 }
 
+func reserveGeneratedToolName(base string, seen map[string]struct{}) string {
+	if _, ok := seen[base]; !ok {
+		seen[base] = struct{}{}
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s_%d", base, i)
+		if _, ok := seen[candidate]; !ok {
+			seen[candidate] = struct{}{}
+			return candidate
+		}
+	}
+}
+
+func resourceURIFromArgs(raw json.RawMessage) string {
+	var args struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(args.URI)
+}
+
 func timeoutFor(cfg ServerConfig) time.Duration {
 	if cfg.Timeout > 0 {
 		return cfg.Timeout
@@ -481,6 +688,47 @@ func decodeRaw(raw json.RawMessage) any {
 	return v
 }
 
+func resourceContentsMetadata(contents []ResourceContent) []map[string]any {
+	out := make([]map[string]any, 0, len(contents))
+	for _, item := range contents {
+		entry := map[string]any{"uri": item.URI}
+		if item.MIMEType != "" {
+			entry["mime_type"] = item.MIMEType
+		}
+		if item.Text != nil {
+			entry["kind"] = "text"
+			entry["bytes"] = len(*item.Text)
+		}
+		if item.Blob != nil {
+			entry["kind"] = "blob"
+			entry["base64_bytes"] = len(*item.Blob)
+		}
+		if len(item.Meta) > 0 {
+			entry["_meta"] = cloneMap(item.Meta)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func resourceBlobContentLine(item ResourceContent) string {
+	entry := map[string]any{
+		"uri":  item.URI,
+		"blob": "",
+	}
+	if item.Blob != nil {
+		entry["blob"] = *item.Blob
+	}
+	if item.MIMEType != "" {
+		entry["mime_type"] = item.MIMEType
+	}
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 func cloneMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
@@ -490,6 +738,14 @@ func cloneMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneString(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func cloneInt64(in *int64) *int64 {

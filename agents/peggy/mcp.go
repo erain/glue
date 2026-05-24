@@ -63,6 +63,25 @@ func MCPResources(ctx context.Context, settings MCPSettings) ([]toolsmcp.Resourc
 	return resources, manager, normalized, nil
 }
 
+// MCPReadResource initializes Peggy's configured MCP servers and reads one
+// resource URI from the named server.
+func MCPReadResource(ctx context.Context, settings MCPSettings, serverName, uri string) (toolsmcp.ResourceRead, *toolsmcp.Manager, MCPSettings, error) {
+	configs, normalized, err := MCPServerConfigs(settings)
+	if err != nil {
+		return toolsmcp.ResourceRead{}, nil, normalized, err
+	}
+	manager, err := toolsmcp.NewManager(ctx, configs, toolsmcp.Options{})
+	if err != nil {
+		return toolsmcp.ResourceRead{}, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	read, err := manager.ReadResource(ctx, serverName, uri)
+	if err != nil {
+		_ = manager.Close()
+		return toolsmcp.ResourceRead{}, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	return read, manager, normalized, nil
+}
+
 // MCPServerConfigs converts Peggy settings into tools/mcp server configs.
 func MCPServerConfigs(settings MCPSettings) ([]toolsmcp.ServerConfig, MCPSettings, error) {
 	normalized, err := expandMCPSettings(settings)

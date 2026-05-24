@@ -206,8 +206,15 @@ func runMCPToolScenario(dec *json.Decoder, enc *json.Encoder, scenario string) e
 			if err := writeHelperResult(enc, req.ID, helperResourcesList()); err != nil {
 				return err
 			}
+		case "resources/read":
+			if scenario != "resources" && scenario != "resources_only" {
+				return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			}
+			if err := handleHelperResourceRead(enc, req); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("method = %q, want tools/list, tools/call, or resources/list", req.Method)
+			return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, or resources/read", req.Method)
 		}
 	}
 }
@@ -261,6 +268,33 @@ func helperResourcesList() map[string]any {
 			"size":        1234,
 		}},
 	}
+}
+
+func handleHelperResourceRead(enc *json.Encoder, req helperRequest) error {
+	var params struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return err
+	}
+	if params.URI != "file:///workspace/README.md" {
+		return fmt.Errorf("resource uri = %q, want file:///workspace/README.md", params.URI)
+	}
+	return writeHelperResult(enc, req.ID, map[string]any{
+		"contents": []map[string]any{
+			{
+				"uri":      params.URI,
+				"mimeType": "text/markdown",
+				"text":     "# Project README\n\nHello from MCP resource.",
+				"_meta":    map[string]any{"etag": "abc123"},
+			},
+			{
+				"uri":      "file:///workspace/logo.png",
+				"mimeType": "image/png",
+				"blob":     "aW1hZ2U=",
+			},
+		},
+	})
 }
 
 func handleHelperToolCall(enc *json.Encoder, req helperRequest) error {
