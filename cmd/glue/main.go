@@ -108,6 +108,14 @@ type daemonToolCatalogEntry struct {
 	PermissionTargetPreview string          `json:"permission_target_preview,omitempty"`
 }
 
+type daemonStatus struct {
+	OK           bool     `json:"ok"`
+	Version      int      `json:"version"`
+	ActiveRuns   int      `json:"active_runs"`
+	ToolsCount   int      `json:"tools_count"`
+	Capabilities []string `json:"capabilities"`
+}
+
 type connectPermissionPayload struct {
 	PermissionID string                 `json:"permission_id"`
 	Request      glue.PermissionRequest `json:"request"`
@@ -309,6 +317,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	maxTurns := flags.Int("max-turns", 0, "per-run loop turn budget")
 	showTools := flags.Bool("tools", false, "list daemon tools and exit without starting a run")
 	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
+	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
+	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
 
@@ -318,7 +328,13 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *toolsJSON {
 		*showTools = true
 	}
-	if !*showTools && strings.TrimSpace(*prompt) == "" {
+	if *statusJSON {
+		*showStatus = true
+	}
+	if *showTools && *showStatus {
+		return errors.New("choose only one of --tools or --status")
+	}
+	if !*showTools && !*showStatus && strings.TrimSpace(*prompt) == "" {
 		return errors.New("missing required --prompt")
 	}
 	if err := loadEnvFiles(envs); err != nil {
@@ -340,6 +356,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if *showTools {
 		return runConnectTools(ctx, cfg, *toolsJSON, stdout, client)
+	}
+	if *showStatus {
+		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
 	}
 	return runConnect(ctx, cfg, stdin, stdout, stderr, client)
 }
@@ -418,6 +437,55 @@ func runConnectTools(ctx context.Context, cfg connectConfig, jsonOutput bool, st
 	}
 	writeDaemonToolCatalog(stdout, catalog.Tools)
 	return nil
+}
+
+func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	status, err := fetchDaemonStatus(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(status)
+	}
+	writeDaemonStatus(stdout, status)
+	return nil
+}
+
+func fetchDaemonStatus(ctx context.Context, cfg connectConfig, client httpDoer) (daemonStatus, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/status", nil)
+	if err != nil {
+		return daemonStatus{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemonStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonStatus{}, fmt.Errorf("daemon status: %s", httpStatusError(resp))
+	}
+	var status daemonStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return daemonStatus{}, err
+	}
+	return status, nil
+}
+
+func writeDaemonStatus(w io.Writer, status daemonStatus) {
+	state := "error"
+	if status.OK {
+		state = "ok"
+	}
+	fmt.Fprintf(w, "status: %s\n", state)
+	fmt.Fprintf(w, "version: %d\n", status.Version)
+	fmt.Fprintf(w, "active_runs: %d\n", status.ActiveRuns)
+	fmt.Fprintf(w, "tools_count: %d\n", status.ToolsCount)
+	if len(status.Capabilities) > 0 {
+		fmt.Fprintf(w, "capabilities: %s\n", strings.Join(status.Capabilities, ", "))
+	}
 }
 
 func fetchDaemonTools(ctx context.Context, cfg connectConfig, client httpDoer) (daemonToolCatalog, error) {
@@ -761,16 +829,17 @@ func printUsage(w io.Writer) {
   glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--env <path>]
   glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --status [--status-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
   serve    Start a local HTTP+SSE daemon for Glue sessions.
-  connect  Start a daemon run, or inspect daemon tools with --tools.
+  connect  Start a daemon run, or inspect daemon status/tools.
 
 Flags:
   --id       Session id. Defaults to "default".
-  --prompt   Prompt text. Required unless connect --tools is set.
+  --prompt   Prompt text. Required unless connect --status/--tools is set.
   --model    Gemini model id or gemini/<model>. Defaults to gemini-2.5-flash.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Working directory for serve mode. Defaults to ".".
@@ -780,6 +849,9 @@ Flags:
   --base-url Connect daemon base URL override.
   --role     Connect role override.
   --max-turns Connect loop turn budget override.
+  --status   Connect mode: show daemon status and exit without starting a run.
+  --status-json
+             Connect --status mode: print JSON.
   --tools    Connect mode: list daemon tools and exit without starting a run.
   --tools-json
              Connect --tools mode: print JSON.

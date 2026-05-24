@@ -646,7 +646,97 @@ func TestRunCLIConnectListsToolsJSON(t *testing.T) {
 	}
 }
 
-func TestRunCLIConnectRequiresPromptUnlessTools(t *testing.T) {
+func TestRunCLIConnectShowsStatus(t *testing.T) {
+	var sawStatus bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			sawStatus = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("status method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("status auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
+				OK:           true,
+				Version:      1,
+				ActiveRuns:   2,
+				ToolsCount:   5,
+				Capabilities: []string{"runs", "tools", "status"},
+			})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--status",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawStatus || sawRun {
+		t.Fatalf("sawStatus=%v sawRun=%v", sawStatus, sawRun)
+	}
+	for _, want := range []string{
+		"status: ok",
+		"version: 1",
+		"active_runs: 2",
+		"tools_count: 5",
+		"capabilities: runs, tools, status",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectShowsStatusJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/status" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemonStatus{
+			OK:           true,
+			Version:      1,
+			Capabilities: []string{"status"},
+		})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--status-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var status daemonStatus
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if !status.OK || status.Version != 1 || len(status.Capabilities) != 1 || status.Capabilities[0] != "status" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestRunCLIConnectRequiresPromptUnlessInspectMode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithDeps(context.Background(), []string{
 		"connect",
@@ -659,6 +749,24 @@ func TestRunCLIConnectRequiresPromptUnlessTools(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "missing required --prompt") {
 		t.Fatalf("stderr = %q, want missing prompt error", stderr.String())
+	}
+}
+
+func TestRunCLIConnectRejectsMultipleInspectModes(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--status",
+		"--tools",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want inspect mode validation failure")
+	}
+	if !strings.Contains(stderr.String(), "choose only one") {
+		t.Fatalf("stderr = %q, want mode conflict error", stderr.String())
 	}
 }
 
