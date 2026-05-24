@@ -95,6 +95,19 @@ type startRunResult struct {
 	EventsURL string `json:"events_url"`
 }
 
+type daemonToolCatalog struct {
+	Tools []daemonToolCatalogEntry `json:"tools"`
+}
+
+type daemonToolCatalogEntry struct {
+	Name                    string          `json:"name"`
+	Description             string          `json:"description,omitempty"`
+	Parameters              json.RawMessage `json:"parameters,omitempty"`
+	RequiresPermission      bool            `json:"requires_permission"`
+	PermissionAction        string          `json:"permission_action,omitempty"`
+	PermissionTargetPreview string          `json:"permission_target_preview,omitempty"`
+}
+
 type connectPermissionPayload struct {
 	PermissionID string                 `json:"permission_id"`
 	Request      glue.PermissionRequest `json:"request"`
@@ -294,13 +307,18 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	model := flags.String("model", "", "per-run model override")
 	role := flags.String("role", "", "per-run role override")
 	maxTurns := flags.Int("max-turns", 0, "per-run loop turn budget")
+	showTools := flags.Bool("tools", false, "list daemon tools and exit without starting a run")
+	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*prompt) == "" {
+	if *toolsJSON {
+		*showTools = true
+	}
+	if !*showTools && strings.TrimSpace(*prompt) == "" {
 		return errors.New("missing required --prompt")
 	}
 	if err := loadEnvFiles(envs); err != nil {
@@ -319,6 +337,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	})
 	if err != nil {
 		return err
+	}
+	if *showTools {
+		return runConnectTools(ctx, cfg, *toolsJSON, stdout, client)
 	}
 	return runConnect(ctx, cfg, stdin, stdout, stderr, client)
 }
@@ -383,6 +404,78 @@ func runConnect(ctx context.Context, cfg connectConfig, stdin io.Reader, stdout 
 		}
 	}()
 	return streamDaemonRun(ctx, cfg, start, bufio.NewReader(stdin), stdout, stderr, client)
+}
+
+func runConnectTools(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	catalog, err := fetchDaemonTools(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(catalog)
+	}
+	writeDaemonToolCatalog(stdout, catalog.Tools)
+	return nil
+}
+
+func fetchDaemonTools(ctx context.Context, cfg connectConfig, client httpDoer) (daemonToolCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/tools", nil)
+	if err != nil {
+		return daemonToolCatalog{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemonToolCatalog{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonToolCatalog{}, fmt.Errorf("daemon tools: %s", httpStatusError(resp))
+	}
+	var catalog daemonToolCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return daemonToolCatalog{}, err
+	}
+	if catalog.Tools == nil {
+		catalog.Tools = []daemonToolCatalogEntry{}
+	}
+	return catalog, nil
+}
+
+func writeDaemonToolCatalog(w io.Writer, tools []daemonToolCatalogEntry) {
+	if len(tools) == 0 {
+		fmt.Fprintln(w, "No daemon tools reported.")
+		return
+	}
+	for i, tool := range tools {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, tool.Name)
+		if tool.Description != "" {
+			fmt.Fprintf(w, "  description: %s\n", oneLine(tool.Description))
+		}
+		if tool.RequiresPermission || tool.PermissionAction != "" || tool.PermissionTargetPreview != "" {
+			fmt.Fprintf(w, "  permission: %s %s\n", tool.PermissionAction, tool.PermissionTargetPreview)
+		}
+		if len(tool.Parameters) > 0 {
+			fmt.Fprintf(w, "  parameters: %s\n", compactJSON(tool.Parameters))
+		}
+	}
+}
+
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func compactJSON(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return oneLine(string(raw))
+	}
+	return buf.String()
 }
 
 func startDaemonRun(ctx context.Context, cfg connectConfig, client httpDoer) (startRunResult, error) {
@@ -668,15 +761,16 @@ func printUsage(w io.Writer) {
   glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--env <path>]
   glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
   serve    Start a local HTTP+SSE daemon for Glue sessions.
-  connect  Start a daemon run and stream it in the terminal.
+  connect  Start a daemon run, or inspect daemon tools with --tools.
 
 Flags:
   --id       Session id. Defaults to "default".
-  --prompt   Prompt text. Required.
+  --prompt   Prompt text. Required unless connect --tools is set.
   --model    Gemini model id or gemini/<model>. Defaults to gemini-2.5-flash.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Working directory for serve mode. Defaults to ".".
@@ -686,6 +780,9 @@ Flags:
   --base-url Connect daemon base URL override.
   --role     Connect role override.
   --max-turns Connect loop turn budget override.
+  --tools    Connect mode: list daemon tools and exit without starting a run.
+  --tools-json
+             Connect --tools mode: print JSON.
   --env      Load env vars from a .env file. Repeatable; shell env wins.
 `)
 }

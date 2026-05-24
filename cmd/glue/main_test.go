@@ -556,6 +556,112 @@ func TestRunCLIConnectStartsRunAndStreamsText(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectListsTools(t *testing.T) {
+	var sawTools bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tools":
+			sawTools = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("tools method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("tools auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{Tools: []daemonToolCatalogEntry{{
+				Name:                    "mcp_fake_echo",
+				Description:             "MCP fake: echoes text",
+				Parameters:              json.RawMessage(`{"type":"object","properties":{"text":{"type":"string"}}}`),
+				RequiresPermission:      true,
+				PermissionAction:        "mcp_call",
+				PermissionTargetPreview: "fake.echo",
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--tools",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawTools || sawRun {
+		t.Fatalf("sawTools=%v sawRun=%v", sawTools, sawRun)
+	}
+	for _, want := range []string{
+		"mcp_fake_echo",
+		"description: MCP fake: echoes text",
+		"permission: mcp_call fake.echo",
+		`parameters: {"type":"object","properties":{"text":{"type":"string"}}}`,
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectListsToolsJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tools" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{Tools: []daemonToolCatalogEntry{{
+			Name:               "shell_exec",
+			RequiresPermission: true,
+			PermissionAction:   "exec",
+		}}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--tools-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var catalog daemonToolCatalog
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if len(catalog.Tools) != 1 || catalog.Tools[0].Name != "shell_exec" || catalog.Tools[0].PermissionAction != "exec" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
+func TestRunCLIConnectRequiresPromptUnlessTools(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want prompt validation failure")
+	}
+	if !strings.Contains(stderr.String(), "missing required --prompt") {
+		t.Fatalf("stderr = %q, want missing prompt error", stderr.String())
+	}
+}
+
 func TestRunCLIConnectPostsPermissionDecision(t *testing.T) {
 	decisionCh := make(chan connectPermissionDecision, 1)
 	observedDecisionCh := make(chan connectPermissionDecision, 1)
