@@ -150,6 +150,45 @@ func TestSessionPromptPassesPermissionHooksAndSessionID(t *testing.T) {
 	}
 }
 
+func TestSessionPromptPermissionOverride(t *testing.T) {
+	t.Parallel()
+
+	provider := &recordingProvider{turns: [][]ProviderEvent{
+		{
+			{Type: ProviderEventStart},
+			{Type: ProviderEventToolCall, ToolCall: &ToolCall{ID: "c1", Name: "side", Arguments: []byte(`{}`)}},
+			{Type: ProviderEventDone},
+		},
+		textTurn("done"),
+	}}
+	defaultPerm := &recordingGluePermission{decision: PermissionDecision{Allow: false, Reason: "default deny"}}
+	overridePerm := &recordingGluePermission{decision: PermissionDecision{Allow: true}}
+	agent := NewAgent(AgentOptions{
+		Provider: provider,
+		Tools: []Tool{{
+			ToolSpec: ToolSpec{Name: "side", RequiresPermission: true},
+			Execute: func(context.Context, ToolCall) (ToolResult, error) {
+				return TextResult("ok"), nil
+			},
+		}},
+		Permission: defaultPerm,
+	})
+	session, err := agent.Session(context.Background(), "s")
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+
+	if _, err := session.Prompt(context.Background(), "go", WithPermission(overridePerm)); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if len(defaultPerm.requests) != 0 {
+		t.Fatalf("default permission requests = %d, want 0", len(defaultPerm.requests))
+	}
+	if len(overridePerm.requests) != 1 {
+		t.Fatalf("override permission requests = %d, want 1", len(overridePerm.requests))
+	}
+}
+
 func TestSessionPromptContinuation(t *testing.T) {
 	t.Parallel()
 

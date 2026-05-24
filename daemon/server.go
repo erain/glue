@@ -21,6 +21,8 @@ import (
 
 const protocolVersion = 1
 
+const defaultPermissionTimeout = 10 * time.Minute
+
 // Host supplies sessions to a daemon Server.
 type Host interface {
 	Session(ctx context.Context, id string, options ...glue.SessionOption) (*glue.Session, error)
@@ -39,17 +41,27 @@ type Options struct {
 
 	// NewID returns ids for runs and events. Nil uses crypto/rand.
 	NewID func(prefix string) string
+
+	// PermissionTimeout caps how long a side-effecting tool waits for an
+	// HTTP decision. Zero uses a conservative default.
+	PermissionTimeout time.Duration
 }
 
 // Server is an http.Handler for the local daemon protocol.
 type Server struct {
-	host  Host
-	token string
-	now   func() time.Time
-	newID func(prefix string) string
+	host              Host
+	token             string
+	now               func() time.Time
+	newID             func(prefix string) string
+	permissionTimeout time.Duration
 
 	mu   sync.Mutex
 	runs map[string]*run
+
+	permMu        sync.Mutex
+	sessionAllows map[string]struct{}
+	targetAllows  map[string]struct{}
+	foreverAllows map[string]struct{}
 }
 
 // EventEnvelope is the JSON payload sent in each SSE data frame.
@@ -89,6 +101,23 @@ type startRunResponse struct {
 	EventsURL string `json:"events_url"`
 }
 
+type permissionRequestPayload struct {
+	PermissionID string                 `json:"permission_id"`
+	Request      glue.PermissionRequest `json:"request"`
+	ExpiresAt    time.Time              `json:"expires_at"`
+}
+
+type permissionDecisionRequest struct {
+	Allow       bool   `json:"allow"`
+	Reason      string `json:"reason,omitempty"`
+	RememberFor string `json:"remember_for,omitempty"`
+}
+
+type permissionDecisionResponse struct {
+	PermissionID string `json:"permission_id"`
+	Accepted     bool   `json:"accepted"`
+}
+
 // New constructs a daemon Server.
 func New(opts Options) (*Server, error) {
 	if opts.Host == nil {
@@ -106,12 +135,20 @@ func New(opts Options) (*Server, error) {
 	if newID == nil {
 		newID = randomID
 	}
+	permissionTimeout := opts.PermissionTimeout
+	if permissionTimeout <= 0 {
+		permissionTimeout = defaultPermissionTimeout
+	}
 	return &Server{
-		host:  opts.Host,
-		token: token,
-		now:   now,
-		newID: newID,
-		runs:  map[string]*run{},
+		host:              opts.Host,
+		token:             token,
+		now:               now,
+		newID:             newID,
+		permissionTimeout: permissionTimeout,
+		runs:              map[string]*run{},
+		sessionAllows:     map[string]struct{}{},
+		targetAllows:      map[string]struct{}{},
+		foreverAllows:     map[string]struct{}{},
 	}, nil
 }
 
@@ -145,6 +182,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleRunEvents(w, r, runID)
+		return
+	}
+
+	if runID, permissionID, ok := parsePermissionDecisionPath(r.URL.Path); ok {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handlePermissionDecision(w, r, runID, permissionID)
 		return
 	}
 
@@ -196,6 +242,7 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionI
 func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, req startRunRequest) {
 	r.emit("run_start", map[string]any{"client_id": req.ClientID})
 	options := []glue.PromptOption{
+		glue.WithPermission(runPermission{server: s, run: r}),
 		glue.WithEvents(func(event glue.Event) {
 			r.emit(string(event.Type), event)
 		}),
@@ -276,6 +323,41 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, _ *http.Request, runID s
 	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": runID, "canceled": true})
 }
 
+func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request, runID, permissionID string) {
+	run := s.getRun(runID)
+	if run == nil {
+		writeError(w, http.StatusNotFound, "not_found", "run not found", false)
+		return
+	}
+	if clientID := r.Header.Get("X-Glue-Client-ID"); clientID != "" && run.clientID != "" && clientID != run.clientID {
+		writeError(w, http.StatusForbidden, "forbidden", "permission decision belongs to another client", false)
+		return
+	}
+	var req permissionDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body", false)
+		return
+	}
+	scope, ok := parseRememberScope(req.RememberFor)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid remember_for", false)
+		return
+	}
+	decision := glue.PermissionDecision{
+		Allow:       req.Allow,
+		Reason:      req.Reason,
+		RememberFor: scope,
+	}
+	if !decision.Allow && strings.TrimSpace(decision.Reason) == "" {
+		decision.Reason = "permission denied by daemon client"
+	}
+	if !run.resolvePermission(permissionID, decision) {
+		writeError(w, http.StatusNotFound, "not_found", "permission request not found", false)
+		return
+	}
+	writeJSON(w, http.StatusOK, permissionDecisionResponse{PermissionID: permissionID, Accepted: true})
+}
+
 func (s *Server) newRun(sessionID, clientID string, cancel context.CancelFunc) *run {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,6 +374,7 @@ func (s *Server) newRun(sessionID, clientID string, cancel context.CancelFunc) *
 			now:       s.now,
 			newID:     s.newID,
 			notify:    make(chan struct{}),
+			pending:   map[string]*pendingPermission{},
 		}
 		s.runs[id] = r
 		return r
@@ -330,6 +413,29 @@ func parseRunEventsPath(path string) (string, bool) {
 	}
 	id, err := url.PathUnescape(raw)
 	return id, err == nil && id != ""
+}
+
+func parsePermissionDecisionPath(path string) (runID, permissionID string, ok bool) {
+	const prefix = "/v1/runs/"
+	const middle = "/permissions/"
+	const suffix = "/decision"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", "", false
+	}
+	rest := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	rawRunID, rawPermissionID, found := strings.Cut(rest, middle)
+	if !found || rawRunID == "" || rawPermissionID == "" || strings.Contains(rawRunID, "/") || strings.Contains(rawPermissionID, "/") {
+		return "", "", false
+	}
+	runID, err := url.PathUnescape(rawRunID)
+	if err != nil || runID == "" {
+		return "", "", false
+	}
+	permissionID, err = url.PathUnescape(rawPermissionID)
+	if err != nil || permissionID == "" {
+		return "", "", false
+	}
+	return runID, permissionID, true
 }
 
 func parseRunPath(path string) (string, bool) {
@@ -378,6 +484,124 @@ func errorFor(err error) protocolError {
 		code = "canceled"
 	}
 	return protocolError{Code: code, Message: err.Error(), Retryable: false}
+}
+
+type runPermission struct {
+	server *Server
+	run    *run
+}
+
+func (p runPermission) Decide(ctx context.Context, req glue.PermissionRequest) (glue.PermissionDecision, error) {
+	return p.server.decidePermission(ctx, p.run, req)
+}
+
+func (s *Server) decidePermission(ctx context.Context, run *run, req glue.PermissionRequest) (glue.PermissionDecision, error) {
+	if decision, ok := s.cachedPermission(req); ok {
+		return decision, nil
+	}
+
+	var permissionID string
+	var pending *pendingPermission
+	for {
+		permissionID = s.newID("perm")
+		pending = &pendingPermission{
+			id:   permissionID,
+			done: make(chan glue.PermissionDecision, 1),
+		}
+		if run.addPermission(pending) {
+			break
+		}
+	}
+
+	expiresAt := s.now().UTC().Add(s.permissionTimeout)
+	run.emit("permission_request", permissionRequestPayload{
+		PermissionID: permissionID,
+		Request:      req,
+		ExpiresAt:    expiresAt,
+	})
+
+	timer := time.NewTimer(s.permissionTimeout)
+	defer timer.Stop()
+	select {
+	case decision := <-pending.done:
+		s.rememberPermission(req, decision)
+		return decision, nil
+	case <-timer.C:
+		if !run.expirePermission(permissionID, pending) {
+			decision := <-pending.done
+			s.rememberPermission(req, decision)
+			return decision, nil
+		}
+		return glue.PermissionDecision{Allow: false, Reason: "permission denied: daemon permission request timed out"}, nil
+	case <-ctx.Done():
+		if !run.expirePermission(permissionID, pending) {
+			decision := <-pending.done
+			s.rememberPermission(req, decision)
+			return decision, nil
+		}
+		return glue.PermissionDecision{}, ctx.Err()
+	}
+}
+
+func (s *Server) cachedPermission(req glue.PermissionRequest) (glue.PermissionDecision, bool) {
+	sessionKey := permissionSessionKey(req)
+	targetKey := permissionTargetKey(req)
+	foreverKey := permissionForeverKey(req)
+	s.permMu.Lock()
+	defer s.permMu.Unlock()
+	if _, ok := s.foreverAllows[foreverKey]; ok {
+		return glue.PermissionDecision{Allow: true, RememberFor: glue.RememberForever}, true
+	}
+	if _, ok := s.sessionAllows[sessionKey]; ok {
+		return glue.PermissionDecision{Allow: true, RememberFor: glue.RememberSession}, true
+	}
+	if _, ok := s.targetAllows[targetKey]; ok {
+		return glue.PermissionDecision{Allow: true, RememberFor: glue.RememberSessionTarget}, true
+	}
+	return glue.PermissionDecision{}, false
+}
+
+func (s *Server) rememberPermission(req glue.PermissionRequest, decision glue.PermissionDecision) {
+	if !decision.Allow {
+		return
+	}
+	s.permMu.Lock()
+	defer s.permMu.Unlock()
+	switch decision.RememberFor {
+	case glue.RememberSession:
+		s.sessionAllows[permissionSessionKey(req)] = struct{}{}
+	case glue.RememberSessionTarget:
+		s.targetAllows[permissionTargetKey(req)] = struct{}{}
+	case glue.RememberForever:
+		s.foreverAllows[permissionForeverKey(req)] = struct{}{}
+	}
+}
+
+func permissionSessionKey(req glue.PermissionRequest) string {
+	return req.SessionID + "\x00" + req.Tool + "\x00" + req.Action
+}
+
+func permissionTargetKey(req glue.PermissionRequest) string {
+	return permissionSessionKey(req) + "\x00" + req.Target
+}
+
+func permissionForeverKey(req glue.PermissionRequest) string {
+	return req.Tool + "\x00" + req.Action + "\x00" + req.Target
+}
+
+func parseRememberScope(raw string) (glue.RememberScope, bool) {
+	switch strings.TrimSpace(raw) {
+	case "", "never":
+		return glue.RememberNever, true
+	case "session":
+		return glue.RememberSession, true
+	case "session_target":
+		return glue.RememberSessionTarget, true
+	case "forever":
+		return glue.RememberForever, true
+	default:
+		return glue.RememberNever, false
+	}
 }
 
 func randomID(prefix string) string {

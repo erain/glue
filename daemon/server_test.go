@@ -5,11 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +26,27 @@ type scriptedProvider struct {
 func (p scriptedProvider) Stream(context.Context, glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
 	ch := make(chan glue.ProviderEvent, len(p.events))
 	for _, event := range p.events {
+		ch <- event
+	}
+	close(ch)
+	return ch, nil
+}
+
+type turnProvider struct {
+	mu    sync.Mutex
+	turns [][]glue.ProviderEvent
+}
+
+func (p *turnProvider) Stream(context.Context, glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.turns) == 0 {
+		return nil, errors.New("turnProvider: unexpected stream")
+	}
+	events := p.turns[0]
+	p.turns = p.turns[1:]
+	ch := make(chan glue.ProviderEvent, len(events))
+	for _, event := range events {
 		ch <- event
 	}
 	close(ch)
@@ -165,14 +189,249 @@ func TestServerCancelRun(t *testing.T) {
 	}
 }
 
+func TestServerPermissionAllowOnce(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{toolCallTurn(), textTurn("done")}},
+		Tools:    []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRun(t, ts.URL, "default")
+	events, err := collectSSE(t, ts.URL+start.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, start.RunID, permissionID(t, event), "token", `{"allow":true}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() != 1 {
+		t.Fatalf("tool executions = %d, want 1", executed.Load())
+	}
+	types := eventTypes(events)
+	if !contains(types, "permission_request") || types[len(types)-1] != "run_done" {
+		t.Fatalf("events = %v, want permission_request and terminal run_done", types)
+	}
+}
+
+func TestServerPermissionDenyIsModelVisibleToolError(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{toolCallTurn(), textTurn("done")}},
+		Tools:    []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRun(t, ts.URL, "default")
+	events, err := collectSSE(t, ts.URL+start.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, start.RunID, permissionID(t, event), "token", `{"allow":false,"reason":"not now"}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() != 0 {
+		t.Fatalf("tool executions = %d, want 0", executed.Load())
+	}
+	if text := toolEndText(t, events); !strings.Contains(text, "not now") {
+		t.Fatalf("tool_end text = %q, want denial reason", text)
+	}
+}
+
+func TestServerPermissionDecisionRejectsInvalidRequests(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{toolCallTurn(), textTurn("done")}},
+		Tools:    []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRun(t, ts.URL, "default")
+	events, err := collectSSE(t, ts.URL+start.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type != "permission_request" {
+			return
+		}
+		id := permissionID(t, event)
+		postDecisionStatus(t, ts.URL, start.RunID, id, "token", "cli:other", `{"allow":true}`, http.StatusForbidden)
+		postDecisionStatus(t, ts.URL, start.RunID, id, "token", "", `{"allow":true,"remember_for":"workspace"}`, http.StatusBadRequest)
+		postDecisionStatus(t, ts.URL, start.RunID, "perm_missing", "token", "", `{"allow":true}`, http.StatusNotFound)
+		postDecisionStatus(t, ts.URL, start.RunID, id, "token", "cli:test", `{"allow":true}`, http.StatusOK)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() != 1 {
+		t.Fatalf("tool executions = %d, want 1", executed.Load())
+	}
+	if types := eventTypes(events); types[len(types)-1] != "run_done" {
+		t.Fatalf("events = %v, want terminal run_done", types)
+	}
+}
+
+func TestServerPermissionTimeoutDenies(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{toolCallTurn(), textTurn("done")}},
+		Tools:    []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithTimeout(t, agent, 10*time.Millisecond)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRun(t, ts.URL, "default")
+	events := getSSE(t, ts.URL+start.EventsURL, "token")
+	if executed.Load() != 0 {
+		t.Fatalf("tool executions = %d, want 0", executed.Load())
+	}
+	types := eventTypes(events)
+	if !contains(types, "permission_request") || types[len(types)-1] != "run_done" {
+		t.Fatalf("events = %v, want timed-out permission and run_done", types)
+	}
+	if text := toolEndText(t, events); !strings.Contains(text, "timed out") {
+		t.Fatalf("tool_end text = %q, want timeout reason", text)
+	}
+	var timedOutPermissionID string
+	for _, event := range events {
+		if event.Type == "permission_request" {
+			timedOutPermissionID = permissionID(t, event)
+			break
+		}
+	}
+	if timedOutPermissionID == "" {
+		t.Fatal("timed-out run did not emit permission_request")
+	}
+	postDecisionStatus(t, ts.URL, start.RunID, timedOutPermissionID, "token", "", `{"allow":true}`, http.StatusNotFound)
+}
+
+func TestServerPermissionRememberSession(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurnValue("first-target"), textTurn("first done"),
+			toolCallTurnValue("second-target"), textTurn("second done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithTimeout(t, agent, 50*time.Millisecond)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	first := startRun(t, ts.URL, "default")
+	firstEvents, err := collectSSE(t, ts.URL+first.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, first.RunID, permissionID(t, event), "token", `{"allow":true,"remember_for":"session"}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(eventTypes(firstEvents), "permission_request") {
+		t.Fatal("first run did not ask permission")
+	}
+
+	second := startRun(t, ts.URL, "default")
+	secondEvents := getSSE(t, ts.URL+second.EventsURL, "token")
+	if executed.Load() != 2 {
+		t.Fatalf("tool executions = %d, want 2", executed.Load())
+	}
+	if contains(eventTypes(secondEvents), "permission_request") {
+		t.Fatalf("second run events = %v, want cached session allow", eventTypes(secondEvents))
+	}
+}
+
+func TestServerPermissionRememberTarget(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("first done"),
+			toolCallTurn(), textTurn("second done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithTimeout(t, agent, 50*time.Millisecond)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	first := startRun(t, ts.URL, "default")
+	firstEvents, err := collectSSE(t, ts.URL+first.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, first.RunID, permissionID(t, event), "token", `{"allow":true,"remember_for":"session_target"}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(eventTypes(firstEvents), "permission_request") {
+		t.Fatal("first run did not ask permission")
+	}
+
+	second := startRun(t, ts.URL, "default")
+	secondEvents := getSSE(t, ts.URL+second.EventsURL, "token")
+	if executed.Load() != 2 {
+		t.Fatalf("tool executions = %d, want 2", executed.Load())
+	}
+	if contains(eventTypes(secondEvents), "permission_request") {
+		t.Fatalf("second run events = %v, want cached target allow", eventTypes(secondEvents))
+	}
+}
+
+func TestServerPermissionRememberForeverAcrossSessions(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("first done"),
+			toolCallTurn(), textTurn("second done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithTimeout(t, agent, 50*time.Millisecond)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	first := startRun(t, ts.URL, "default")
+	firstEvents, err := collectSSE(t, ts.URL+first.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, first.RunID, permissionID(t, event), "token", `{"allow":true,"remember_for":"forever"}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(eventTypes(firstEvents), "permission_request") {
+		t.Fatal("first run did not ask permission")
+	}
+
+	second := startRun(t, ts.URL, "other-session")
+	secondEvents := getSSE(t, ts.URL+second.EventsURL, "token")
+	if executed.Load() != 2 {
+		t.Fatalf("tool executions = %d, want 2", executed.Load())
+	}
+	if contains(eventTypes(secondEvents), "permission_request") {
+		t.Fatalf("second run events = %v, want cached forever allow", eventTypes(secondEvents))
+	}
+}
+
 func newTestServer(t *testing.T, host Host) *Server {
+	return newTestServerWithTimeout(t, host, time.Second)
+}
+
+func newTestServerWithTimeout(t *testing.T, host Host, timeout time.Duration) *Server {
 	t.Helper()
 	now := time.Date(2026, 5, 23, 20, 46, 0, 0, time.UTC)
 	srv, err := New(Options{
-		Host:  host,
-		Token: "token",
-		Now:   func() time.Time { return now },
-		NewID: sequenceIDs(),
+		Host:              host,
+		Token:             "token",
+		Now:               func() time.Time { return now },
+		NewID:             sequenceIDs(),
+		PermissionTimeout: timeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -208,20 +467,43 @@ func postJSON(t *testing.T, url, token, body string) *http.Response {
 	return resp
 }
 
+func startRun(t *testing.T, baseURL, sessionID string) startRunResponse {
+	t.Helper()
+	resp := postJSON(t, baseURL+"/v1/sessions/"+sessionID+"/runs", "token", `{"text":"go","client_id":"cli:test"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var start startRunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+	return start
+}
+
 func getSSE(t *testing.T, url, token string) []EventEnvelope {
+	t.Helper()
+	events, err := collectSSE(t, url, token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+func collectSSE(t *testing.T, url, token string, onEvent func(EventEnvelope)) ([]EventEnvelope, error) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("SSE status = %d, want %d", resp.StatusCode, http.StatusOK)
+		return nil, fmt.Errorf("SSE status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
 	var events []EventEnvelope
@@ -235,17 +517,20 @@ func getSSE(t *testing.T, url, token string) []EventEnvelope {
 		dec := json.NewDecoder(bytes.NewBufferString(strings.TrimPrefix(line, "data: ")))
 		dec.UseNumber()
 		if err := dec.Decode(&event); err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		events = append(events, event)
+		if onEvent != nil {
+			onEvent(event)
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	if len(events) == 0 {
-		t.Fatal("no SSE events")
+		return nil, errors.New("no SSE events")
 	}
-	return events
+	return events, nil
 }
 
 func eventTypes(events []EventEnvelope) []string {
@@ -263,4 +548,117 @@ func contains(in []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func toolCallTurn() []glue.ProviderEvent {
+	return toolCallTurnValue("x")
+}
+
+func toolCallTurnValue(value string) []glue.ProviderEvent {
+	return []glue.ProviderEvent{
+		{Type: glue.ProviderEventStart},
+		{Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "c1", Name: "side_effect", Arguments: []byte(`{"value":` + strconv.Quote(value) + `}`)}},
+		{Type: glue.ProviderEventDone},
+	}
+}
+
+func textTurn(text string) []glue.ProviderEvent {
+	return []glue.ProviderEvent{
+		{Type: glue.ProviderEventStart},
+		{Type: glue.ProviderEventTextDelta, Delta: text},
+		{Type: glue.ProviderEventDone},
+	}
+}
+
+func permissionTool(counter *atomic.Int32) glue.Tool {
+	return glue.NewTool[struct {
+		Value string `json:"value"`
+	}](glue.ToolSpec{
+		Name:               "side_effect",
+		RequiresPermission: true,
+		PermissionAction:   "touch",
+		PermissionTarget: func(call glue.ToolCall) string {
+			var args struct {
+				Value string `json:"value"`
+			}
+			_ = json.Unmarshal(call.Arguments, &args)
+			return args.Value
+		},
+	}, func(context.Context, struct {
+		Value string `json:"value"`
+	}) (glue.ToolResult, error) {
+		counter.Add(1)
+		return glue.TextResult("touched"), nil
+	})
+}
+
+func permissionID(t *testing.T, event EventEnvelope) string {
+	t.Helper()
+	payload, ok := event.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("permission payload = %#v", event.Payload)
+	}
+	id, ok := payload["permission_id"].(string)
+	if !ok || id == "" {
+		t.Fatalf("permission payload missing id: %#v", payload)
+	}
+	return id
+}
+
+func postDecision(t *testing.T, baseURL, runID, permissionID, token, body string) {
+	t.Helper()
+	postDecisionStatus(t, baseURL, runID, permissionID, token, "", body, http.StatusOK)
+}
+
+func postDecisionStatus(t *testing.T, baseURL, runID, permissionID, token, clientID, body string, want int) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/runs/"+runID+"/permissions/"+permissionID+"/decision", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if clientID != "" {
+		req.Header.Set("X-Glue-Client-ID", clientID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != want {
+		t.Fatalf("decision status = %d, want %d", resp.StatusCode, want)
+	}
+}
+
+func toolEndText(t *testing.T, events []EventEnvelope) string {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != "tool_end" {
+			continue
+		}
+		payload, ok := event.Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("tool_end payload = %#v", event.Payload)
+		}
+		result, ok := payload["tool_result"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool_end missing result: %#v", payload)
+		}
+		if isError, _ := result["is_error"].(bool); !isError {
+			t.Fatalf("tool_end result = %#v, want is_error", result)
+		}
+		content, ok := result["content"].([]any)
+		if !ok || len(content) == 0 {
+			t.Fatalf("tool_end result missing content: %#v", result)
+		}
+		part, ok := content[0].(map[string]any)
+		if !ok {
+			t.Fatalf("tool_end content = %#v", content[0])
+		}
+		text, _ := part["text"].(string)
+		return text
+	}
+	t.Fatal("missing tool_end event")
+	return ""
 }
