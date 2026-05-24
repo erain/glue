@@ -120,7 +120,7 @@ Flags:
 	}
 	var permission *telegram.Permission
 	var agentPermission glue.Permission
-	if settings.Coding.Enabled {
+	if settings.Coding.Enabled || peggy.MCPEnabled(settings.MCP) {
 		permission = telegram.NewPermission(telegram.PermissionOptions{Stderr: stderr})
 		agentPermission = peggy.NewTieredPermission(
 			permission,

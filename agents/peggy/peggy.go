@@ -42,8 +42,8 @@ type Options struct {
 
 	// Permission answers side-effecting tool requests. Nil means
 	// side-effecting tools are denied by the core loop. The CLI
-	// supplies an interactive implementation when coding tools are
-	// enabled.
+	// supplies an interactive implementation when coding or MCP tools
+	// are enabled.
 	Permission glue.Permission
 
 	// Stderr collects diagnostic warnings (missing SOUL.md etc).
@@ -76,6 +76,8 @@ type Peggy struct {
 	settings Settings
 	soul     string
 	stderr   io.Writer
+
+	mcpManager io.Closer
 }
 
 // New builds a Peggy from the supplied Options. Settings defaults
@@ -152,6 +154,15 @@ func New(opts Options) (*Peggy, error) {
 	}
 	settings.Coding = codingSettings
 	tools = append(tools, codingTools...)
+
+	mcpTools, mcpManager, mcpSettings, err := MCPTools(context.Background(), settings.MCP)
+	if err != nil {
+		return nil, err
+	}
+	settings.MCP = mcpSettings
+	p.settings = settings
+	p.mcpManager = mcpManager
+	tools = append(tools, mcpTools...)
 	tools = append(tools, opts.ExtraTools...)
 
 	p.agent = glue.NewAgent(glue.AgentOptions{
@@ -183,10 +194,14 @@ func (p *Peggy) Close() error {
 	if p == nil {
 		return nil
 	}
-	if closer, ok := p.store.(io.Closer); ok {
-		return closer.Close()
+	var errs []error
+	if p.mcpManager != nil {
+		errs = append(errs, p.mcpManager.Close())
 	}
-	return nil
+	if closer, ok := p.store.(io.Closer); ok {
+		errs = append(errs, closer.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // Prompt runs one turn against the given session id and streams the

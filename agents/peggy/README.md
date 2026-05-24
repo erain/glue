@@ -128,6 +128,13 @@ and emits a stderr diagnostic.
 | `coding.work_dir` | current directory | Workspace root for `read_file`, `write_file`, `shell_exec`, and git helpers. `~` and `$HOME` expand. |
 | `coding.allowed_binaries` | `go`, `git`, `make`, `node`, `npm`, `python`, `python3` | Basename allowlist for `shell_exec`; model calls cannot run arbitrary paths. |
 | `coding.allow_overwrite` | `false` | Host policy for replacing existing files. The model must still pass `overwrite: true`, and the permission prompt must allow the call. |
+| `mcp.servers.<name>.enabled` | `false` | Register tools from a configured MCP server. Enable only for trusted local servers or explicitly trusted services. |
+| `mcp.servers.<name>.transport` | `stdio` | Only `stdio` is supported today. Streamable HTTP is a planned M4 follow-up. |
+| `mcp.servers.<name>.command` | none | Executable path or basename for stdio MCP servers. This is argv-based, not a shell string. |
+| `mcp.servers.<name>.args` | `[]` | Stdio server argv arguments. |
+| `mcp.servers.<name>.env` | `[]` | Explicit `KEY=value` environment entries passed to the stdio server. Peggy does not inherit the full parent env by default. |
+| `mcp.servers.<name>.work_dir` | current process dir | Working directory for the stdio server. `~` and `$HOME` expand. |
+| `mcp.servers.<name>.timeout_seconds` | `30` | Timeout for initialize, `tools/list`, and individual `tools/call` requests. |
 | `permissions.default_tier` | `prompt` | Permission tier for side-effecting tools when a channel has no override. One of `prompt`, `read_only`, or `trusted`. |
 | `permissions.channels.<name>` | inherited | Channel override keyed by `cli`, `telegram`, or a future daemon client prefix. |
 
@@ -277,6 +284,37 @@ Allow? [y] once, [s] session, [t] target, [n] deny:
 Remembered choices last only for the current `peggy` process. If stdin
 is unavailable or reaches EOF, Peggy denies the side effect and surfaces
 that denial to the model as a tool error.
+
+## MCP Tools
+
+Peggy can register tools from local stdio MCP servers. MCP tools are
+permission-gated by default because the server is external code or a
+remote service boundary: even a tool named `search` may read private
+data, mutate state, exfiltrate content, or spend money.
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "mcp-server-filesystem",
+        "args": ["/path/to/workspace"],
+        "env": ["LOG_LEVEL=warn"],
+        "work_dir": "/path/to/workspace",
+        "timeout_seconds": 30
+      }
+    }
+  }
+}
+```
+
+Discovered MCP tools are exposed to the model as namespaced tools such
+as `mcp_filesystem_read_file`. Permission prompts use the existing
+channel tier settings: `prompt` asks the owning client, `read_only`
+denies before execution, and `trusted` allows the call subject to the
+server configuration and timeout.
 
 The permission choices are intentionally small:
 

@@ -131,12 +131,14 @@ Identity (SOUL.md) resolution: --soul > $PEGGY_SOUL > $XDG_CONFIG_HOME/peggy/SOU
 	}
 
 	var permission glue.Permission
-	if settings.Coding.Enabled {
+	if settings.Coding.Enabled || MCPEnabled(settings.MCP) {
 		permission = NewTieredPermission(
 			NewCLIPermission(CLIPermissionOptions{Stdin: stdin, Stderr: stderr}),
 			PermissionTierForChannel(settings.Permissions, PermissionChannelCLI),
 			PermissionChannelCLI,
 		)
+	}
+	if settings.Coding.Enabled {
 		workDir := settings.Coding.WorkDir
 		if strings.TrimSpace(workDir) == "" {
 			workDir = "."
