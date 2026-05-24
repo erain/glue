@@ -40,6 +40,10 @@ type Settings struct {
 	// default; enable only for trusted local workspaces.
 	Coding CodingSettings `json:"coding"`
 
+	// MCP configures external Model Context Protocol servers whose
+	// discovered tools Peggy can register. Disabled by default.
+	MCP MCPSettings `json:"mcp"`
+
 	// Permissions configures Peggy's side-effect permission policy.
 	// Defaults to prompt for every channel.
 	Permissions PermissionSettings `json:"permissions"`
@@ -84,6 +88,26 @@ type CodingSettings struct {
 	// write_file. The model must also pass overwrite=true and the
 	// Permission implementation must allow the call.
 	AllowOverwrite bool `json:"allow_overwrite"`
+}
+
+// MCPSettings configures external MCP tool servers.
+type MCPSettings struct {
+	Servers map[string]MCPServerSettings `json:"servers,omitempty"`
+}
+
+// MCPServerSettings configures one named MCP server. Stdio is the only
+// supported enabled transport for now; HTTP fields are decoded so the
+// settings shape is forward-compatible with ADR-0011.
+type MCPServerSettings struct {
+	Enabled        bool              `json:"enabled"`
+	Transport      string            `json:"transport"`
+	Command        string            `json:"command,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            []string          `json:"env,omitempty"`
+	WorkDir        string            `json:"work_dir,omitempty"`
+	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	URL            string            `json:"url,omitempty"`
+	HeadersEnv     map[string]string `json:"headers_env,omitempty"`
 }
 
 // PermissionSettings configures Peggy permission tiers. Channel keys are
@@ -156,6 +180,13 @@ func LoadSettings(path string) (Settings, string, error) {
 			return Settings{}, resolved, err
 		}
 		s.Coding.WorkDir = expanded
+	}
+	if len(s.MCP.Servers) > 0 {
+		expanded, err := expandMCPSettings(s.MCP)
+		if err != nil {
+			return Settings{}, resolved, err
+		}
+		s.MCP = expanded
 	}
 	return s, resolved, nil
 }
@@ -231,6 +262,37 @@ func expandPath(p string) (string, error) {
 	p = strings.ReplaceAll(p, "${HOME}", os.Getenv("HOME"))
 	p = strings.ReplaceAll(p, "$HOME", os.Getenv("HOME"))
 	return p, nil
+}
+
+func expandMCPSettings(settings MCPSettings) (MCPSettings, error) {
+	if len(settings.Servers) == 0 {
+		return settings, nil
+	}
+	expanded := MCPSettings{Servers: make(map[string]MCPServerSettings, len(settings.Servers))}
+	for name, server := range settings.Servers {
+		if server.WorkDir != "" {
+			workDir, err := expandPath(server.WorkDir)
+			if err != nil {
+				return MCPSettings{}, fmt.Errorf("peggy: mcp.servers.%s.work_dir: %w", name, err)
+			}
+			server.WorkDir = workDir
+		}
+		if len(server.Args) > 0 {
+			server.Args = append([]string(nil), server.Args...)
+		}
+		if len(server.Env) > 0 {
+			server.Env = append([]string(nil), server.Env...)
+		}
+		if len(server.HeadersEnv) > 0 {
+			headers := make(map[string]string, len(server.HeadersEnv))
+			for header, envName := range server.HeadersEnv {
+				headers[header] = envName
+			}
+			server.HeadersEnv = headers
+		}
+		expanded.Servers[name] = server
+	}
+	return expanded, nil
 }
 
 // fillDefaults applies the documented defaults for any zero-valued
