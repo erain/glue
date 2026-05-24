@@ -173,6 +173,86 @@ func TestServerToolsCatalogUnsupportedHost(t *testing.T) {
 	}
 }
 
+func TestServerStatus(t *testing.T) {
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: scriptedProvider{},
+		Tools: []glue.Tool{{
+			ToolSpec: glue.ToolSpec{Name: "demo_tool"},
+		}},
+	})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/status", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var status statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.OK || status.Version != protocolVersion || status.ActiveRuns != 0 || status.ToolsCount != 1 {
+		t.Fatalf("status = %+v", status)
+	}
+	for _, want := range []string{"runs", "events", "permissions", "tools", "status"} {
+		if !contains(status.Capabilities, want) {
+			t.Fatalf("capabilities = %v, missing %q", status.Capabilities, want)
+		}
+	}
+}
+
+func TestServerStatusCountsActiveRuns(t *testing.T) {
+	provider := &blockingProvider{started: make(chan struct{}), canceled: make(chan struct{})}
+	agent := glue.NewAgent(glue.AgentOptions{Provider: provider})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRun(t, ts.URL, "default")
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run start")
+	}
+
+	resp := getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var status statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.ActiveRuns != 1 {
+		t.Fatalf("active_runs = %d, want 1", status.ActiveRuns)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/runs/"+start.RunID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	cancelResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelResp.Body.Close()
+	select {
+	case <-provider.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cancellation")
+	}
+}
+
 func TestServerStartsRunAndStreamsEvents(t *testing.T) {
 	agent := glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{events: []glue.ProviderEvent{
 		{Type: glue.ProviderEventStart},

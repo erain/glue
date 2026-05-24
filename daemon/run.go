@@ -56,6 +56,12 @@ func (r *run) finish() {
 	r.signalLocked()
 }
 
+func (r *run) isDone() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.done
+}
+
 func (r *run) eventsFrom(index int) ([]EventEnvelope, bool, <-chan struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

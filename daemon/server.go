@@ -176,6 +176,14 @@ type permissionDecisionResponse struct {
 	Accepted     bool   `json:"accepted"`
 }
 
+type statusResponse struct {
+	OK           bool     `json:"ok"`
+	Version      int      `json:"version"`
+	ActiveRuns   int      `json:"active_runs"`
+	ToolsCount   int      `json:"tools_count"`
+	Capabilities []string `json:"capabilities"`
+}
+
 type toolCatalogResponse struct {
 	Tools []toolCatalogEntry `json:"tools"`
 }
@@ -239,6 +247,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/status" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleStatus(w, r)
+		return
+	}
+
 	if r.URL.Path == "/v1/tools" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -291,6 +308,26 @@ func (s *Server) authorized(r *http.Request) bool {
 	want := "Bearer " + s.token
 	got := r.Header.Get("Authorization")
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	toolsCount := 0
+	if host, ok := s.host.(ToolCatalogHost); ok {
+		toolsCount = len(host.ToolCatalog())
+	}
+	writeJSON(w, http.StatusOK, statusResponse{
+		OK:         true,
+		Version:    protocolVersion,
+		ActiveRuns: s.activeRunCount(),
+		ToolsCount: toolsCount,
+		Capabilities: []string{
+			"runs",
+			"events",
+			"permissions",
+			"tools",
+			"status",
+		},
+	})
 }
 
 func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -490,6 +527,18 @@ func (s *Server) getRun(id string) *run {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.runs[id]
+}
+
+func (s *Server) activeRunCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int
+	for _, run := range s.runs {
+		if run != nil && !run.isDone() {
+			count++
+		}
+	}
+	return count
 }
 
 func parseStartRunPath(path string) (string, bool) {

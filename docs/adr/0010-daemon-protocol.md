@@ -129,7 +129,28 @@ The daemon must never log bearer tokens, provider keys, Telegram bot
 tokens, or raw permission args unless a future explicit debug flag says
 so.
 
-### 4. Tool catalog
+### 4. Status and tool catalog
+
+Daemon clients can inspect authenticated runtime status:
+
+```http
+GET /v1/status
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "version": 1,
+  "active_runs": 0,
+  "tools_count": 4,
+  "capabilities": ["runs", "events", "permissions", "tools", "status"]
+}
+```
+
+`GET /v1/health` remains unauthenticated and intentionally minimal;
+`GET /v1/status` is for clients that already have daemon credentials.
 
 Daemon clients can inspect the hosted agent's current tool surface:
 
