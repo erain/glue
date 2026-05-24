@@ -3,6 +3,8 @@ package daemon
 import (
 	"sync"
 	"time"
+
+	"github.com/erain/glue"
 )
 
 type run struct {
@@ -18,6 +20,13 @@ type run struct {
 	events []EventEnvelope
 	done   bool
 	notify chan struct{}
+
+	pending map[string]*pendingPermission
+}
+
+type pendingPermission struct {
+	id   string
+	done chan glue.PermissionDecision
 }
 
 func (r *run) emit(typ string, payload any) {
@@ -58,6 +67,40 @@ func (r *run) eventsFrom(index int) ([]EventEnvelope, bool, <-chan struct{}) {
 	}
 	events := append([]EventEnvelope(nil), r.events[index:]...)
 	return events, r.done, r.notify
+}
+
+func (r *run) addPermission(p *pendingPermission) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.pending[p.id]; exists {
+		return false
+	}
+	r.pending[p.id] = p
+	return true
+}
+
+func (r *run) resolvePermission(id string, decision glue.PermissionDecision) bool {
+	r.mu.Lock()
+	pending := r.pending[id]
+	if pending != nil {
+		delete(r.pending, id)
+	}
+	r.mu.Unlock()
+	if pending == nil {
+		return false
+	}
+	pending.done <- decision
+	return true
+}
+
+func (r *run) expirePermission(id string, pending *pendingPermission) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pending[id] != pending {
+		return false
+	}
+	delete(r.pending, id)
+	return true
 }
 
 func (r *run) signalLocked() {

@@ -88,16 +88,18 @@ type PromptResult struct {
 type PromptOption func(*promptConfig)
 
 type promptConfig struct {
-	model        string
-	systemPrompt string
-	tools        []Tool
-	options      map[string]any
-	maxTurns     int
-	emit         func(Event)
-	auxEmits     []func(Event)
-	jsonSchema   any
-	role         string
-	modelSet     bool
+	model         string
+	systemPrompt  string
+	tools         []Tool
+	options       map[string]any
+	maxTurns      int
+	emit          func(Event)
+	auxEmits      []func(Event)
+	jsonSchema    any
+	role          string
+	modelSet      bool
+	permission    Permission
+	permissionSet bool
 }
 
 // WithModel overrides the model for one prompt. When set, this beats
@@ -134,6 +136,16 @@ func WithProviderOptions(options map[string]any) PromptOption {
 // WithMaxTurns overrides the loop max-turn guard for one prompt.
 func WithMaxTurns(maxTurns int) PromptOption {
 	return func(c *promptConfig) { c.maxTurns = maxTurns }
+}
+
+// WithPermission overrides the agent's Permission implementation for one
+// prompt. Passing nil explicitly disables permission handling for that
+// prompt, so side-effecting tools are denied by the loop.
+func WithPermission(permission Permission) PromptOption {
+	return func(c *promptConfig) {
+		c.permission = permission
+		c.permissionSet = true
+	}
 }
 
 // WithEvents registers a per-prompt event handler. It receives every loop
@@ -193,6 +205,11 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 	}
 	runMessages := append(base, userMessage)
 
+	permission := s.agent.permission
+	if config.permissionSet {
+		permission = config.permission
+	}
+
 	result, runErr := loop.Run(ctx, loop.RunRequest{
 		Provider:     s.agent.provider,
 		Model:        config.model,
@@ -202,7 +219,7 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 		Options:      config.options,
 		MaxTurns:     config.maxTurns,
 		SessionID:    s.id,
-		Permission:   s.agent.permission,
+		Permission:   permission,
 		Hooks:        cloneHooks(s.agent.hooks),
 		Emit: func(event Event) {
 			if config.emit != nil {
