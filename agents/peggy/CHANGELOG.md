@@ -4,6 +4,63 @@ All notable changes to the `peggy` agent. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com); this project does
 not formally follow SemVer until v1.0.
 
+## v0.4.0 — 2026-05-24
+
+Peggy now has an ecosystem surface for external tools and operator
+preflight. The release completes M4 from tracker
+[#110](https://github.com/erain/glue/issues/110): Peggy can register
+configured MCP servers over stdio or Streamable HTTP, expose MCP tools
+through existing permission gates, inspect resource and prompt
+catalogs, and give local/daemon clients status and catalog views
+before a run starts.
+
+### Added
+
+- **MCP client integration.** `tools/mcp` implements the MCP
+  2025-11-25 lifecycle, JSON-RPC request handling, stdio transport,
+  Streamable HTTP transport, explicit env/header handling, and
+  deterministic fake-server coverage.
+- **MCP tools as Peggy tools.** Configured MCP tools are namespaced as
+  `mcp_<server>_<tool>`, preserve input/output schema metadata, and
+  use Peggy's existing `mcp_call` permission path.
+- **MCP resource support.** `peggy mcp resources` lists resource
+  metadata, `peggy mcp read` reads one resource URI, and
+  resource-capable servers expose a permission-gated
+  `mcp_<server>_read_resource` tool.
+- **MCP prompt inspection.** `peggy mcp prompts` lists prompt
+  templates and `peggy mcp prompt` renders one prompt with repeatable
+  `--arg key=value` values.
+- **Daemon/client inspection.** The daemon exposes authenticated
+  status and tool-catalog endpoints; `glue connect --status`,
+  `--tools`, and `--inspect` render those views from the terminal.
+- **Usage summaries.** `glue run --usage` and prompt-mode
+  `glue connect --usage` print provider-reported token usage on
+  stderr without disturbing streamed stdout.
+- **Local readiness status.** `peggy status` and `--json` summarize
+  config, identity, provider/model, store, compaction, coding,
+  permissions, channels, and MCP setup without starting providers or
+  MCP servers.
+
+### Changed
+
+- `peggy.Version` is now `0.4.0`.
+- Peggy README now documents the ecosystem preflight loop around
+  `peggy status`, `peggy mcp ...`, `peggy serve`, and
+  `glue connect --inspect`.
+- Live OpenRouter fixture coverage was hardened for recent
+  `openrouter/free` upstream flake modes while keeping real regressions
+  visible.
+
+### Known limitations
+
+- MCP resource reads and prompt rendering are request/response only;
+  subscriptions, prompt auto-use policy, OAuth, elicitation, sampling,
+  and dynamic discovery remain deferred.
+- `peggy status` is intentionally config-only. It does not prove that
+  provider credentials or MCP endpoints are live.
+- Daemon inspection exposes status and tool catalogs; resource/prompt
+  catalogs are still local CLI inspection surfaces.
+
 ## v0.3.0 — 2026-05-24
 
 Peggy can now run as one local daemon shared by terminal and Telegram

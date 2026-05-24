@@ -4,7 +4,7 @@
 > remembers you across sessions, and curates facts on her own.
 
 A long-running personal-assistant agent built on the
-[glue](../..) framework. **v0.3** ships:
+[glue](../..) framework. **v0.4** ships:
 
 - a single-prompt **CLI** (`peggy`)
 - a **Telegram bot** binary (`peggy-telegram`) with a chat-id allowlist
@@ -21,13 +21,13 @@ A long-running personal-assistant agent built on the
 - per-call permission prompts for side-effecting coding tools in the
   CLI, Telegram, and daemon clients
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
-- opt-in MCP tools plus resource and prompt inspection
+- opt-in MCP stdio/HTTP tools plus resource and prompt inspection
 - local readiness status for config, identity, memory, coding, and MCP setup
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
-Tracker: [#110](https://github.com/erain/glue/issues/110). M3
-("multi-channel daemon") is the v0.3 release milestone.
+Tracker: [#110](https://github.com/erain/glue/issues/110). M4
+("ecosystem") is the v0.4 release milestone.
 
 ## Quickstart
 
