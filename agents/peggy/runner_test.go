@@ -155,6 +155,89 @@ func TestRun_CodingFlagsParseAndUseInputAwareRunner(t *testing.T) {
 	}
 }
 
+func TestRunMCPToolsNoServers(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "tools"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "No MCP tools configured.") {
+		t.Fatalf("stdout = %q, want empty catalog message", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no settings.json found") {
+		t.Fatalf("stderr = %q, want settings diagnostic", errOut.String())
+	}
+}
+
+func TestRunMCPToolsListsConfiguredTools(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("tools", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "tools", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"mcp_fake_echo",
+		"description: MCP fake: echoes text",
+		"permission: mcp_call fake.echo",
+		`parameters: {"type":"object","properties":{"text":{"type":"string"}},"additionalProperties":false}`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestRunMCPToolsJSON(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("tools", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "tools", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var catalog []mcpToolCatalogEntry
+	if err := json.Unmarshal(out.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode catalog: %v\nstdout=%s", err, out.String())
+	}
+	if len(catalog) != 1 {
+		t.Fatalf("catalog len = %d, want 1: %+v", len(catalog), catalog)
+	}
+	entry := catalog[0]
+	if entry.Name != "mcp_fake_echo" || entry.PermissionAction != "mcp_call" || entry.PermissionTarget != "fake.echo" {
+		t.Fatalf("catalog entry = %+v", entry)
+	}
+	if len(entry.Parameters) == 0 || !strings.Contains(string(entry.Parameters), `"text"`) {
+		t.Fatalf("parameters = %s", string(entry.Parameters))
+	}
+}
+
+func TestRunMCPUsage(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "bogus"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "unknown command") || !strings.Contains(errOut.String(), "Usage:") {
+		t.Fatalf("stderr = %q, want usage", errOut.String())
+	}
+}
+
 func TestRunServeMetadataDisabledRequiresExplicitToken(t *testing.T) {
 	t.Setenv("GLUE_DAEMON_TOKEN", "")
 	t.Setenv(EnvConfigPath, "")
