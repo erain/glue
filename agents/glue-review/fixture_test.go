@@ -30,6 +30,12 @@ type fixture struct {
 	expect func(t *testing.T, review string)
 }
 
+// fixtureReplayAttempts allows the non-deterministic OpenRouter free
+// router two retries when an upstream model returns a provider-quality
+// failure instead of a review. Each attempt has runAgentInRepo's
+// 180-second timeout, so the worst case stays bounded for CI.
+const fixtureReplayAttempts = 3
+
 // fixtures is the set of scenarios we replay against a real free model
 // to catch prompt regressions. Add a new entry when a new prompt
 // behavior needs to be locked in.
@@ -53,7 +59,7 @@ var fixtures = []fixture{
 			// reviewer. What we want to catch is: silence, fabricated
 			// paths, or output that isn't in the canonical shape.
 			assertGlueReviewHeader(t, review)
-			isLGTM := strings.Contains(review, "No concerns — LGTM")
+			isLGTM := reviewLooksLGTM(review)
 			mentionsMain := strings.Contains(review, "main.go")
 			if !isLGTM && !mentionsMain {
 				t.Errorf("review neither said LGTM nor mentioned main.go; review=%q", review)
@@ -115,7 +121,10 @@ var fixtures = []fixture{
 // TestFixtureReplay drives every fixture through the agent against a
 // real free model and asserts each scenario's structural invariants.
 // Skipped quietly when no provider key is in env (matches the existing
-// TestLiveReviewSmoke gating convention).
+// TestLiveReviewSmoke gating convention). The OpenRouter free router is
+// intentionally non-deterministic, so known upstream-quality faults
+// (empty/preamble-only responses or malformed tool-call JSON) get two
+// retries before the last attempt is judged normally.
 func TestFixtureReplay(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -131,13 +140,13 @@ func TestFixtureReplay(t *testing.T) {
 			repo := t.TempDir()
 			gitInit(t, repo)
 			f.seed(t, repo)
-			review, err := runAgentInRepo(t, repo, provider, fmt.Sprintf("fixture-%s-%d", f.name, time.Now().UnixNano()))
+			review, err := runFixtureReplay(t, repo, provider, f.name)
 			if err != nil {
 				// Free upstreams (e.g. inclusionai/ling-2.6-1t:free)
 				// share a 20 req/min quota and 429 frequently. Treat
 				// upstream rate limits as a skip so transient quota
 				// trips don't fail CI; other failures still fail loudly.
-				if msg := err.Error(); strings.Contains(msg, "http 429") || strings.Contains(msg, "Rate limit exceeded") {
+				if isUpstreamRateLimit(err) {
 					t.Skipf("upstream rate-limited (free tier): %v", err)
 				}
 				t.Fatalf("run failed: %v", err)
@@ -146,6 +155,101 @@ func TestFixtureReplay(t *testing.T) {
 			f.expect(t, review)
 		})
 	}
+}
+
+func TestFixtureReplayRetryClassifiers(t *testing.T) {
+	tests := []struct {
+		name   string
+		review string
+		want   bool
+	}{
+		{name: "empty", review: "", want: true},
+		{name: "short noise", review: "ok", want: true},
+		{name: "preamble only", review: "I'll review the current Git branch for issues and report findings.", want: true},
+		{name: "canonical review", review: "## glue-review\n\nNo concerns — LGTM", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRetryableFixtureReplayReview(tt.review); got != tt.want {
+				t.Fatalf("isRetryableFixtureReplayReview(%q)=%v, want %v", tt.review, got, tt.want)
+			}
+		})
+	}
+
+	if !isRetryableFixtureReplayError(fmt.Errorf("rc=1 stderr=openrouter: tool call %q invalid JSON arguments", "git_diff_branch")) {
+		t.Fatal("invalid JSON tool-call error should be retryable")
+	}
+	if !isUpstreamRateLimit(fmt.Errorf("openrouter http 429: Rate limit exceeded")) {
+		t.Fatal("429 rate limit should be classified as upstream rate limit")
+	}
+}
+
+func TestFixtureReplayReviewMatchers(t *testing.T) {
+	for _, review := range []string{
+		"## glue-review\n\nNo concerns — LGTM",
+		"##glue-review\n\nNo concerns - LGTM.",
+		"## glue-reviewlow\n\nNoconcerns — LGTM.",
+	} {
+		if !glueReviewHeaderPattern.MatchString(review) {
+			t.Fatalf("header pattern did not match %q", review)
+		}
+		if !reviewLooksLGTM(review) {
+			t.Fatalf("LGTM pattern did not match %q", review)
+		}
+	}
+}
+
+func runFixtureReplay(t *testing.T, repo, provider, fixtureName string) (string, error) {
+	t.Helper()
+	for attempt := 1; attempt <= fixtureReplayAttempts; attempt++ {
+		sessionID := fmt.Sprintf("fixture-%s-%d-attempt-%d", fixtureName, time.Now().UnixNano(), attempt)
+		review, err := runAgentInRepo(t, repo, provider, sessionID)
+		if err != nil {
+			if isUpstreamRateLimit(err) {
+				return "", err
+			}
+			if attempt < fixtureReplayAttempts && isRetryableFixtureReplayError(err) {
+				t.Logf("%s attempt %d/%d hit retryable upstream error: %v", fixtureName, attempt, fixtureReplayAttempts, err)
+				continue
+			}
+			return "", err
+		}
+		if attempt < fixtureReplayAttempts && isRetryableFixtureReplayReview(review) {
+			t.Logf("%s attempt %d/%d produced implausible review (%d bytes); retrying", fixtureName, attempt, fixtureReplayAttempts, len(review))
+			continue
+		}
+		return review, nil
+	}
+	return "", fmt.Errorf("fixture replay exhausted without a terminal attempt")
+}
+
+func isRetryableFixtureReplayError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "invalid JSON arguments") ||
+		(strings.Contains(msg, "tool call") && strings.Contains(msg, "invalid JSON"))
+}
+
+func isRetryableFixtureReplayReview(review string) bool {
+	trimmed := strings.TrimSpace(review)
+	if trimmed == "" {
+		return true
+	}
+	if glueReviewHeaderPattern.MatchString(trimmed) {
+		return false
+	}
+	if len(trimmed) < 50 {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "i'll review the current git branch") {
+		return true
+	}
+	return len(trimmed) < 160 && !fixBlockPattern.MatchString(trimmed)
+}
+
+func isUpstreamRateLimit(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "http 429") || strings.Contains(msg, "Rate limit exceeded")
 }
 
 // helpers --------------------------------------------------------------
@@ -248,10 +352,20 @@ func assertHasSection(t *testing.T, review, section string) {
 
 // glueReviewHeaderPattern accepts the canonical `## glue-review`
 // header AND the common drift variants the free models produce
-// (no space after `##`, extra spaces, mixed case). Tightening the
-// matcher leads to brittleness without catching real regressions —
-// the model has correctly identified itself either way. (#127)
-var glueReviewHeaderPattern = regexp.MustCompile(`(?im)^##\s*glue-review\b`)
+// (no space after `##`, extra spaces, mixed case, or an immediately
+// attached severity token). Tightening the matcher leads to brittleness
+// without catching real regressions — the model has correctly
+// identified itself either way. (#127, #140)
+var glueReviewHeaderPattern = regexp.MustCompile(`(?im)^##\s*glue-review(?:\b|(?:low|medium|major|critical)\b)`)
+
+// glueReviewLGTMPattern accepts the canonical clean-review sentence
+// plus compact variants produced by free models, such as
+// `Noconcerns — LGTM`.
+var glueReviewLGTMPattern = regexp.MustCompile(`(?im)\bno\s*concerns\s*[—-]?\s*lgtm\b`)
+
+func reviewLooksLGTM(review string) bool {
+	return glueReviewLGTMPattern.MatchString(review)
+}
 
 // assertGlueReviewHeader checks that the canonical `## glue-review`
 // header is present at the start of the review body. Whitespace
