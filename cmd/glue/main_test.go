@@ -736,6 +736,124 @@ func TestRunCLIConnectShowsStatusJSON(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectInspectsDaemon(t *testing.T) {
+	var sawStatus bool
+	var sawTools bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			sawStatus = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("status method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("status auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
+				OK:           true,
+				Version:      1,
+				ActiveRuns:   2,
+				ToolsCount:   1,
+				Capabilities: []string{"runs", "tools", "status"},
+			})
+		case "/v1/tools":
+			sawTools = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("tools method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("tools auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{Tools: []daemonToolCatalogEntry{{
+				Name:                    "mcp_fake_echo",
+				Description:             "MCP fake: echoes text",
+				RequiresPermission:      true,
+				PermissionAction:        "mcp_call",
+				PermissionTargetPreview: "fake.echo",
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--inspect",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawStatus || !sawTools || sawRun {
+		t.Fatalf("sawStatus=%v sawTools=%v sawRun=%v", sawStatus, sawTools, sawRun)
+	}
+	for _, want := range []string{
+		"status: ok",
+		"active_runs: 2",
+		"tools_count: 1",
+		"tools:",
+		"mcp_fake_echo",
+		"description: MCP fake: echoes text",
+		"permission: mcp_call fake.echo",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
+				OK:           true,
+				Version:      1,
+				Capabilities: []string{"status", "tools"},
+			})
+		case "/v1/tools":
+			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{Tools: []daemonToolCatalogEntry{{
+				Name:               "shell_exec",
+				RequiresPermission: true,
+				PermissionAction:   "exec",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--inspect-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var inspect daemonInspect
+	if err := json.Unmarshal(stdout.Bytes(), &inspect); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if !inspect.Status.OK || inspect.Status.Version != 1 {
+		t.Fatalf("status = %+v", inspect.Status)
+	}
+	if len(inspect.Tools) != 1 || inspect.Tools[0].Name != "shell_exec" || inspect.Tools[0].PermissionAction != "exec" {
+		t.Fatalf("tools = %+v", inspect.Tools)
+	}
+}
+
 func TestRunCLIConnectRequiresPromptUnlessInspectMode(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithDeps(context.Background(), []string{
@@ -757,7 +875,7 @@ func TestRunCLIConnectRejectsMultipleInspectModes(t *testing.T) {
 	code := runCLIWithDeps(context.Background(), []string{
 		"connect",
 		"--status",
-		"--tools",
+		"--inspect",
 		"--base-url", "http://daemon",
 		"--token", "tok",
 		"--metadata", "",

@@ -633,18 +633,22 @@ Once `serve` is running, `connect` starts one daemon run, streams text
 events, and brokers permission requests in the terminal:
 
 ```sh
+go run ./cmd/glue connect --inspect
 go run ./cmd/glue connect --prompt "Say hi" --id local-dev
 ```
 
 By default, `connect` reads the same metadata file written by `serve`.
 Use `--base-url`, `--token`, or `--metadata` when connecting to an
-explicit daemon endpoint.
+explicit daemon endpoint. Use `--inspect` for a compact authenticated
+status-and-tools preflight, or `--status` / `--tools` to render each
+view separately. Each inspect mode also has a `-json` form for scripts.
 
 Peggy can serve the same daemon protocol with the personal-assistant
 agent, settings, memory store, and coding tools loaded once:
 
 ```sh
 go run ./agents/peggy/cmd/peggy serve --coding --workdir .
+go run ./cmd/glue connect --inspect
 go run ./cmd/glue connect --prompt "Say hi to Peggy" --id cli:daily
 ```
 

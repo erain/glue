@@ -116,6 +116,11 @@ type daemonStatus struct {
 	Capabilities []string `json:"capabilities"`
 }
 
+type daemonInspect struct {
+	Status daemonStatus             `json:"status"`
+	Tools  []daemonToolCatalogEntry `json:"tools"`
+}
+
 type connectPermissionPayload struct {
 	PermissionID string                 `json:"permission_id"`
 	Request      glue.PermissionRequest `json:"request"`
@@ -319,6 +324,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
+	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
+	inspectJSON := flags.Bool("inspect-json", false, "print --inspect output as JSON")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
 
@@ -331,10 +338,19 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *statusJSON {
 		*showStatus = true
 	}
-	if *showTools && *showStatus {
-		return errors.New("choose only one of --tools or --status")
+	if *inspectJSON {
+		*showInspect = true
 	}
-	if !*showTools && !*showStatus && strings.TrimSpace(*prompt) == "" {
+	inspectModes := 0
+	for _, enabled := range []bool{*showTools, *showStatus, *showInspect} {
+		if enabled {
+			inspectModes++
+		}
+	}
+	if inspectModes > 1 {
+		return errors.New("choose only one of --tools, --status, or --inspect")
+	}
+	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" {
 		return errors.New("missing required --prompt")
 	}
 	if err := loadEnvFiles(envs); err != nil {
@@ -359,6 +375,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
+	}
+	if *showInspect {
+		return runConnectInspect(ctx, cfg, *inspectJSON, stdout, client)
 	}
 	return runConnect(ctx, cfg, stdin, stdout, stderr, client)
 }
@@ -453,6 +472,25 @@ func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, s
 	return nil
 }
 
+func runConnectInspect(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	status, err := fetchDaemonStatus(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	catalog, err := fetchDaemonTools(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	inspect := daemonInspect{Status: status, Tools: catalog.Tools}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(inspect)
+	}
+	writeDaemonInspect(stdout, inspect)
+	return nil
+}
+
 func fetchDaemonStatus(ctx context.Context, cfg connectConfig, client httpDoer) (daemonStatus, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/status", nil)
 	if err != nil {
@@ -488,6 +526,13 @@ func writeDaemonStatus(w io.Writer, status daemonStatus) {
 	}
 }
 
+func writeDaemonInspect(w io.Writer, inspect daemonInspect) {
+	writeDaemonStatus(w, inspect.Status)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "tools:")
+	writeDaemonToolCatalogIndented(w, inspect.Tools, "  ")
+}
+
 func fetchDaemonTools(ctx context.Context, cfg connectConfig, client httpDoer) (daemonToolCatalog, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/tools", nil)
 	if err != nil {
@@ -513,23 +558,27 @@ func fetchDaemonTools(ctx context.Context, cfg connectConfig, client httpDoer) (
 }
 
 func writeDaemonToolCatalog(w io.Writer, tools []daemonToolCatalogEntry) {
+	writeDaemonToolCatalogIndented(w, tools, "")
+}
+
+func writeDaemonToolCatalogIndented(w io.Writer, tools []daemonToolCatalogEntry, indent string) {
 	if len(tools) == 0 {
-		fmt.Fprintln(w, "No daemon tools reported.")
+		fmt.Fprintf(w, "%sNo daemon tools reported.\n", indent)
 		return
 	}
 	for i, tool := range tools {
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
-		fmt.Fprintln(w, tool.Name)
+		fmt.Fprintf(w, "%s%s\n", indent, tool.Name)
 		if tool.Description != "" {
-			fmt.Fprintf(w, "  description: %s\n", oneLine(tool.Description))
+			fmt.Fprintf(w, "%s  description: %s\n", indent, oneLine(tool.Description))
 		}
 		if tool.RequiresPermission || tool.PermissionAction != "" || tool.PermissionTargetPreview != "" {
-			fmt.Fprintf(w, "  permission: %s %s\n", tool.PermissionAction, tool.PermissionTargetPreview)
+			fmt.Fprintf(w, "%s  permission: %s %s\n", indent, tool.PermissionAction, tool.PermissionTargetPreview)
 		}
 		if len(tool.Parameters) > 0 {
-			fmt.Fprintf(w, "  parameters: %s\n", compactJSON(tool.Parameters))
+			fmt.Fprintf(w, "%s  parameters: %s\n", indent, compactJSON(tool.Parameters))
 		}
 	}
 }
@@ -829,6 +878,7 @@ func printUsage(w io.Writer) {
   glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--env <path>]
   glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --status [--status-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
@@ -839,7 +889,7 @@ Commands:
 
 Flags:
   --id       Session id. Defaults to "default".
-  --prompt   Prompt text. Required unless connect --status/--tools is set.
+  --prompt   Prompt text. Required unless connect --inspect/--status/--tools is set.
   --model    Gemini model id or gemini/<model>. Defaults to gemini-2.5-flash.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Working directory for serve mode. Defaults to ".".
@@ -849,6 +899,9 @@ Flags:
   --base-url Connect daemon base URL override.
   --role     Connect role override.
   --max-turns Connect loop turn budget override.
+  --inspect  Connect mode: show daemon status and tools without starting a run.
+  --inspect-json
+             Connect --inspect mode: print JSON.
   --status   Connect mode: show daemon status and exit without starting a run.
   --status-json
              Connect --status mode: print JSON.
