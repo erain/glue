@@ -157,6 +157,103 @@ func TestRun_CodingFlagsParseAndUseInputAwareRunner(t *testing.T) {
 	}
 }
 
+func TestRunStatusDefaults(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"status"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Peggy " + Version,
+		"settings: built-in defaults",
+		"identity: none",
+		"provider: codex (provider default)",
+		"mcp: 0 configured, 0 enabled",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestRunStatusJSON(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workDir := t.TempDir()
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "openrouter",
+		"model":    "openrouter/test-model",
+		"store": map[string]any{
+			"type": "file",
+			"path": "$HOME/peggy-sessions",
+		},
+		"coding": map[string]any{
+			"enabled":          true,
+			"work_dir":         workDir,
+			"allowed_binaries": []string{"git", "go"},
+			"allow_overwrite":  true,
+		},
+		"permissions": map[string]any{
+			"default_tier": "prompt",
+			"channels": map[string]string{
+				"telegram": "trusted",
+			},
+		},
+		"channels": map[string]any{
+			"telegram": map[string]any{"enabled": true},
+		},
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"filesystem": {
+				Enabled:   true,
+				Transport: "stdio",
+				Command:   "mcp-server-filesystem",
+			},
+			"linear": {
+				Enabled:   false,
+				Transport: "http",
+				URL:       "https://example.invalid/mcp",
+			},
+		}},
+	})
+	soulPath := filepath.Join(t.TempDir(), "SOUL.md")
+	if err := os.WriteFile(soulPath, []byte("identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"status", "--config", cfgPath, "--soul", soulPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var report statusReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode status: %v\nstdout=%s", err, out.String())
+	}
+	if !report.Settings.Found || report.Settings.Path != cfgPath {
+		t.Fatalf("settings = %+v", report.Settings)
+	}
+	if !report.Identity.Found || report.Identity.Bytes != len("identity") {
+		t.Fatalf("identity = %+v", report.Identity)
+	}
+	if report.Provider.Name != "openrouter" || report.Provider.Model != "openrouter/test-model" {
+		t.Fatalf("provider = %+v", report.Provider)
+	}
+	if !report.Coding.Enabled || report.Coding.WorkDir != workDir || !report.Coding.AllowOverwrite {
+		t.Fatalf("coding = %+v", report.Coding)
+	}
+	if report.MCP.Configured != 2 || report.MCP.Enabled != 1 || len(report.MCP.Servers) != 2 {
+		t.Fatalf("mcp = %+v", report.MCP)
+	}
+	if len(report.Channels) != 1 || report.Channels[0] != "telegram" {
+		t.Fatalf("channels = %+v", report.Channels)
+	}
+}
+
 func TestRunMCPToolsNoServers(t *testing.T) {
 	t.Setenv(EnvConfigPath, "")
 	t.Setenv(EnvSoulPath, "")

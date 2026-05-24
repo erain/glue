@@ -22,6 +22,7 @@ A long-running personal-assistant agent built on the
   CLI, Telegram, and daemon clients
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
 - opt-in MCP tools plus resource and prompt inspection
+- local readiness status for config, identity, memory, coding, and MCP setup
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
@@ -155,6 +156,7 @@ peggy mcp read [flags]
 peggy mcp resources [flags]
 peggy mcp tools [flags]
 peggy serve [flags]
+peggy status [flags]
 
   --config <path>    Override the settings.json path.
   --soul <path>      Override the SOUL.md path.
@@ -173,6 +175,14 @@ peggy serve [flags]
 
 The prompt is whatever non-flag args you pass — quoting is your
 shell's job. Multi-word prompts work without quoting too.
+
+`peggy status` prints a local readiness summary without constructing a
+provider, starting a prompt, or connecting to MCP servers:
+
+```sh
+peggy status --config ~/.config/peggy/settings.json
+peggy status --config ~/.config/peggy/settings.json --json
+```
 
 ## Daemon Mode
 
