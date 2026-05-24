@@ -276,14 +276,8 @@ func runPeggyMCPHelper() error {
 	if initReq.Method != "initialize" {
 		return fmt.Errorf("first method = %q, want initialize", initReq.Method)
 	}
-	if err := writePeggyMCPResult(enc, initReq.ID, map[string]any{
-		"protocolVersion": "2025-11-25",
-		"capabilities":    map[string]any{},
-		"serverInfo": map[string]string{
-			"name":    "fake-peggy-mcp",
-			"version": "0.1.0",
-		},
-	}); err != nil {
+	scenario := os.Getenv("PEGGY_MCP_SCENARIO")
+	if err := writePeggyMCPResult(enc, initReq.ID, peggyMCPInitializeResult(scenario)); err != nil {
 		return err
 	}
 
@@ -305,6 +299,9 @@ func runPeggyMCPHelper() error {
 		}
 		switch req.Method {
 		case "tools/list":
+			if scenario == "resources_only" {
+				return fmt.Errorf("resources_only server received tools/list")
+			}
 			if err := writePeggyMCPResult(enc, req.ID, map[string]any{
 				"tools": []map[string]any{{
 					"name":        "echo",
@@ -334,9 +331,49 @@ func runPeggyMCPHelper() error {
 			}); err != nil {
 				return err
 			}
+		case "resources/list":
+			if scenario != "resources" && scenario != "resources_only" {
+				return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			}
+			if err := writePeggyMCPResult(enc, req.ID, map[string]any{
+				"resources": []map[string]any{{
+					"uri":         "file:///workspace/README.md",
+					"name":        "readme",
+					"title":       "Project README",
+					"description": "repository overview",
+					"mimeType":    "text/markdown",
+					"annotations": map[string]any{"audience": []string{"assistant"}},
+					"size":        1234,
+				}},
+			}); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			return fmt.Errorf("method = %q, want tools/list, tools/call, or resources/list", req.Method)
 		}
+	}
+}
+
+func peggyMCPInitializeResult(scenario string) map[string]any {
+	capabilities := map[string]any{}
+	switch scenario {
+	case "resources":
+		capabilities = map[string]any{
+			"tools":     map[string]any{},
+			"resources": map[string]any{},
+		}
+	case "resources_only":
+		capabilities = map[string]any{
+			"resources": map[string]any{},
+		}
+	}
+	return map[string]any{
+		"protocolVersion": "2025-11-25",
+		"capabilities":    capabilities,
+		"serverInfo": map[string]string{
+			"name":    "fake-peggy-mcp",
+			"version": "0.1.0",
+		},
 	}
 }
 

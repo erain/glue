@@ -148,6 +148,7 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy mcp resources [flags]
 peggy mcp tools [flags]
 peggy serve [flags]
 
@@ -349,9 +350,15 @@ Inspect the configured MCP surface without constructing a model
 provider or running a prompt:
 
 ```sh
+peggy mcp resources --config ~/.config/peggy/settings.json
+peggy mcp resources --config ~/.config/peggy/settings.json --json
 peggy mcp tools --config ~/.config/peggy/settings.json
 peggy mcp tools --config ~/.config/peggy/settings.json --json
 ```
+
+`peggy mcp resources` lists resource metadata only; it does not fetch
+resource contents. Servers that do not advertise resource support are
+skipped.
 
 The permission choices are intentionally small:
 

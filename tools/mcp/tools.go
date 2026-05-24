@@ -22,8 +22,14 @@ type Options struct{}
 // Manager owns initialized MCP clients and exposes their discovered tools as
 // ordinary glue tools.
 type Manager struct {
-	clients []*Client
+	servers []managedServer
 	tools   []glue.Tool
+}
+
+type managedServer struct {
+	name   string
+	cfg    ServerConfig
+	client *Client
 }
 
 // NewManager initializes each configured MCP server, discovers its tools, and
@@ -48,14 +54,16 @@ func NewManager(ctx context.Context, configs []ServerConfig, _ Options) (*Manage
 			_ = m.Close()
 			return nil, fmt.Errorf("mcp: server %q: %w", serverName, err)
 		}
-		m.clients = append(m.clients, client)
+		m.servers = append(m.servers, managedServer{name: serverName, cfg: cfg, client: client})
 
-		tools, err := listGlueTools(ctx, client, cfg, serverName, serverPart, seen)
-		if err != nil {
-			_ = m.Close()
-			return nil, fmt.Errorf("mcp: server %q: %w", serverName, err)
+		if shouldListTools(client.InitializeResult()) {
+			tools, err := listGlueTools(ctx, client, cfg, serverName, serverPart, seen)
+			if err != nil {
+				_ = m.Close()
+				return nil, fmt.Errorf("mcp: server %q: %w", serverName, err)
+			}
+			m.tools = append(m.tools, tools...)
 		}
-		m.tools = append(m.tools, tools...)
 	}
 	return m, nil
 }
@@ -68,14 +76,46 @@ func (m *Manager) Tools() []glue.Tool {
 	return append([]glue.Tool(nil), m.tools...)
 }
 
+// Resource describes an MCP resource exposed by one configured server.
+type Resource struct {
+	Server      string         `json:"server"`
+	URI         string         `json:"uri"`
+	Name        string         `json:"name"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	MIMEType    string         `json:"mime_type,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
+	Size        *int64         `json:"size,omitempty"`
+}
+
+// Resources lists resource metadata from servers that advertise MCP resource
+// support. It does not read resource contents.
+func (m *Manager) Resources(ctx context.Context) ([]Resource, error) {
+	if m == nil {
+		return nil, nil
+	}
+	var out []Resource
+	for _, server := range m.servers {
+		if !hasCapability(server.client.InitializeResult(), "resources") {
+			continue
+		}
+		resources, err := listResources(ctx, server.client, server.cfg, server.name)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: server %q: %w", server.name, err)
+		}
+		out = append(out, resources...)
+	}
+	return out, nil
+}
+
 // Close releases all MCP client transports owned by the manager.
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil
 	}
 	var errs []error
-	for _, client := range m.clients {
-		if err := client.Close(); err != nil {
+	for _, server := range m.servers {
+		if err := server.client.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -86,6 +126,11 @@ type listToolsResult struct {
 	Tools []toolDefinition `json:"tools"`
 }
 
+type listResourcesResult struct {
+	Resources  []resourceDefinition `json:"resources"`
+	NextCursor string               `json:"nextCursor,omitempty"`
+}
+
 type toolDefinition struct {
 	Name         string          `json:"name"`
 	Title        string          `json:"title,omitempty"`
@@ -93,6 +138,16 @@ type toolDefinition struct {
 	InputSchema  json.RawMessage `json:"inputSchema,omitempty"`
 	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
 	Annotations  map[string]any  `json:"annotations,omitempty"`
+}
+
+type resourceDefinition struct {
+	URI         string         `json:"uri"`
+	Name        string         `json:"name"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	MIMEType    string         `json:"mimeType,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
+	Size        *int64         `json:"size,omitempty"`
 }
 
 type callToolResult struct {
@@ -124,6 +179,56 @@ func listGlueTools(ctx context.Context, client *Client, cfg ServerConfig, server
 		out = append(out, tool)
 	}
 	return out, nil
+}
+
+func listResources(ctx context.Context, client *Client, cfg ServerConfig, serverName string) ([]Resource, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeoutFor(cfg))
+	defer cancel()
+
+	var out []Resource
+	var cursor string
+	for {
+		var params any
+		if cursor != "" {
+			params = map[string]string{"cursor": cursor}
+		}
+		var listed listResourcesResult
+		if err := client.Request(reqCtx, "resources/list", params, &listed); err != nil {
+			return nil, err
+		}
+		for _, def := range listed.Resources {
+			resource, err := mapResource(serverName, def)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, resource)
+		}
+		if listed.NextCursor == "" {
+			return out, nil
+		}
+		cursor = listed.NextCursor
+	}
+}
+
+func mapResource(serverName string, def resourceDefinition) (Resource, error) {
+	uri := strings.TrimSpace(def.URI)
+	name := strings.TrimSpace(def.Name)
+	if uri == "" {
+		return Resource{}, errors.New("mcp: resource uri is required")
+	}
+	if name == "" {
+		return Resource{}, fmt.Errorf("mcp: resource %q name is required", uri)
+	}
+	return Resource{
+		Server:      serverName,
+		URI:         uri,
+		Name:        name,
+		Title:       strings.TrimSpace(def.Title),
+		Description: strings.TrimSpace(def.Description),
+		MIMEType:    strings.TrimSpace(def.MIMEType),
+		Annotations: cloneMap(def.Annotations),
+		Size:        cloneInt64(def.Size),
+	}, nil
 }
 
 func mapTool(client *Client, cfg ServerConfig, serverName, serverPart string, def toolDefinition, seen map[string]struct{}) (glue.Tool, error) {
@@ -261,6 +366,21 @@ func (t remoteTool) mapResult(result callToolResult) glue.ToolResult {
 	}
 }
 
+func shouldListTools(init InitializeResult) bool {
+	if hasCapability(init, "tools") {
+		return true
+	}
+	return len(init.Capabilities) == 0
+}
+
+func hasCapability(init InitializeResult, name string) bool {
+	if len(init.Capabilities) == 0 {
+		return false
+	}
+	_, ok := init.Capabilities[name]
+	return ok
+}
+
 func timeoutFor(cfg ServerConfig) time.Duration {
 	if cfg.Timeout > 0 {
 		return cfg.Timeout
@@ -370,4 +490,12 @@ func cloneMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneInt64(in *int64) *int64 {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }

@@ -151,13 +151,13 @@ func runMCPHelper(scenario string) error {
 		fmt.Fprint(os.Stderr, "stderr-line-with-extra-data")
 	}
 
-	if err := writeHelperResult(enc, initReq.ID, initializeResult(ProtocolVersion)); err != nil {
+	if err := writeHelperResult(enc, initReq.ID, initializeResultForScenario(ProtocolVersion, scenario)); err != nil {
 		return err
 	}
 	if err := readInitialized(dec); err != nil {
 		return err
 	}
-	if scenario == "tools" || scenario == "bad_schema" || scenario == "collision" {
+	if scenario == "tools" || scenario == "bad_schema" || scenario == "collision" || scenario == "resources" || scenario == "resources_only" {
 		return runMCPToolScenario(dec, enc, scenario)
 	}
 	if scenario != "rpc_error" {
@@ -189,6 +189,9 @@ func runMCPToolScenario(dec *json.Decoder, enc *json.Encoder, scenario string) e
 		}
 		switch req.Method {
 		case "tools/list":
+			if scenario == "resources_only" {
+				return fmt.Errorf("resources_only server received tools/list")
+			}
 			if err := writeHelperResult(enc, req.ID, helperToolsList(scenario)); err != nil {
 				return err
 			}
@@ -196,8 +199,15 @@ func runMCPToolScenario(dec *json.Decoder, enc *json.Encoder, scenario string) e
 			if err := handleHelperToolCall(enc, req); err != nil {
 				return err
 			}
+		case "resources/list":
+			if scenario != "resources" && scenario != "resources_only" {
+				return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			}
+			if err := writeHelperResult(enc, req.ID, helperResourcesList()); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			return fmt.Errorf("method = %q, want tools/list, tools/call, or resources/list", req.Method)
 		}
 	}
 }
@@ -236,6 +246,20 @@ func helperToolsList(scenario string) map[string]any {
 				{"name": "rpc.fail", "inputSchema": json.RawMessage(`{"type":"object"}`)},
 			},
 		}
+	}
+}
+
+func helperResourcesList() map[string]any {
+	return map[string]any{
+		"resources": []map[string]any{{
+			"uri":         "file:///workspace/README.md",
+			"name":        "readme",
+			"title":       "Project README",
+			"description": "repository overview",
+			"mimeType":    "text/markdown",
+			"annotations": map[string]any{"audience": []string{"assistant"}, "priority": 0.8},
+			"size":        1234,
+		}},
 	}
 }
 
@@ -295,9 +319,29 @@ func handleHelperToolCall(enc *json.Encoder, req helperRequest) error {
 }
 
 func initializeResult(version string) map[string]any {
+	return initializeResultWithCapabilities(version, map[string]any{})
+}
+
+func initializeResultForScenario(version, scenario string) map[string]any {
+	switch scenario {
+	case "resources":
+		return initializeResultWithCapabilities(version, map[string]any{
+			"tools":     map[string]any{},
+			"resources": map[string]any{},
+		})
+	case "resources_only":
+		return initializeResultWithCapabilities(version, map[string]any{
+			"resources": map[string]any{},
+		})
+	default:
+		return initializeResult(version)
+	}
+}
+
+func initializeResultWithCapabilities(version string, capabilities map[string]any) map[string]any {
 	return map[string]any{
 		"protocolVersion": version,
-		"capabilities":    map[string]any{},
+		"capabilities":    capabilities,
 		"serverInfo": map[string]string{
 			"name":    "fake-mcp",
 			"version": "0.1.0",
