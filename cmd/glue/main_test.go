@@ -145,6 +145,62 @@ func TestRunCLIStreamsOutputAndLoadsEnv(t *testing.T) {
 	t.Cleanup(func() { os.Unsetenv("GLUE_TEST_ENV") })
 }
 
+func TestRunCLIUsageReportsTokens(t *testing.T) {
+	t.Parallel()
+
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{{
+		{Type: glue.ProviderEventStart},
+		{Type: glue.ProviderEventTextDelta, Delta: "hello"},
+		{Type: glue.ProviderEventDone, Message: &glue.Message{
+			Role: glue.MessageRoleAssistant,
+			Usage: &glue.Usage{
+				InputTokens:     3,
+				OutputTokens:    2,
+				CacheReadTokens: 1,
+				TotalTokens:     5,
+			},
+		}},
+	}}}
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run",
+		"--prompt", "say hi",
+		"--store", t.TempDir(),
+		"--usage",
+	}, &stdout, &stderr, fakeFactory(provider))
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "hello\n" {
+		t.Fatalf("stdout = %q, want streamed text", stdout.String())
+	}
+	if got, want := stderr.String(), "usage: input=3 output=2 cache_read=1 total=5\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
+func TestRunCLIUsageSilentWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("ok")}}
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run",
+		"--prompt", "go",
+		"--store", t.TempDir(),
+		"--usage",
+	}, &stdout, &stderr, fakeFactory(provider))
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "ok\n" {
+		t.Fatalf("stdout = %q, want ok", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no usage output", stderr.String())
+	}
+}
+
 func TestRunCLIMultipleEnvFilesShellEnvWins(t *testing.T) {
 	t.Setenv("GLUE_TEST_FROM_SHELL", "shell-value")
 	os.Unsetenv("GLUE_TEST_FROM_FILE_A")
@@ -553,6 +609,95 @@ func TestRunCLIConnectStartsRunAndStreamsText(t *testing.T) {
 	}
 	if got.Text != "hello" || got.Model != "gemini/custom" || got.Role != "reviewer" || got.MaxTurns != 3 || got.ClientID == "" {
 		t.Fatalf("start payload = %+v", got)
+	}
+}
+
+func TestRunCLIConnectUsageReportsTokens(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/default/runs":
+			writeJSONResponse(t, w, http.StatusCreated, startRunResult{RunID: "run_1", SessionID: "default", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "done"}})
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "run_done", Payload: connectRunDonePayload{
+				NewMessages: []glue.Message{
+					{
+						Role: glue.MessageRoleAssistant,
+						Usage: &glue.Usage{
+							InputTokens:     3,
+							OutputTokens:    2,
+							CacheReadTokens: 1,
+							TotalTokens:     5,
+						},
+					},
+					{
+						Role: glue.MessageRoleAssistant,
+						Usage: &glue.Usage{
+							InputTokens:  4,
+							OutputTokens: 1,
+							TotalTokens:  5,
+						},
+					},
+				},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--prompt", "hello",
+		"--usage",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "done\n" {
+		t.Fatalf("stdout = %q, want streamed text", stdout.String())
+	}
+	if got, want := stderr.String(), "usage: input=7 output=3 cache_read=1 total=10\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
+func TestRunCLIConnectUsageSilentWhenMissing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/default/runs":
+			writeJSONResponse(t, w, http.StatusCreated, startRunResult{RunID: "run_1", SessionID: "default", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "run_done", Payload: connectRunDonePayload{Text: "fallback"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--prompt", "hello",
+		"--usage",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "fallback\n" {
+		t.Fatalf("stdout = %q, want fallback text", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want no usage output", stderr.String())
 	}
 }
 

@@ -32,7 +32,7 @@ type fixture struct {
 
 // fixtureReplayAttempts allows the non-deterministic OpenRouter free
 // router two retries when an upstream model returns a provider-quality
-// failure instead of a review. Each attempt has runAgentInRepo's
+// failure or stalls instead of a review. Each attempt has runAgentInRepo's
 // 180-second timeout, so the worst case stays bounded for CI.
 const fixtureReplayAttempts = 3
 
@@ -123,8 +123,9 @@ var fixtures = []fixture{
 // Skipped quietly when no provider key is in env (matches the existing
 // TestLiveReviewSmoke gating convention). The OpenRouter free router is
 // intentionally non-deterministic, so known upstream-quality faults
-// (empty/preamble-only responses or malformed tool-call JSON) get two
-// retries before the last attempt is judged normally.
+// (empty/preamble-only responses, malformed tool-call JSON, or stalled
+// upstream responses) get two retries before the last attempt is judged
+// normally.
 func TestFixtureReplay(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -178,6 +179,9 @@ func TestFixtureReplayRetryClassifiers(t *testing.T) {
 
 	if !isRetryableFixtureReplayError(fmt.Errorf("rc=1 stderr=openrouter: tool call %q invalid JSON arguments", "git_diff_branch")) {
 		t.Fatal("invalid JSON tool-call error should be retryable")
+	}
+	if !isRetryableFixtureReplayError(fmt.Errorf("rc=1 stderr=[failover] openrouter failed: context deadline exceeded")) {
+		t.Fatal("context deadline from live upstream should be retryable")
 	}
 	if !isUpstreamRateLimit(fmt.Errorf("openrouter http 429: Rate limit exceeded")) {
 		t.Fatal("429 rate limit should be classified as upstream rate limit")
@@ -240,7 +244,8 @@ func runFixtureReplay(t *testing.T, repo, provider, fixtureName string) (string,
 func isRetryableFixtureReplayError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "invalid JSON arguments") ||
-		(strings.Contains(msg, "tool call") && strings.Contains(msg, "invalid JSON"))
+		(strings.Contains(msg, "tool call") && strings.Contains(msg, "invalid JSON")) ||
+		strings.Contains(msg, "context deadline exceeded")
 }
 
 func isRetryableFixtureReplayReview(review string) bool {
