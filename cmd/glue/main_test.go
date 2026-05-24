@@ -871,6 +871,81 @@ func TestRunCLIConnectListsSkillsJSON(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectListsRoles(t *testing.T) {
+	var sawRoles bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/roles":
+			sawRoles = true
+			writeJSONResponse(t, w, http.StatusOK, daemonRoleCatalog{Roles: []daemon.RoleCatalogEntry{{
+				Name:        "reviewer",
+				Description: "Reviews diffs",
+				Model:       "fast-model",
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--roles",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawRoles || sawRun {
+		t.Fatalf("sawRoles=%v sawRun=%v", sawRoles, sawRun)
+	}
+	for _, want := range []string{"reviewer", "description: Reviews diffs", "model: fast-model"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectListsRolesJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/roles" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemonRoleCatalog{Roles: []daemon.RoleCatalogEntry{{
+			Name:  "reviewer",
+			Model: "fast-model",
+		}}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--roles-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var catalog daemonRoleCatalog
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if len(catalog.Roles) != 1 || catalog.Roles[0].Name != "reviewer" || catalog.Roles[0].Model != "fast-model" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
 func TestRunCLIConnectRunsSkill(t *testing.T) {
 	var payload startRunPayload
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1527,6 +1602,7 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 
 func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 	var sawSkills bool
+	var sawRoles bool
 	var sawResources bool
 	var sawPrompts bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1535,7 +1611,7 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
 				OK:           true,
 				Version:      1,
-				Capabilities: []string{"status", "tools", "skills", "mcp_resources", "mcp_prompts"},
+				Capabilities: []string{"status", "tools", "skills", "roles", "mcp_resources", "mcp_prompts"},
 			})
 		case "/v1/tools":
 			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{})
@@ -1544,6 +1620,12 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemonSkillCatalog{Skills: []daemon.SkillCatalogEntry{{
 				Name:        "triage",
 				Description: "Triage one issue",
+			}}})
+		case "/v1/roles":
+			sawRoles = true
+			writeJSONResponse(t, w, http.StatusOK, daemonRoleCatalog{Roles: []daemon.RoleCatalogEntry{{
+				Name:  "reviewer",
+				Model: "fast-model",
 			}}})
 		case "/v1/mcp/resources":
 			sawResources = true
@@ -1575,12 +1657,15 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d stderr=%q", code, stderr.String())
 	}
-	if !sawSkills || !sawResources || !sawPrompts {
-		t.Fatalf("sawSkills=%v sawResources=%v sawPrompts=%v", sawSkills, sawResources, sawPrompts)
+	if !sawSkills || !sawRoles || !sawResources || !sawPrompts {
+		t.Fatalf("sawSkills=%v sawRoles=%v sawResources=%v sawPrompts=%v", sawSkills, sawRoles, sawResources, sawPrompts)
 	}
 	for _, want := range []string{
 		"skills:",
 		"triage",
+		"roles:",
+		"reviewer",
+		"model: fast-model",
 		"mcp_resources:",
 		"file:///workspace/README.md",
 		"mcp_prompts:",

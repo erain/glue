@@ -188,6 +188,44 @@ func TestPeggyDaemonListsAndRunsWorkspaceSkills(t *testing.T) {
 	}
 }
 
+func TestPeggyDaemonListsWorkspaceRoles(t *testing.T) {
+	workDir := t.TempDir()
+	roleDir := filepath.Join(workDir, "roles")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roleDir, "reviewer.md"), []byte("---\nname: reviewer\ndescription: Reviews diffs\nmodel: role-model\n---\nReview carefully."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(Options{
+		Settings: Settings{Context: ContextSettings{WorkDir: workDir}},
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var roles struct {
+		Roles []daemon.RoleCatalogEntry `json:"roles"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/roles", &roles)
+	if len(roles.Roles) != 1 || roles.Roles[0].Name != "reviewer" || roles.Roles[0].Model != "role-model" {
+		t.Fatalf("roles = %+v", roles.Roles)
+	}
+}
+
 func TestPeggyDaemonExposesMCPCatalogs(t *testing.T) {
 	p, err := New(Options{
 		Settings: Settings{

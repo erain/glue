@@ -40,6 +40,12 @@ type SkillCatalogHost interface {
 	SkillCatalog(context.Context) ([]SkillCatalogEntry, error)
 }
 
+// RoleCatalogHost is optionally implemented by hosts that can expose
+// reusable roles without starting a run.
+type RoleCatalogHost interface {
+	RoleCatalog(context.Context) ([]RoleCatalogEntry, error)
+}
+
 // MCPResourceCatalogHost is optionally implemented by hosts that can expose
 // MCP resource metadata without starting a run.
 type MCPResourceCatalogHost interface {
@@ -68,6 +74,13 @@ type MCPPromptRendererHost interface {
 type SkillCatalogEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+}
+
+// RoleCatalogEntry describes one reusable role advertised by a host.
+type RoleCatalogEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Model       string `json:"model,omitempty"`
 }
 
 // MCPResourceCatalogEntry describes one MCP resource advertised by a host.
@@ -304,6 +317,10 @@ type skillCatalogResponse struct {
 	Skills []SkillCatalogEntry `json:"skills"`
 }
 
+type roleCatalogResponse struct {
+	Roles []RoleCatalogEntry `json:"roles"`
+}
+
 type mcpResourceCatalogResponse struct {
 	Resources []MCPResourceCatalogEntry `json:"resources"`
 }
@@ -395,6 +412,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleSkills(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/roles" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleRoles(w, r)
 		return
 	}
 
@@ -506,6 +532,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if _, ok := s.host.(SkillCatalogHost); ok {
 		capabilities = append(capabilities, "skills")
 	}
+	if _, ok := s.host.(RoleCatalogHost); ok {
+		capabilities = append(capabilities, "roles")
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		OK:           true,
 		Version:      protocolVersion,
@@ -587,6 +616,23 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		skills = []SkillCatalogEntry{}
 	}
 	writeJSON(w, http.StatusOK, skillCatalogResponse{Skills: skills})
+}
+
+func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(RoleCatalogHost)
+	if !ok {
+		writeJSON(w, http.StatusOK, roleCatalogResponse{Roles: []RoleCatalogEntry{}})
+		return
+	}
+	roles, err := host.RoleCatalog(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if roles == nil {
+		roles = []RoleCatalogEntry{}
+	}
+	writeJSON(w, http.StatusOK, roleCatalogResponse{Roles: roles})
 }
 
 func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {

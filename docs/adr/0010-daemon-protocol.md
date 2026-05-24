@@ -145,7 +145,7 @@ Response:
   "version": 1,
   "active_runs": 0,
   "tools_count": 4,
-  "capabilities": ["runs", "events", "permissions", "tools", "skills", "status"]
+  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "status"]
 }
 ```
 
@@ -201,6 +201,31 @@ Response:
 Hosts that do not expose a skill catalog return an empty `skills`
 array. A host that does expose a catalog advertises the `skills`
 capability in `/v1/status`.
+
+Daemon clients can inspect reusable host roles:
+
+```http
+GET /v1/roles
+```
+
+Response:
+
+```json
+{
+  "roles": [
+    {
+      "name": "reviewer",
+      "description": "Review diffs carefully",
+      "model": "gpt-5-codex"
+    }
+  ]
+}
+```
+
+Hosts that do not expose a role catalog return an empty `roles` array.
+A host that exposes a catalog advertises the `roles` capability in
+`/v1/status`. Runs apply roles through the existing `role` field on
+the run-start request.
 
 ### 5. Runs and sessions
 
