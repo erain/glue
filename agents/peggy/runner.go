@@ -15,6 +15,7 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
+	toolsmcp "github.com/erain/glue/tools/mcp"
 )
 
 // Version is the package version string surfaced by `peggy --version`.
@@ -184,14 +185,27 @@ type mcpToolCatalogEntry struct {
 	PermissionTarget   string          `json:"permission_target,omitempty"`
 }
 
+type mcpResourceCatalogEntry struct {
+	Server      string         `json:"server"`
+	URI         string         `json:"uri"`
+	Name        string         `json:"name"`
+	Title       string         `json:"title,omitempty"`
+	Description string         `json:"description,omitempty"`
+	MIMEType    string         `json:"mime_type,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
+	Size        *int64         `json:"size,omitempty"`
+}
+
 func runMCP(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	usage := func() {
 		fmt.Fprintf(stderr, `peggy mcp — inspect Peggy's configured MCP surface.
 
 Usage:
+  peggy mcp resources [flags]
   peggy mcp tools [flags]
 
 Commands:
+  resources  List resources discovered from enabled MCP servers.
   tools    List tools discovered from enabled MCP servers.
 `)
 	}
@@ -203,6 +217,8 @@ Commands:
 	case "-h", "--help", "help":
 		usage()
 		return 0
+	case "resources":
+		return runMCPResources(ctx, args[1:], stdout, stderr)
 	case "tools":
 		return runMCPTools(ctx, args[1:], stdout, stderr)
 	default:
@@ -210,6 +226,72 @@ Commands:
 		usage()
 		return 2
 	}
+}
+
+func runMCPResources(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy mcp resources", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy mcp resources — list resources from enabled MCP servers.
+
+Usage:
+  peggy mcp resources [flags]
+
+Examples:
+  peggy mcp resources --config ~/.config/peggy/settings.json
+  peggy mcp resources --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy mcp resources: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp resources: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy mcp resources: no settings.json found; using built-in defaults")
+	}
+
+	resources, manager, _, err := MCPResources(ctx, settings.MCP)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp resources: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp resources: close: %v\n", err)
+		}
+	}()
+
+	catalog := buildMCPResourceCatalog(resources)
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(catalog); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp resources: encode catalog: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMCPResourceCatalog(stdout, catalog)
+	return 0
 }
 
 func runMCPTools(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -296,6 +378,23 @@ func buildMCPToolCatalog(tools []glue.Tool) []mcpToolCatalogEntry {
 	return catalog
 }
 
+func buildMCPResourceCatalog(resources []toolsmcp.Resource) []mcpResourceCatalogEntry {
+	catalog := make([]mcpResourceCatalogEntry, 0, len(resources))
+	for _, resource := range resources {
+		catalog = append(catalog, mcpResourceCatalogEntry{
+			Server:      resource.Server,
+			URI:         resource.URI,
+			Name:        resource.Name,
+			Title:       resource.Title,
+			Description: resource.Description,
+			MIMEType:    resource.MIMEType,
+			Annotations: cloneResourceAnnotations(resource.Annotations),
+			Size:        cloneResourceSize(resource.Size),
+		})
+	}
+	return catalog
+}
+
 func writeMCPToolCatalog(w io.Writer, catalog []mcpToolCatalogEntry) {
 	if len(catalog) == 0 {
 		fmt.Fprintln(w, "No MCP tools configured.")
@@ -316,6 +415,58 @@ func writeMCPToolCatalog(w io.Writer, catalog []mcpToolCatalogEntry) {
 			fmt.Fprintf(w, "  parameters: %s\n", compactJSONLine(entry.Parameters))
 		}
 	}
+}
+
+func writeMCPResourceCatalog(w io.Writer, catalog []mcpResourceCatalogEntry) {
+	if len(catalog) == 0 {
+		fmt.Fprintln(w, "No MCP resources configured.")
+		return
+	}
+	for i, entry := range catalog {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, entry.URI)
+		fmt.Fprintf(w, "  server: %s\n", entry.Server)
+		fmt.Fprintf(w, "  name: %s\n", entry.Name)
+		if entry.Title != "" {
+			fmt.Fprintf(w, "  title: %s\n", singleLine(entry.Title))
+		}
+		if entry.Description != "" {
+			fmt.Fprintf(w, "  description: %s\n", singleLine(entry.Description))
+		}
+		if entry.MIMEType != "" {
+			fmt.Fprintf(w, "  mime_type: %s\n", entry.MIMEType)
+		}
+		if entry.Size != nil {
+			fmt.Fprintf(w, "  size: %d\n", *entry.Size)
+		}
+		if len(entry.Annotations) > 0 {
+			raw, err := json.Marshal(entry.Annotations)
+			if err == nil {
+				fmt.Fprintf(w, "  annotations: %s\n", compactJSONLine(raw))
+			}
+		}
+	}
+}
+
+func cloneResourceAnnotations(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneResourceSize(in *int64) *int64 {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }
 
 func singleLine(s string) string {

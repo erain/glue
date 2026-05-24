@@ -144,6 +144,72 @@ func TestManagerRejectsToolNameCollision(t *testing.T) {
 	}
 }
 
+func TestManagerListsMCPResources(t *testing.T) {
+	cfg := helperConfig("resources")
+	cfg.Name = "fake-server"
+	mgr, err := NewManager(context.Background(), []ServerConfig{cfg}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	resources, err := mgr.Resources(context.Background())
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resources = %d, want 1: %+v", len(resources), resources)
+	}
+	resource := resources[0]
+	if resource.Server != "fake-server" || resource.URI != "file:///workspace/README.md" || resource.Name != "readme" {
+		t.Fatalf("resource identity = %+v", resource)
+	}
+	if resource.Title != "Project README" || resource.Description != "repository overview" || resource.MIMEType != "text/markdown" {
+		t.Fatalf("resource metadata = %+v", resource)
+	}
+	if resource.Size == nil || *resource.Size != 1234 {
+		t.Fatalf("resource size = %+v", resource.Size)
+	}
+	if resource.Annotations["priority"].(float64) != 0.8 {
+		t.Fatalf("annotations = %+v", resource.Annotations)
+	}
+}
+
+func TestManagerSkipsServersWithoutResources(t *testing.T) {
+	mgr, err := NewManager(context.Background(), []ServerConfig{helperConfig("tools")}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	resources, err := mgr.Resources(context.Background())
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if len(resources) != 0 {
+		t.Fatalf("resources = %+v, want none", resources)
+	}
+}
+
+func TestManagerSupportsResourceOnlyServers(t *testing.T) {
+	mgr, err := NewManager(context.Background(), []ServerConfig{helperConfig("resources_only")}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+	if len(mgr.Tools()) != 0 {
+		t.Fatalf("tools = %+v, want none", mgr.Tools())
+	}
+
+	resources, err := mgr.Resources(context.Background())
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if len(resources) != 1 || resources[0].URI != "file:///workspace/README.md" {
+		t.Fatalf("resources = %+v", resources)
+	}
+}
+
 func requireTool(t *testing.T, tools []glue.Tool, name string) glue.Tool {
 	t.Helper()
 	for _, tool := range tools {

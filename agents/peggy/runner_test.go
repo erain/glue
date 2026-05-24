@@ -227,6 +227,81 @@ func TestRunMCPToolsJSON(t *testing.T) {
 	}
 }
 
+func TestRunMCPResourcesNoServers(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "resources"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "No MCP resources configured.") {
+		t.Fatalf("stdout = %q, want empty catalog message", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no settings.json found") {
+		t.Fatalf("stderr = %q, want settings diagnostic", errOut.String())
+	}
+}
+
+func TestRunMCPResourcesListsConfiguredResources(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("resources", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "resources", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"file:///workspace/README.md",
+		"server: fake",
+		"name: readme",
+		"title: Project README",
+		"description: repository overview",
+		"mime_type: text/markdown",
+		"size: 1234",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestRunMCPResourcesJSON(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("resources", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "resources", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var catalog []mcpResourceCatalogEntry
+	if err := json.Unmarshal(out.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode catalog: %v\nstdout=%s", err, out.String())
+	}
+	if len(catalog) != 1 {
+		t.Fatalf("catalog len = %d, want 1: %+v", len(catalog), catalog)
+	}
+	entry := catalog[0]
+	if entry.Server != "fake" || entry.URI != "file:///workspace/README.md" || entry.Name != "readme" || entry.MIMEType != "text/markdown" {
+		t.Fatalf("catalog entry = %+v", entry)
+	}
+	if entry.Size == nil || *entry.Size != 1234 {
+		t.Fatalf("size = %+v", entry.Size)
+	}
+}
+
 func TestRunMCPUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), []string{"mcp", "bogus"}, &out, &errOut)

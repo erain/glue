@@ -41,6 +41,28 @@ func MCPTools(ctx context.Context, settings MCPSettings) ([]glue.Tool, *toolsmcp
 	return manager.Tools(), manager, normalized, nil
 }
 
+// MCPResources initializes Peggy's configured MCP servers and returns
+// discovered resource metadata plus the manager that owns server lifecycles.
+func MCPResources(ctx context.Context, settings MCPSettings) ([]toolsmcp.Resource, *toolsmcp.Manager, MCPSettings, error) {
+	configs, normalized, err := MCPServerConfigs(settings)
+	if err != nil {
+		return nil, nil, normalized, err
+	}
+	if len(configs) == 0 {
+		return nil, nil, normalized, nil
+	}
+	manager, err := toolsmcp.NewManager(ctx, configs, toolsmcp.Options{})
+	if err != nil {
+		return nil, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	resources, err := manager.Resources(ctx)
+	if err != nil {
+		_ = manager.Close()
+		return nil, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	return resources, manager, normalized, nil
+}
+
 // MCPServerConfigs converts Peggy settings into tools/mcp server configs.
 func MCPServerConfigs(settings MCPSettings) ([]toolsmcp.ServerConfig, MCPSettings, error) {
 	normalized, err := expandMCPSettings(settings)
