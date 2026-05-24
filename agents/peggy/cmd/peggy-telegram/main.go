@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/erain/glue"
 	"github.com/erain/glue/agents/peggy"
 	"github.com/erain/glue/agents/peggy/channels/telegram"
 )
@@ -118,15 +119,21 @@ Flags:
 		return 0
 	}
 	var permission *telegram.Permission
+	var agentPermission glue.Permission
 	if settings.Coding.Enabled {
 		permission = telegram.NewPermission(telegram.PermissionOptions{Stderr: stderr})
+		agentPermission = peggy.NewTieredPermission(
+			permission,
+			peggy.PermissionTierForChannel(settings.Permissions, peggy.PermissionChannelTelegram),
+			peggy.PermissionChannelTelegram,
+		)
 	}
 
 	p, err := peggy.New(peggy.Options{
 		Settings:   settings,
 		Soul:       soul,
 		Stderr:     stderr,
-		Permission: permission,
+		Permission: agentPermission,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy-telegram: setup: %v\n", err)

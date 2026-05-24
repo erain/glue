@@ -183,6 +183,54 @@ func TestLoadSettings_CodingDefaultsAndWorkDirExpansion(t *testing.T) {
 	}
 }
 
+func TestLoadSettings_PermissionDefaultsAndChannels(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(XDGConfigEnv, "")
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeJSON(t, path, map[string]any{
+		"permissions": map[string]any{
+			"default_tier": "read_only",
+			"channels": map[string]any{
+				"Telegram": "TRUSTED",
+				"cli":      " prompt ",
+			},
+		},
+	})
+
+	s, _, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if s.Permissions.DefaultTier != "read_only" {
+		t.Fatalf("default tier = %q", s.Permissions.DefaultTier)
+	}
+	if got := s.Permissions.Channels["telegram"]; got != "trusted" {
+		t.Fatalf("telegram tier = %q", got)
+	}
+	if got := PermissionTierForChannel(s.Permissions, PermissionChannelCLI); got != PermissionTierPrompt {
+		t.Fatalf("cli tier = %q", got)
+	}
+	if got := PermissionTierForChannel(s.Permissions, "unknown"); got != PermissionTierReadOnly {
+		t.Fatalf("unknown tier = %q", got)
+	}
+}
+
+func TestLoadSettings_InvalidPermissionTierErrors(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeJSON(t, path, map[string]any{
+		"permissions": map[string]any{
+			"channels": map[string]any{"telegram": "maybe"},
+		},
+	})
+
+	_, _, err := LoadSettings(path)
+	if err == nil || !strings.Contains(err.Error(), "permissions.channels.telegram") {
+		t.Fatalf("LoadSettings error = %v", err)
+	}
+}
+
 func TestExpandPath_HomeAndTilde(t *testing.T) {
 	t.Setenv("HOME", "/tmp/peggy-home")
 	got, err := expandPath("~/.cache")

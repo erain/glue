@@ -419,8 +419,158 @@ func TestServerPermissionRememberForeverAcrossSessions(t *testing.T) {
 	}
 }
 
+func TestServerPermissionPolicyAllowSkipsPrompt(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	var observed PermissionContext
+	srv := newTestServerWithPolicy(t, agent, PermissionPolicyFunc(func(_ context.Context, info PermissionContext, req glue.PermissionRequest) (PermissionPolicyDecision, error) {
+		observed = info
+		if req.Tool != "side_effect" || req.Action != "touch" || req.SessionID != "default" {
+			t.Fatalf("permission request = %+v", req)
+		}
+		return PermissionPolicyDecision{Action: PermissionPolicyAllow}, nil
+	}))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRunWithClient(t, ts.URL, "default", "cli:test")
+	events := getSSE(t, ts.URL+start.EventsURL, "token")
+	if observed.ClientID != "cli:test" || observed.SessionID != "default" || observed.RunID == "" {
+		t.Fatalf("permission context = %+v", observed)
+	}
+	if executed.Load() != 1 {
+		t.Fatalf("tool executions = %d, want 1", executed.Load())
+	}
+	if contains(eventTypes(events), "permission_request") {
+		t.Fatalf("events = %v, want no permission_request", eventTypes(events))
+	}
+}
+
+func TestServerPermissionPolicyDenySkipsPrompt(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithPolicy(t, agent, PermissionPolicyFunc(func(context.Context, PermissionContext, glue.PermissionRequest) (PermissionPolicyDecision, error) {
+		return PermissionPolicyDecision{Action: PermissionPolicyDeny, Reason: "permission denied: read-only channel"}, nil
+	}))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRunWithClient(t, ts.URL, "default", "telegram:123")
+	events := getSSE(t, ts.URL+start.EventsURL, "token")
+	if executed.Load() != 0 {
+		t.Fatalf("tool executions = %d, want 0", executed.Load())
+	}
+	if contains(eventTypes(events), "permission_request") {
+		t.Fatalf("events = %v, want no permission_request", eventTypes(events))
+	}
+	if got := toolEndText(t, events); !strings.Contains(got, "read-only channel") {
+		t.Fatalf("tool error = %q, want policy reason", got)
+	}
+}
+
+func TestServerPermissionPolicyPromptFallsThrough(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithPolicy(t, agent, PermissionPolicyFunc(func(context.Context, PermissionContext, glue.PermissionRequest) (PermissionPolicyDecision, error) {
+		return PermissionPolicyDecision{Action: PermissionPolicyPrompt}, nil
+	}))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	start := startRunWithClient(t, ts.URL, "default", "cli:test")
+	events, err := collectSSE(t, ts.URL+start.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, start.RunID, permissionID(t, event), "token", `{"allow":true}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() != 1 {
+		t.Fatalf("tool executions = %d, want 1", executed.Load())
+	}
+	if !contains(eventTypes(events), "permission_request") {
+		t.Fatalf("events = %v, want permission_request", eventTypes(events))
+	}
+}
+
+func TestServerPermissionRememberForeverIsClientScoped(t *testing.T) {
+	var executed atomic.Int32
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("first done"),
+			toolCallTurn(), textTurn("second done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&executed)},
+	})
+	srv := newTestServerWithTimeout(t, agent, 50*time.Millisecond)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	first := startRunWithClient(t, ts.URL, "telegram:123", "telegram:123")
+	firstEvents, err := collectSSE(t, ts.URL+first.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, first.RunID, permissionID(t, event), "token", `{"allow":true,"remember_for":"forever"}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(eventTypes(firstEvents), "permission_request") {
+		t.Fatal("first run did not ask permission")
+	}
+
+	second := startRunWithClient(t, ts.URL, "default", "cli:test")
+	secondEvents, err := collectSSE(t, ts.URL+second.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, ts.URL, second.RunID, permissionID(t, event), "token", `{"allow":true}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() != 2 {
+		t.Fatalf("tool executions = %d, want 2", executed.Load())
+	}
+	if !contains(eventTypes(secondEvents), "permission_request") {
+		t.Fatalf("second run events = %v, want client-scoped cache miss", eventTypes(secondEvents))
+	}
+}
+
 func newTestServer(t *testing.T, host Host) *Server {
 	return newTestServerWithTimeout(t, host, time.Second)
+}
+
+func newTestServerWithPolicy(t *testing.T, host Host, policy PermissionPolicy) *Server {
+	t.Helper()
+	now := time.Date(2026, 5, 23, 20, 46, 0, 0, time.UTC)
+	srv, err := New(Options{
+		Host:              host,
+		Token:             "token",
+		PermissionPolicy:  policy,
+		Now:               func() time.Time { return now },
+		NewID:             sequenceIDs(),
+		PermissionTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv
 }
 
 func newTestServerWithTimeout(t *testing.T, host Host, timeout time.Duration) *Server {
@@ -469,7 +619,13 @@ func postJSON(t *testing.T, url, token, body string) *http.Response {
 
 func startRun(t *testing.T, baseURL, sessionID string) startRunResponse {
 	t.Helper()
-	resp := postJSON(t, baseURL+"/v1/sessions/"+sessionID+"/runs", "token", `{"text":"go","client_id":"cli:test"}`)
+	return startRunWithClient(t, baseURL, sessionID, "cli:test")
+}
+
+func startRunWithClient(t *testing.T, baseURL, sessionID, clientID string) startRunResponse {
+	t.Helper()
+	body := fmt.Sprintf(`{"text":"go","client_id":%s}`, strconv.Quote(clientID))
+	resp := postJSON(t, baseURL+"/v1/sessions/"+sessionID+"/runs", "token", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("start status = %d, want %d", resp.StatusCode, http.StatusCreated)

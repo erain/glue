@@ -84,6 +84,9 @@ type Peggy struct {
 // [fillDefaults] (the simplest way: Settings.WithDefaults()).
 func New(opts Options) (*Peggy, error) {
 	settings := fillDefaults(opts.Settings)
+	if err := validatePermissionSettings(settings.Permissions); err != nil {
+		return nil, err
+	}
 
 	stderr := opts.Stderr
 	if stderr == nil {

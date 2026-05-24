@@ -660,6 +660,24 @@ allowlist and inline permission buttons:
 go run ./agents/peggy/cmd/peggy-telegram --daemon
 ```
 
+Peggy can assign permission tiers by daemon client/channel in
+`settings.json`. The default remains `prompt`; `read_only` denies
+side-effecting tools before any client prompt, and `trusted` allows
+side-effecting tools without prompting while preserving workspace,
+binary, overwrite, timeout, and output limits:
+
+```json
+{
+  "permissions": {
+    "default_tier": "prompt",
+    "channels": {
+      "cli": "trusted",
+      "telegram": "prompt"
+    }
+  }
+}
+```
+
 ### Standard flags for downstream agents
 
 Agents that ship their own CLI binary share the same six flags
