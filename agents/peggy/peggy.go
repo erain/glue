@@ -207,6 +207,31 @@ func (p *Peggy) ToolCatalog() []glue.ToolSpec {
 	return p.agent.ToolCatalog()
 }
 
+// SkillCatalog implements daemon.SkillCatalogHost.
+func (p *Peggy) SkillCatalog(ctx context.Context) ([]daemon.SkillCatalogEntry, error) {
+	if p == nil {
+		return nil, nil
+	}
+	workDir := strings.TrimSpace(p.settings.Context.WorkDir)
+	if workDir == "" {
+		return nil, nil
+	}
+	projectContext, err := glue.LoadContext(workDir)
+	if err != nil {
+		return nil, err
+	}
+	names := sortedMapKeys(projectContext.Skills)
+	out := make([]daemon.SkillCatalogEntry, 0, len(names))
+	for _, name := range names {
+		skill := projectContext.Skills[name]
+		out = append(out, daemon.SkillCatalogEntry{
+			Name:        skill.Name,
+			Description: skill.Description,
+		})
+	}
+	return out, nil
+}
+
 // MCPResourceCatalog implements daemon.MCPResourceCatalogHost.
 func (p *Peggy) MCPResourceCatalog(ctx context.Context) ([]daemon.MCPResourceCatalogEntry, error) {
 	if p == nil || p.mcpManager == nil {

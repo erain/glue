@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +30,24 @@ func (p scriptedProvider) Stream(context.Context, glue.ProviderRequest) (<-chan 
 	for _, event := range p.events {
 		ch <- event
 	}
+	close(ch)
+	return ch, nil
+}
+
+type captureProvider struct {
+	text     string
+	mu       sync.Mutex
+	requests []glue.ProviderRequest
+}
+
+func (p *captureProvider) Stream(_ context.Context, req glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+	ch := make(chan glue.ProviderEvent, 3)
+	ch <- glue.ProviderEvent{Type: glue.ProviderEventStart}
+	ch <- glue.ProviderEvent{Type: glue.ProviderEventTextDelta, Delta: p.text}
+	ch <- glue.ProviderEvent{Type: glue.ProviderEventDone}
 	close(ch)
 	return ch, nil
 }
@@ -75,6 +95,18 @@ type sessionOnlyHost struct{}
 
 func (sessionOnlyHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
 	return nil, errors.New("unused")
+}
+
+type skillCatalogHost struct {
+	skills []SkillCatalogEntry
+}
+
+func (skillCatalogHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (h skillCatalogHost) SkillCatalog(context.Context) ([]SkillCatalogEntry, error) {
+	return h.skills, nil
 }
 
 type mcpCatalogHost struct {
@@ -225,6 +257,63 @@ func TestServerToolsCatalogUnsupportedHost(t *testing.T) {
 	}
 	if len(catalog.Tools) != 0 {
 		t.Fatalf("catalog = %+v, want empty", catalog.Tools)
+	}
+}
+
+func TestServerSkillsCatalog(t *testing.T) {
+	srv := newTestServer(t, skillCatalogHost{skills: []SkillCatalogEntry{{
+		Name:        "triage",
+		Description: "Triage one issue",
+	}}})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/skills", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/skills", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("skills status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog skillCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Skills) != 1 || catalog.Skills[0].Name != "triage" || catalog.Skills[0].Description != "Triage one issue" {
+		t.Fatalf("catalog = %+v", catalog.Skills)
+	}
+
+	var status statusResponse
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(status.Capabilities, "skills") {
+		t.Fatalf("capabilities = %v, missing skills", status.Capabilities)
+	}
+}
+
+func TestServerSkillsCatalogUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/skills", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("skills status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog skillCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Skills) != 0 {
+		t.Fatalf("catalog = %+v, want empty", catalog.Skills)
 	}
 }
 
@@ -521,6 +610,69 @@ func TestServerStartsRunAndStreamsEvents(t *testing.T) {
 		if event.RunID != start.RunID || event.SessionID != "default" {
 			t.Fatalf("event = %+v, want run/session ids", event)
 		}
+	}
+}
+
+func TestServerStartsSkillRunAndStreamsEvents(t *testing.T) {
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "triage")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: triage\ndescription: Triage one issue\n---\nInvestigate and summarize."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider := &captureProvider{text: "triaged"}
+	agent := glue.NewAgent(glue.AgentOptions{Provider: provider, WorkDir: workDir})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/sessions/default/runs", "token", `{"skill":"triage","arguments":{"issue":"GLUE-123"},"client_id":"cli:test"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("start status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+	var start startRunResponse
+	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+
+	events := getSSE(t, ts.URL+start.EventsURL, "token")
+	types := eventTypes(events)
+	if types[0] != "run_start" || types[len(types)-1] != "run_done" || !contains(types, "text_delta") {
+		t.Fatalf("events = %v, want streamed skill run", types)
+	}
+	provider.mu.Lock()
+	requests := append([]glue.ProviderRequest(nil), provider.requests...)
+	provider.mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	prompt := requests[0].Messages[0].Content[0].Text
+	for _, want := range []string{"Investigate and summarize.", `"issue": "GLUE-123"`} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, missing %q", prompt, want)
+		}
+	}
+}
+
+func TestServerStartRunValidation(t *testing.T) {
+	agent := glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}})
+	srv := newTestServer(t, agent)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/sessions/default/runs", "token", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty run status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/sessions/default/runs", "token", `{"text":"hi","skill":"triage"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mixed run status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
 

@@ -84,6 +84,8 @@ type connectConfig struct {
 	MetadataPath string
 	SessionID    string
 	Prompt       string
+	Skill        string
+	SkillArgs    map[string]string
 	ClientID     string
 	Model        string
 	Role         string
@@ -91,11 +93,13 @@ type connectConfig struct {
 }
 
 type startRunPayload struct {
-	Text     string `json:"text"`
-	ClientID string `json:"client_id,omitempty"`
-	Role     string `json:"role,omitempty"`
-	Model    string `json:"model,omitempty"`
-	MaxTurns int    `json:"max_turns,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Skill     string            `json:"skill,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
+	ClientID  string            `json:"client_id,omitempty"`
+	Role      string            `json:"role,omitempty"`
+	Model     string            `json:"model,omitempty"`
+	MaxTurns  int               `json:"max_turns,omitempty"`
 }
 
 type startRunResult struct {
@@ -121,6 +125,10 @@ type usageSummary struct {
 
 type daemonToolCatalog struct {
 	Tools []daemonToolCatalogEntry `json:"tools"`
+}
+
+type daemonSkillCatalog struct {
+	Skills []daemon.SkillCatalogEntry `json:"skills"`
 }
 
 type daemonMCPResourceCatalog struct {
@@ -151,6 +159,7 @@ type daemonStatus struct {
 type daemonInspect struct {
 	Status       daemonStatus                     `json:"status"`
 	Tools        []daemonToolCatalogEntry         `json:"tools"`
+	Skills       []daemon.SkillCatalogEntry       `json:"skills,omitempty"`
 	MCPResources []daemon.MCPResourceCatalogEntry `json:"mcp_resources,omitempty"`
 	MCPPrompts   []daemon.MCPPromptCatalogEntry   `json:"mcp_prompts,omitempty"`
 }
@@ -349,6 +358,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 
 	sessionID := flags.String("id", "default", "session id")
 	prompt := flags.String("prompt", "", "prompt text")
+	skillName := flags.String("skill", "", "daemon skill name to run instead of --prompt")
 	baseURL := flags.String("base-url", "", "daemon base URL; defaults to metadata file")
 	tokenFlag := flags.String("token", "", "daemon bearer token; defaults to metadata file or GLUE_DAEMON_TOKEN")
 	metadataPath := flags.String("metadata", defaultMetadataPath(), "connection metadata JSON path; empty disables metadata file")
@@ -359,6 +369,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
 	showTools := flags.Bool("tools", false, "list daemon tools and exit without starting a run")
 	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
+	showSkills := flags.Bool("skills", false, "list daemon skills and exit without starting a run")
+	skillsJSON := flags.Bool("skills-json", false, "print --skills output as JSON")
 	showMCPResources := flags.Bool("mcp-resources", false, "list daemon MCP resources and exit without starting a run")
 	mcpResourcesJSON := flags.Bool("mcp-resources-json", false, "print --mcp-resources output as JSON")
 	showMCPPrompts := flags.Bool("mcp-prompts", false, "list daemon MCP prompts and exit without starting a run")
@@ -376,14 +388,17 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	inspectJSON := flags.Bool("inspect-json", false, "print --inspect output as JSON")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
-	var mcpArgs repeatedStrings
-	flags.Var(&mcpArgs, "arg", "MCP prompt argument key=value; repeatable")
+	var runArgs repeatedStrings
+	flags.Var(&runArgs, "arg", "skill or MCP prompt argument key=value; repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *toolsJSON {
 		*showTools = true
+	}
+	if *skillsJSON {
+		*showSkills = true
 	}
 	if *mcpResourcesJSON {
 		*showMCPResources = true
@@ -404,18 +419,25 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		*showInspect = true
 	}
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --status, or --inspect")
 	}
-	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" {
-		return errors.New("missing required --prompt")
+	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
+		return errors.New("missing required --prompt or --skill")
+	}
+	if inspectModes == 0 && strings.TrimSpace(*prompt) != "" && strings.TrimSpace(*skillName) != "" {
+		return errors.New("choose only one of --prompt or --skill")
 	}
 	if err := loadEnvFiles(envs); err != nil {
+		return err
+	}
+	runArgsMap, err := parseConnectArgs(runArgs)
+	if err != nil {
 		return err
 	}
 	cfg, err := resolveConnectConfig(connectConfig{
@@ -424,6 +446,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		MetadataPath: *metadataPath,
 		SessionID:    *sessionID,
 		Prompt:       *prompt,
+		Skill:        *skillName,
+		SkillArgs:    runArgsMap,
 		ClientID:     *clientID,
 		Model:        *model,
 		Role:         *role,
@@ -435,6 +459,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *showTools {
 		return runConnectTools(ctx, cfg, *toolsJSON, stdout, client)
 	}
+	if *showSkills {
+		return runConnectSkills(ctx, cfg, *skillsJSON, stdout, client)
+	}
 	if *showMCPResources {
 		return runConnectMCPResources(ctx, cfg, *mcpResourcesJSON, stdout, client)
 	}
@@ -445,11 +472,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		return runConnectMCPRead(ctx, cfg, *mcpServer, *mcpURI, *mcpReadJSON, stdout, client)
 	}
 	if *showMCPPrompt {
-		argsMap, err := parseConnectMCPArgs(mcpArgs)
-		if err != nil {
-			return err
-		}
-		return runConnectMCPPrompt(ctx, cfg, *mcpServer, *mcpName, argsMap, *mcpPromptJSON, stdout, client)
+		return runConnectMCPPrompt(ctx, cfg, *mcpServer, *mcpName, runArgsMap, *mcpPromptJSON, stdout, client)
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
@@ -484,6 +507,8 @@ func resolveConnectConfig(cfg connectConfig) (connectConfig, error) {
 	cfg.Token = strings.TrimSpace(cfg.Token)
 	cfg.SessionID = strings.TrimSpace(cfg.SessionID)
 	cfg.ClientID = strings.TrimSpace(cfg.ClientID)
+	cfg.Prompt = strings.TrimSpace(cfg.Prompt)
+	cfg.Skill = strings.TrimSpace(cfg.Skill)
 	if cfg.SessionID == "" {
 		cfg.SessionID = "default"
 	}
@@ -533,6 +558,20 @@ func runConnectTools(ctx context.Context, cfg connectConfig, jsonOutput bool, st
 		return enc.Encode(catalog)
 	}
 	writeDaemonToolCatalog(stdout, catalog.Tools)
+	return nil
+}
+
+func runConnectSkills(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	catalog, err := fetchDaemonSkills(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(catalog)
+	}
+	writeDaemonSkillCatalog(stdout, catalog.Skills)
 	return nil
 }
 
@@ -632,6 +671,13 @@ func runConnectInspect(ctx context.Context, cfg connectConfig, jsonOutput bool, 
 		return err
 	}
 	inspect := daemonInspect{Status: status, Tools: catalog.Tools}
+	if daemonHasCapability(status, "skills") {
+		skills, err := fetchDaemonSkills(ctx, cfg, client)
+		if err != nil {
+			return err
+		}
+		inspect.Skills = skills.Skills
+	}
 	if daemonHasCapability(status, "mcp_resources") {
 		resources, err := fetchDaemonMCPResources(ctx, cfg, client)
 		if err != nil {
@@ -695,6 +741,11 @@ func writeDaemonInspect(w io.Writer, inspect daemonInspect) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "tools:")
 	writeDaemonToolCatalogIndented(w, inspect.Tools, "  ")
+	if daemonHasCapability(inspect.Status, "skills") {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "skills:")
+		writeDaemonSkillCatalogIndented(w, inspect.Skills, "  ")
+	}
 	if daemonHasCapability(inspect.Status, "mcp_resources") {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "mcp_resources:")
@@ -727,6 +778,30 @@ func fetchDaemonTools(ctx context.Context, cfg connectConfig, client httpDoer) (
 	}
 	if catalog.Tools == nil {
 		catalog.Tools = []daemonToolCatalogEntry{}
+	}
+	return catalog, nil
+}
+
+func fetchDaemonSkills(ctx context.Context, cfg connectConfig, client httpDoer) (daemonSkillCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/skills", nil)
+	if err != nil {
+		return daemonSkillCatalog{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemonSkillCatalog{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonSkillCatalog{}, fmt.Errorf("daemon skills: %s", httpStatusError(resp))
+	}
+	var catalog daemonSkillCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return daemonSkillCatalog{}, err
+	}
+	if catalog.Skills == nil {
+		catalog.Skills = []daemon.SkillCatalogEntry{}
 	}
 	return catalog, nil
 }
@@ -861,6 +936,26 @@ func writeDaemonToolCatalogIndented(w io.Writer, tools []daemonToolCatalogEntry,
 		}
 		if len(tool.Parameters) > 0 {
 			fmt.Fprintf(w, "%s  parameters: %s\n", indent, compactJSON(tool.Parameters))
+		}
+	}
+}
+
+func writeDaemonSkillCatalog(w io.Writer, skills []daemon.SkillCatalogEntry) {
+	writeDaemonSkillCatalogIndented(w, skills, "")
+}
+
+func writeDaemonSkillCatalogIndented(w io.Writer, skills []daemon.SkillCatalogEntry, indent string) {
+	if len(skills) == 0 {
+		fmt.Fprintf(w, "%sNo daemon skills reported.\n", indent)
+		return
+	}
+	for i, skill := range skills {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "%s%s\n", indent, skill.Name)
+		if skill.Description != "" {
+			fmt.Fprintf(w, "%s  description: %s\n", indent, oneLine(skill.Description))
 		}
 	}
 }
@@ -1020,7 +1115,7 @@ func daemonHasCapability(status daemonStatus, capability string) bool {
 	return false
 }
 
-func parseConnectMCPArgs(values []string) (map[string]string, error) {
+func parseConnectArgs(values []string) (map[string]string, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
@@ -1050,11 +1145,13 @@ func compactJSON(raw json.RawMessage) string {
 
 func startDaemonRun(ctx context.Context, cfg connectConfig, client httpDoer) (startRunResult, error) {
 	payload := startRunPayload{
-		Text:     cfg.Prompt,
-		ClientID: cfg.ClientID,
-		Role:     strings.TrimSpace(cfg.Role),
-		Model:    strings.TrimSpace(cfg.Model),
-		MaxTurns: cfg.MaxTurns,
+		Text:      cfg.Prompt,
+		Skill:     cfg.Skill,
+		Arguments: cfg.SkillArgs,
+		ClientID:  cfg.ClientID,
+		Role:      strings.TrimSpace(cfg.Role),
+		Model:     strings.TrimSpace(cfg.Model),
+		MaxTurns:  cfg.MaxTurns,
 	}
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
@@ -1385,9 +1482,11 @@ func printUsage(w io.Writer) {
   glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--env <path>]
   glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --status [--status-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --skills [--skills-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-resources [--mcp-resources-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-prompts [--mcp-prompts-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-read --server <name> --uri <uri> [--mcp-read-json] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -1396,11 +1495,12 @@ func printUsage(w io.Writer) {
 Commands:
   run      Run the local Gemini-backed agent.
   serve    Start a local HTTP+SSE daemon for Glue sessions.
-  connect  Start a daemon run, or inspect daemon status/tools/MCP catalogs.
+  connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/MCP catalogs.
 
 Flags:
   --id       Session id. Defaults to "default".
-  --prompt   Prompt text. Required unless connect is in an inspection mode.
+  --prompt   Prompt text. Required unless --skill is set or connect is in an inspection mode.
+  --skill    Connect mode: run one daemon skill instead of --prompt.
   --model    Gemini model id or gemini/<model>. Defaults to gemini-2.5-flash.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Working directory for serve mode. Defaults to ".".
@@ -1420,6 +1520,9 @@ Flags:
   --tools    Connect mode: list daemon tools and exit without starting a run.
   --tools-json
              Connect --tools mode: print JSON.
+  --skills   Connect mode: list daemon skills and exit without starting a run.
+  --skills-json
+             Connect --skills mode: print JSON.
   --mcp-resources
              Connect mode: list daemon MCP resources and exit without starting a run.
   --mcp-resources-json
@@ -1439,7 +1542,7 @@ Flags:
   --server   MCP server name for --mcp-read or --mcp-prompt.
   --uri      MCP resource URI for --mcp-read.
   --name     MCP prompt name for --mcp-prompt.
-  --arg      MCP prompt argument key=value. Repeatable.
+  --arg      Skill or MCP prompt argument key=value. Repeatable.
   --env      Load env vars from a .env file. Repeatable; shell env wins.
 `)
 }

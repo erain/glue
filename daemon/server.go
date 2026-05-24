@@ -34,6 +34,12 @@ type ToolCatalogHost interface {
 	ToolCatalog() []glue.ToolSpec
 }
 
+// SkillCatalogHost is optionally implemented by hosts that can expose
+// reusable skills without starting a run.
+type SkillCatalogHost interface {
+	SkillCatalog(context.Context) ([]SkillCatalogEntry, error)
+}
+
 // MCPResourceCatalogHost is optionally implemented by hosts that can expose
 // MCP resource metadata without starting a run.
 type MCPResourceCatalogHost interface {
@@ -56,6 +62,12 @@ type MCPResourceReaderHost interface {
 // MCP prompt without starting a run.
 type MCPPromptRendererHost interface {
 	MCPRenderPrompt(context.Context, MCPPromptRenderRequest) (MCPPromptRenderResponse, error)
+}
+
+// SkillCatalogEntry describes one reusable skill advertised by a host.
+type SkillCatalogEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // MCPResourceCatalogEntry describes one MCP resource advertised by a host.
@@ -243,12 +255,14 @@ type errorResponse struct {
 }
 
 type startRunRequest struct {
-	Text     string         `json:"text"`
-	ClientID string         `json:"client_id,omitempty"`
-	Role     string         `json:"role,omitempty"`
-	Model    string         `json:"model,omitempty"`
-	MaxTurns int            `json:"max_turns,omitempty"`
-	Options  map[string]any `json:"options,omitempty"`
+	Text      string            `json:"text"`
+	Skill     string            `json:"skill,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
+	ClientID  string            `json:"client_id,omitempty"`
+	Role      string            `json:"role,omitempty"`
+	Model     string            `json:"model,omitempty"`
+	MaxTurns  int               `json:"max_turns,omitempty"`
+	Options   map[string]any    `json:"options,omitempty"`
 }
 
 type startRunResponse struct {
@@ -284,6 +298,10 @@ type statusResponse struct {
 
 type toolCatalogResponse struct {
 	Tools []toolCatalogEntry `json:"tools"`
+}
+
+type skillCatalogResponse struct {
+	Skills []SkillCatalogEntry `json:"skills"`
 }
 
 type mcpResourceCatalogResponse struct {
@@ -368,6 +386,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTools(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/skills" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleSkills(w, r)
 		return
 	}
 
@@ -476,6 +503,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if _, ok := s.host.(MCPPromptRendererHost); ok {
 		capabilities = append(capabilities, "mcp_prompt_get")
 	}
+	if _, ok := s.host.(SkillCatalogHost); ok {
+		capabilities = append(capabilities, "skills")
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		OK:           true,
 		Version:      protocolVersion,
@@ -491,8 +521,14 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionI
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body", false)
 		return
 	}
-	if strings.TrimSpace(req.Text) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "text is required", false)
+	req.Text = strings.TrimSpace(req.Text)
+	req.Skill = strings.TrimSpace(req.Skill)
+	if req.Text == "" && req.Skill == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "text or skill is required", false)
+		return
+	}
+	if req.Text != "" && req.Skill != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "choose only one of text or skill", false)
 		return
 	}
 	session, err := s.host.Session(r.Context(), sessionID)
@@ -534,6 +570,23 @@ func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
 		tools = append(tools, entry)
 	}
 	writeJSON(w, http.StatusOK, toolCatalogResponse{Tools: tools})
+}
+
+func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(SkillCatalogHost)
+	if !ok {
+		writeJSON(w, http.StatusOK, skillCatalogResponse{Skills: []SkillCatalogEntry{}})
+		return
+	}
+	skills, err := host.SkillCatalog(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if skills == nil {
+		skills = []SkillCatalogEntry{}
+	}
+	writeJSON(w, http.StatusOK, skillCatalogResponse{Skills: skills})
 }
 
 func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
@@ -635,7 +688,11 @@ func (s *Server) handleMCPRenderPrompt(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, req startRunRequest) {
-	r.emit("run_start", map[string]any{"client_id": req.ClientID})
+	startPayload := map[string]any{"client_id": req.ClientID}
+	if req.Skill != "" {
+		startPayload["skill"] = req.Skill
+	}
+	r.emit("run_start", startPayload)
 	options := []glue.PromptOption{
 		glue.WithPermission(runPermission{server: s, run: r}),
 		glue.WithEvents(func(event glue.Event) {
@@ -655,7 +712,15 @@ func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, 
 		options = append(options, glue.WithProviderOptions(req.Options))
 	}
 
-	result, err := session.Prompt(ctx, req.Text, options...)
+	var (
+		result glue.PromptResult
+		err    error
+	)
+	if req.Skill != "" {
+		result, err = session.Skill(ctx, req.Skill, req.Arguments, options...)
+	} else {
+		result, err = session.Prompt(ctx, req.Text, options...)
+	}
 	if err != nil {
 		r.emit("run_error", map[string]any{"error": errorFor(err)})
 		r.finish()
