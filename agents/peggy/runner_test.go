@@ -365,6 +365,101 @@ func TestRunMCPReadJSON(t *testing.T) {
 	}
 }
 
+func TestRunMCPPromptsNoServers(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Setenv(EnvSoulPath, "")
+	t.Setenv(XDGConfigEnv, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "prompts"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "No MCP prompts configured.") {
+		t.Fatalf("stdout = %q, want empty catalog message", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no settings.json found") {
+		t.Fatalf("stderr = %q, want settings diagnostic", errOut.String())
+	}
+}
+
+func TestRunMCPPromptsListsConfiguredPrompts(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("prompts_only", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "prompts", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"daily_brief",
+		"server: fake",
+		"title: Daily Brief",
+		"description: Draft a concise daily briefing",
+		"topic required",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestRunMCPPromptRendersPrompt(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("prompts_only", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "prompt", "--config", cfgPath, "--server", "fake", "--name", "daily_brief", "--arg", "topic=Go"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"daily_brief",
+		"server: fake",
+		"description: Rendered daily briefing prompt",
+		"role: user",
+		"Brief me on Go.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestRunMCPPromptJSON(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"mcp": MCPSettings{Servers: map[string]MCPServerSettings{
+			"fake": mcpTestServer("prompts_only", ""),
+		}},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "prompt", "--config", cfgPath, "--server", "fake", "--name", "daily_brief", "--arg", "topic=Go", "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var prompt toolsmcp.PromptGet
+	if err := json.Unmarshal(out.Bytes(), &prompt); err != nil {
+		t.Fatalf("decode prompt: %v\nstdout=%s", err, out.String())
+	}
+	if prompt.Server != "fake" || prompt.Name != "daily_brief" || len(prompt.Messages) != 1 {
+		t.Fatalf("prompt = %+v", prompt)
+	}
+	if !strings.Contains(string(prompt.Messages[0].Content), "Brief me on Go.") {
+		t.Fatalf("message = %s", string(prompt.Messages[0].Content))
+	}
+}
+
 func TestRunMCPUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), []string{"mcp", "bogus"}, &out, &errOut)
