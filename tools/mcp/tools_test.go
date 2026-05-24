@@ -276,6 +276,90 @@ func TestManagerSupportsResourceOnlyServers(t *testing.T) {
 	}
 }
 
+func TestManagerListsMCPPrompts(t *testing.T) {
+	cfg := helperConfig("prompts")
+	cfg.Name = "fake-server"
+	mgr, err := NewManager(context.Background(), []ServerConfig{cfg}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	prompts, err := mgr.Prompts(context.Background())
+	if err != nil {
+		t.Fatalf("Prompts: %v", err)
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("prompts = %d, want 1: %+v", len(prompts), prompts)
+	}
+	prompt := prompts[0]
+	if prompt.Server != "fake-server" || prompt.Name != "daily_brief" || prompt.Title != "Daily Brief" {
+		t.Fatalf("prompt identity = %+v", prompt)
+	}
+	if len(prompt.Arguments) != 1 || prompt.Arguments[0].Name != "topic" || !prompt.Arguments[0].Required {
+		t.Fatalf("prompt args = %+v", prompt.Arguments)
+	}
+}
+
+func TestManagerGetsMCPPrompt(t *testing.T) {
+	cfg := helperConfig("prompts_only")
+	cfg.Name = "fake-server"
+	mgr, err := NewManager(context.Background(), []ServerConfig{cfg}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	prompt, err := mgr.GetPrompt(context.Background(), "fake-server", "daily_brief", map[string]string{"topic": "Go"})
+	if err != nil {
+		t.Fatalf("GetPrompt: %v", err)
+	}
+	if prompt.Server != "fake-server" || prompt.Name != "daily_brief" || prompt.Description != "Rendered daily briefing prompt" {
+		t.Fatalf("prompt = %+v", prompt)
+	}
+	if len(prompt.Messages) != 2 || prompt.Messages[0].Role != "user" {
+		t.Fatalf("messages = %+v", prompt.Messages)
+	}
+	if !strings.Contains(string(prompt.Messages[0].Content), "Brief me on Go.") {
+		t.Fatalf("message content = %s", string(prompt.Messages[0].Content))
+	}
+}
+
+func TestManagerSkipsServersWithoutPrompts(t *testing.T) {
+	mgr, err := NewManager(context.Background(), []ServerConfig{helperConfig("tools")}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+
+	prompts, err := mgr.Prompts(context.Background())
+	if err != nil {
+		t.Fatalf("Prompts: %v", err)
+	}
+	if len(prompts) != 0 {
+		t.Fatalf("prompts = %+v, want none", prompts)
+	}
+}
+
+func TestManagerSupportsPromptOnlyServers(t *testing.T) {
+	mgr, err := NewManager(context.Background(), []ServerConfig{helperConfig("prompts_only")}, Options{})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+	if len(mgr.Tools()) != 0 {
+		t.Fatalf("tools = %+v, want none", mgr.Tools())
+	}
+
+	prompts, err := mgr.Prompts(context.Background())
+	if err != nil {
+		t.Fatalf("Prompts: %v", err)
+	}
+	if len(prompts) != 1 || prompts[0].Name != "daily_brief" {
+		t.Fatalf("prompts = %+v", prompts)
+	}
+}
+
 func requireTool(t *testing.T, tools []glue.Tool, name string) glue.Tool {
 	t.Helper()
 	for _, tool := range tools {

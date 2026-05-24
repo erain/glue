@@ -341,8 +341,8 @@ func runPeggyMCPHelper() error {
 		}
 		switch req.Method {
 		case "tools/list":
-			if scenario == "resources_only" {
-				return fmt.Errorf("resources_only server received tools/list")
+			if scenario == "resources_only" || scenario == "prompts_only" {
+				return fmt.Errorf("%s server received tools/list", scenario)
 			}
 			if err := writePeggyMCPResult(enc, req.ID, map[string]any{
 				"tools": []map[string]any{{
@@ -412,8 +412,56 @@ func runPeggyMCPHelper() error {
 			}); err != nil {
 				return err
 			}
+		case "prompts/list":
+			if scenario != "prompts" && scenario != "prompts_only" {
+				return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, or resources/read", req.Method)
+			}
+			if err := writePeggyMCPResult(enc, req.ID, map[string]any{
+				"prompts": []map[string]any{{
+					"name":        "daily_brief",
+					"title":       "Daily Brief",
+					"description": "Draft a concise daily briefing",
+					"arguments": []map[string]any{{
+						"name":        "topic",
+						"description": "Subject to brief",
+						"required":    true,
+					}},
+				}},
+			}); err != nil {
+				return err
+			}
+		case "prompts/get":
+			if scenario != "prompts" && scenario != "prompts_only" {
+				return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, resources/read, or prompts/list", req.Method)
+			}
+			var params struct {
+				Name      string            `json:"name"`
+				Arguments map[string]string `json:"arguments,omitempty"`
+			}
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				return err
+			}
+			if params.Name != "daily_brief" {
+				return fmt.Errorf("prompt name = %q, want daily_brief", params.Name)
+			}
+			topic := params.Arguments["topic"]
+			if topic == "" {
+				topic = "today"
+			}
+			if err := writePeggyMCPResult(enc, req.ID, map[string]any{
+				"description": "Rendered daily briefing prompt",
+				"messages": []map[string]any{{
+					"role": "user",
+					"content": map[string]any{
+						"type": "text",
+						"text": "Brief me on " + topic + ".",
+					},
+				}},
+			}); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, or resources/read", req.Method)
+			return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, resources/read, prompts/list, or prompts/get", req.Method)
 		}
 	}
 }
@@ -429,6 +477,15 @@ func peggyMCPInitializeResult(scenario string) map[string]any {
 	case "resources_only":
 		capabilities = map[string]any{
 			"resources": map[string]any{},
+		}
+	case "prompts":
+		capabilities = map[string]any{
+			"tools":   map[string]any{},
+			"prompts": map[string]any{},
+		}
+	case "prompts_only":
+		capabilities = map[string]any{
+			"prompts": map[string]any{},
 		}
 	}
 	return map[string]any{

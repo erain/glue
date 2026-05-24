@@ -108,6 +108,37 @@ type ResourceContent struct {
 	Meta     map[string]any `json:"_meta,omitempty"`
 }
 
+// Prompt describes an MCP prompt exposed by one configured server.
+type Prompt struct {
+	Server      string           `json:"server"`
+	Name        string           `json:"name"`
+	Title       string           `json:"title,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Arguments   []PromptArgument `json:"arguments,omitempty"`
+}
+
+// PromptArgument describes one named prompt argument.
+type PromptArgument struct {
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+// PromptGet contains messages returned by an MCP prompts/get call.
+type PromptGet struct {
+	Server      string          `json:"server"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Messages    []PromptMessage `json:"messages"`
+}
+
+// PromptMessage is one role/content pair returned by a prompt.
+type PromptMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
 // Resources lists resource metadata from servers that advertise MCP resource
 // support. It does not read resource contents.
 func (m *Manager) Resources(ctx context.Context) ([]Resource, error) {
@@ -153,6 +184,50 @@ func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) (Res
 	return ResourceRead{}, fmt.Errorf("mcp: server %q is not configured", serverName)
 }
 
+// Prompts lists prompt metadata from servers that advertise MCP prompt support.
+func (m *Manager) Prompts(ctx context.Context) ([]Prompt, error) {
+	if m == nil {
+		return nil, nil
+	}
+	var out []Prompt
+	for _, server := range m.servers {
+		if !hasCapability(server.client.InitializeResult(), "prompts") {
+			continue
+		}
+		prompts, err := listPrompts(ctx, server.client, server.cfg, server.name)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: server %q: %w", server.name, err)
+		}
+		out = append(out, prompts...)
+	}
+	return out, nil
+}
+
+// GetPrompt renders a prompt by name from one named configured MCP server.
+func (m *Manager) GetPrompt(ctx context.Context, serverName, name string, args map[string]string) (PromptGet, error) {
+	if m == nil {
+		return PromptGet{}, errors.New("mcp: manager is nil")
+	}
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		return PromptGet{}, errors.New("mcp: prompt server is required")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return PromptGet{}, errors.New("mcp: prompt name is required")
+	}
+	for _, server := range m.servers {
+		if server.name != serverName {
+			continue
+		}
+		if !hasCapability(server.client.InitializeResult(), "prompts") {
+			return PromptGet{}, fmt.Errorf("mcp: server %q does not support prompts", serverName)
+		}
+		return getPrompt(ctx, server.client, server.cfg, serverName, name, args)
+	}
+	return PromptGet{}, fmt.Errorf("mcp: server %q is not configured", serverName)
+}
+
 // Close releases all MCP client transports owned by the manager.
 func (m *Manager) Close() error {
 	if m == nil {
@@ -178,6 +253,16 @@ type listResourcesResult struct {
 
 type readResourceResult struct {
 	Contents []resourceContentDefinition `json:"contents"`
+}
+
+type listPromptsResult struct {
+	Prompts    []promptDefinition `json:"prompts"`
+	NextCursor string             `json:"nextCursor,omitempty"`
+}
+
+type getPromptResult struct {
+	Description string                    `json:"description,omitempty"`
+	Messages    []promptMessageDefinition `json:"messages"`
 }
 
 type toolDefinition struct {
@@ -207,6 +292,25 @@ type resourceContentDefinition struct {
 	Meta     map[string]any `json:"_meta,omitempty"`
 }
 
+type promptDefinition struct {
+	Name        string                     `json:"name"`
+	Title       string                     `json:"title,omitempty"`
+	Description string                     `json:"description,omitempty"`
+	Arguments   []promptArgumentDefinition `json:"arguments,omitempty"`
+}
+
+type promptArgumentDefinition struct {
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+}
+
+type promptMessageDefinition struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
 type callToolResult struct {
 	Content           []json.RawMessage `json:"content,omitempty"`
 	StructuredContent json.RawMessage   `json:"structuredContent,omitempty"`
@@ -220,6 +324,11 @@ type callToolParams struct {
 
 type readResourceParams struct {
 	URI string `json:"uri"`
+}
+
+type getPromptParams struct {
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments,omitempty"`
 }
 
 func listGlueTools(ctx context.Context, client *Client, cfg ServerConfig, serverName, serverPart string, seen map[string]struct{}) ([]glue.Tool, error) {
@@ -295,6 +404,60 @@ func readResource(ctx context.Context, client *Client, cfg ServerConfig, serverN
 	}, nil
 }
 
+func listPrompts(ctx context.Context, client *Client, cfg ServerConfig, serverName string) ([]Prompt, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeoutFor(cfg))
+	defer cancel()
+
+	var out []Prompt
+	var cursor string
+	for {
+		var params any
+		if cursor != "" {
+			params = map[string]string{"cursor": cursor}
+		}
+		var listed listPromptsResult
+		if err := client.Request(reqCtx, "prompts/list", params, &listed); err != nil {
+			return nil, err
+		}
+		for _, def := range listed.Prompts {
+			prompt, err := mapPrompt(serverName, def)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, prompt)
+		}
+		if listed.NextCursor == "" {
+			return out, nil
+		}
+		cursor = listed.NextCursor
+	}
+}
+
+func getPrompt(ctx context.Context, client *Client, cfg ServerConfig, serverName, name string, args map[string]string) (PromptGet, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeoutFor(cfg))
+	defer cancel()
+
+	var result getPromptResult
+	if err := client.Request(reqCtx, "prompts/get", getPromptParams{Name: name, Arguments: cloneStringMap(args)}, &result); err != nil {
+		return PromptGet{}, err
+	}
+
+	messages := make([]PromptMessage, 0, len(result.Messages))
+	for _, def := range result.Messages {
+		message, err := mapPromptMessage(def)
+		if err != nil {
+			return PromptGet{}, err
+		}
+		messages = append(messages, message)
+	}
+	return PromptGet{
+		Server:      serverName,
+		Name:        name,
+		Description: strings.TrimSpace(result.Description),
+		Messages:    messages,
+	}, nil
+}
+
 func mapResourceContent(def resourceContentDefinition) (ResourceContent, error) {
 	uri := strings.TrimSpace(def.URI)
 	if uri == "" {
@@ -312,6 +475,56 @@ func mapResourceContent(def resourceContentDefinition) (ResourceContent, error) 
 		Text:     cloneString(def.Text),
 		Blob:     cloneString(def.Blob),
 		Meta:     cloneMap(def.Meta),
+	}, nil
+}
+
+func mapPrompt(serverName string, def promptDefinition) (Prompt, error) {
+	name := strings.TrimSpace(def.Name)
+	if name == "" {
+		return Prompt{}, errors.New("mcp: prompt name is required")
+	}
+	args := make([]PromptArgument, 0, len(def.Arguments))
+	for _, defArg := range def.Arguments {
+		arg, err := mapPromptArgument(name, defArg)
+		if err != nil {
+			return Prompt{}, err
+		}
+		args = append(args, arg)
+	}
+	return Prompt{
+		Server:      serverName,
+		Name:        name,
+		Title:       strings.TrimSpace(def.Title),
+		Description: strings.TrimSpace(def.Description),
+		Arguments:   args,
+	}, nil
+}
+
+func mapPromptArgument(promptName string, def promptArgumentDefinition) (PromptArgument, error) {
+	name := strings.TrimSpace(def.Name)
+	if name == "" {
+		return PromptArgument{}, fmt.Errorf("mcp: prompt %q argument name is required", promptName)
+	}
+	return PromptArgument{
+		Name:        name,
+		Title:       strings.TrimSpace(def.Title),
+		Description: strings.TrimSpace(def.Description),
+		Required:    def.Required,
+	}, nil
+}
+
+func mapPromptMessage(def promptMessageDefinition) (PromptMessage, error) {
+	role := strings.TrimSpace(def.Role)
+	if role == "" {
+		return PromptMessage{}, errors.New("mcp: prompt message role is required")
+	}
+	content := compactRaw(def.Content)
+	if len(content) == 0 {
+		return PromptMessage{}, fmt.Errorf("mcp: prompt message %q content is required", role)
+	}
+	return PromptMessage{
+		Role:    role,
+		Content: content,
 	}, nil
 }
 
@@ -746,6 +959,17 @@ func cloneString(in *string) *string {
 	}
 	out := *in
 	return &out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func cloneInt64(in *int64) *int64 {

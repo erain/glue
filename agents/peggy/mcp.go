@@ -82,6 +82,47 @@ func MCPReadResource(ctx context.Context, settings MCPSettings, serverName, uri 
 	return read, manager, normalized, nil
 }
 
+// MCPPrompts initializes Peggy's configured MCP servers and returns
+// discovered prompt metadata plus the manager that owns server lifecycles.
+func MCPPrompts(ctx context.Context, settings MCPSettings) ([]toolsmcp.Prompt, *toolsmcp.Manager, MCPSettings, error) {
+	configs, normalized, err := MCPServerConfigs(settings)
+	if err != nil {
+		return nil, nil, normalized, err
+	}
+	if len(configs) == 0 {
+		return nil, nil, normalized, nil
+	}
+	manager, err := toolsmcp.NewManager(ctx, configs, toolsmcp.Options{})
+	if err != nil {
+		return nil, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	prompts, err := manager.Prompts(ctx)
+	if err != nil {
+		_ = manager.Close()
+		return nil, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	return prompts, manager, normalized, nil
+}
+
+// MCPGetPrompt initializes Peggy's configured MCP servers and renders one
+// prompt by name from the named server.
+func MCPGetPrompt(ctx context.Context, settings MCPSettings, serverName, name string, args map[string]string) (toolsmcp.PromptGet, *toolsmcp.Manager, MCPSettings, error) {
+	configs, normalized, err := MCPServerConfigs(settings)
+	if err != nil {
+		return toolsmcp.PromptGet{}, nil, normalized, err
+	}
+	manager, err := toolsmcp.NewManager(ctx, configs, toolsmcp.Options{})
+	if err != nil {
+		return toolsmcp.PromptGet{}, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	prompt, err := manager.GetPrompt(ctx, serverName, name, args)
+	if err != nil {
+		_ = manager.Close()
+		return toolsmcp.PromptGet{}, nil, normalized, fmt.Errorf("peggy: mcp: %w", err)
+	}
+	return prompt, manager, normalized, nil
+}
+
 // MCPServerConfigs converts Peggy settings into tools/mcp server configs.
 func MCPServerConfigs(settings MCPSettings) ([]toolsmcp.ServerConfig, MCPSettings, error) {
 	normalized, err := expandMCPSettings(settings)

@@ -21,7 +21,7 @@ A long-running personal-assistant agent built on the
 - per-call permission prompts for side-effecting coding tools in the
   CLI, Telegram, and daemon clients
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
-- opt-in MCP tools plus resource listing and resource reads
+- opt-in MCP tools plus resource and prompt inspection
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
@@ -149,6 +149,8 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy mcp prompt [flags]
+peggy mcp prompts [flags]
 peggy mcp read [flags]
 peggy mcp resources [flags]
 peggy mcp tools [flags]
@@ -356,6 +358,8 @@ provider or running a prompt:
 ```sh
 peggy mcp read --config ~/.config/peggy/settings.json --server filesystem --uri file:///workspace/README.md
 peggy mcp read --config ~/.config/peggy/settings.json --server filesystem --uri file:///workspace/README.md --json
+peggy mcp prompts --config ~/.config/peggy/settings.json
+peggy mcp prompt --config ~/.config/peggy/settings.json --server linear --name summarize_issue --arg issue=GLUE-123
 peggy mcp resources --config ~/.config/peggy/settings.json
 peggy mcp resources --config ~/.config/peggy/settings.json --json
 peggy mcp tools --config ~/.config/peggy/settings.json
@@ -363,9 +367,11 @@ peggy mcp tools --config ~/.config/peggy/settings.json --json
 ```
 
 `peggy mcp resources` lists resource metadata only. `peggy mcp read`
-fetches one resource URI for operator inspection. Servers that do not
-advertise resource support are skipped for listing and cannot serve
-resource reads.
+fetches one resource URI for operator inspection. `peggy mcp prompts`
+lists prompt templates and `peggy mcp prompt` renders one prompt with
+repeatable `--arg key=value` values. Servers that do not advertise the
+requested MCP capability are skipped for listing and cannot serve that
+request.
 
 The permission choices are intentionally small:
 

@@ -196,16 +196,31 @@ type mcpResourceCatalogEntry struct {
 	Size        *int64         `json:"size,omitempty"`
 }
 
+type stringListFlag []string
+
+func (v *stringListFlag) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *stringListFlag) Set(s string) error {
+	*v = append(*v, s)
+	return nil
+}
+
 func runMCP(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	usage := func() {
 		fmt.Fprintf(stderr, `peggy mcp — inspect Peggy's configured MCP surface.
 
 Usage:
+  peggy mcp prompt [flags]
+  peggy mcp prompts [flags]
   peggy mcp read [flags]
   peggy mcp resources [flags]
   peggy mcp tools [flags]
 
 Commands:
+  prompt     Render one prompt from an enabled MCP server.
+  prompts    List prompts discovered from enabled MCP servers.
   read       Read one resource URI from an enabled MCP server.
   resources  List resources discovered from enabled MCP servers.
   tools      List tools discovered from enabled MCP servers.
@@ -219,6 +234,10 @@ Commands:
 	case "-h", "--help", "help":
 		usage()
 		return 0
+	case "prompt":
+		return runMCPPrompt(ctx, args[1:], stdout, stderr)
+	case "prompts":
+		return runMCPPrompts(ctx, args[1:], stdout, stderr)
 	case "read":
 		return runMCPRead(ctx, args[1:], stdout, stderr)
 	case "resources":
@@ -230,6 +249,153 @@ Commands:
 		usage()
 		return 2
 	}
+}
+
+func runMCPPrompt(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy mcp prompt", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		serverName = fs.String("server", "", "configured MCP server name")
+		promptName = fs.String("name", "", "MCP prompt name to render")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+		promptArgs stringListFlag
+	)
+	fs.Var(&promptArgs, "arg", "prompt argument as key=value (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy mcp prompt — render one prompt from an enabled MCP server.
+
+Usage:
+  peggy mcp prompt --server <name> --name <prompt> [flags]
+
+Examples:
+  peggy mcp prompt --config ~/.config/peggy/settings.json --server linear --name summarize_issue --arg issue=GLUE-123
+  peggy mcp prompt --server linear --name summarize_issue --arg issue=GLUE-123 --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy mcp prompt: positional args not supported")
+		return 2
+	}
+	if strings.TrimSpace(*serverName) == "" {
+		fmt.Fprintln(stderr, "peggy mcp prompt: --server is required")
+		return 2
+	}
+	if strings.TrimSpace(*promptName) == "" {
+		fmt.Fprintln(stderr, "peggy mcp prompt: --name is required")
+		return 2
+	}
+	parsedArgs, err := parsePromptArgs(promptArgs)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp prompt: %v\n", err)
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp prompt: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy mcp prompt: no settings.json found; using built-in defaults")
+	}
+
+	prompt, manager, _, err := MCPGetPrompt(ctx, settings.MCP, *serverName, *promptName, parsedArgs)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp prompt: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp prompt: close: %v\n", err)
+		}
+	}()
+
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(prompt); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp prompt: encode prompt: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMCPPrompt(stdout, prompt)
+	return 0
+}
+
+func runMCPPrompts(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy mcp prompts", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy mcp prompts — list prompts from enabled MCP servers.
+
+Usage:
+  peggy mcp prompts [flags]
+
+Examples:
+  peggy mcp prompts --config ~/.config/peggy/settings.json
+  peggy mcp prompts --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy mcp prompts: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp prompts: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy mcp prompts: no settings.json found; using built-in defaults")
+	}
+
+	prompts, manager, _, err := MCPPrompts(ctx, settings.MCP)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy mcp prompts: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := manager.Close(); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp prompts: close: %v\n", err)
+		}
+	}()
+
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(prompts); err != nil {
+			fmt.Fprintf(stderr, "peggy mcp prompts: encode catalog: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMCPPromptCatalog(stdout, prompts)
+	return 0
 }
 
 func runMCPRead(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -496,6 +662,64 @@ func writeMCPToolCatalog(w io.Writer, catalog []mcpToolCatalogEntry) {
 	}
 }
 
+func writeMCPPromptCatalog(w io.Writer, prompts []toolsmcp.Prompt) {
+	if len(prompts) == 0 {
+		fmt.Fprintln(w, "No MCP prompts configured.")
+		return
+	}
+	for i, prompt := range prompts {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, prompt.Name)
+		fmt.Fprintf(w, "  server: %s\n", prompt.Server)
+		if prompt.Title != "" {
+			fmt.Fprintf(w, "  title: %s\n", singleLine(prompt.Title))
+		}
+		if prompt.Description != "" {
+			fmt.Fprintf(w, "  description: %s\n", singleLine(prompt.Description))
+		}
+		if len(prompt.Arguments) > 0 {
+			fmt.Fprintln(w, "  arguments:")
+			for _, arg := range prompt.Arguments {
+				required := ""
+				if arg.Required {
+					required = " required"
+				}
+				line := arg.Name + required
+				if arg.Description != "" {
+					line += " - " + singleLine(arg.Description)
+				}
+				fmt.Fprintf(w, "    %s\n", line)
+			}
+		}
+	}
+}
+
+func writeMCPPrompt(w io.Writer, prompt toolsmcp.PromptGet) {
+	fmt.Fprintln(w, prompt.Name)
+	fmt.Fprintf(w, "  server: %s\n", prompt.Server)
+	if prompt.Description != "" {
+		fmt.Fprintf(w, "  description: %s\n", singleLine(prompt.Description))
+	}
+	if len(prompt.Messages) == 0 {
+		fmt.Fprintln(w, "  messages: []")
+		return
+	}
+	fmt.Fprintln(w, "  messages:")
+	for _, message := range prompt.Messages {
+		fmt.Fprintf(w, "    - role: %s\n", message.Role)
+		if text, ok := promptTextContent(message.Content); ok {
+			fmt.Fprintln(w, "      text:")
+			for _, line := range strings.Split(text, "\n") {
+				fmt.Fprintf(w, "        %s\n", line)
+			}
+			continue
+		}
+		fmt.Fprintf(w, "      content: %s\n", compactJSONLine(message.Content))
+	}
+}
+
 func writeMCPResourceCatalog(w io.Writer, catalog []mcpResourceCatalogEntry) {
 	if len(catalog) == 0 {
 		fmt.Fprintln(w, "No MCP resources configured.")
@@ -579,6 +803,36 @@ func cloneResourceSize(in *int64) *int64 {
 	}
 	out := *in
 	return &out
+}
+
+func parsePromptArgs(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	args := make(map[string]string, len(values))
+	for _, raw := range values {
+		key, value, ok := strings.Cut(raw, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("--arg must be key=value")
+		}
+		args[key] = value
+	}
+	return args, nil
+}
+
+func promptTextContent(raw json.RawMessage) (string, bool) {
+	var content struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return "", false
+	}
+	if content.Type != "text" {
+		return "", false
+	}
+	return content.Text, true
 }
 
 func singleLine(s string) string {

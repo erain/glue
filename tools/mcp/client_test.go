@@ -157,7 +157,7 @@ func runMCPHelper(scenario string) error {
 	if err := readInitialized(dec); err != nil {
 		return err
 	}
-	if scenario == "tools" || scenario == "bad_schema" || scenario == "collision" || scenario == "resources" || scenario == "resources_only" {
+	if scenario == "tools" || scenario == "bad_schema" || scenario == "collision" || scenario == "resources" || scenario == "resources_only" || scenario == "prompts" || scenario == "prompts_only" {
 		return runMCPToolScenario(dec, enc, scenario)
 	}
 	if scenario != "rpc_error" {
@@ -189,8 +189,8 @@ func runMCPToolScenario(dec *json.Decoder, enc *json.Encoder, scenario string) e
 		}
 		switch req.Method {
 		case "tools/list":
-			if scenario == "resources_only" {
-				return fmt.Errorf("resources_only server received tools/list")
+			if scenario == "resources_only" || scenario == "prompts_only" {
+				return fmt.Errorf("%s server received tools/list", scenario)
 			}
 			if err := writeHelperResult(enc, req.ID, helperToolsList(scenario)); err != nil {
 				return err
@@ -213,8 +213,22 @@ func runMCPToolScenario(dec *json.Decoder, enc *json.Encoder, scenario string) e
 			if err := handleHelperResourceRead(enc, req); err != nil {
 				return err
 			}
+		case "prompts/list":
+			if scenario != "prompts" && scenario != "prompts_only" {
+				return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			}
+			if err := writeHelperResult(enc, req.ID, helperPromptsList()); err != nil {
+				return err
+			}
+		case "prompts/get":
+			if scenario != "prompts" && scenario != "prompts_only" {
+				return fmt.Errorf("method = %q, want tools/list or tools/call", req.Method)
+			}
+			if err := handleHelperPromptGet(enc, req); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, or resources/read", req.Method)
+			return fmt.Errorf("method = %q, want tools/list, tools/call, resources/list, resources/read, prompts/list, or prompts/get", req.Method)
 		}
 	}
 }
@@ -297,6 +311,58 @@ func handleHelperResourceRead(enc *json.Encoder, req helperRequest) error {
 	})
 }
 
+func helperPromptsList() map[string]any {
+	return map[string]any{
+		"prompts": []map[string]any{{
+			"name":        "daily_brief",
+			"title":       "Daily Brief",
+			"description": "Draft a concise daily briefing",
+			"arguments": []map[string]any{{
+				"name":        "topic",
+				"title":       "Topic",
+				"description": "Subject to brief",
+				"required":    true,
+			}},
+		}},
+	}
+}
+
+func handleHelperPromptGet(enc *json.Encoder, req helperRequest) error {
+	var params struct {
+		Name      string            `json:"name"`
+		Arguments map[string]string `json:"arguments,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return err
+	}
+	if params.Name != "daily_brief" {
+		return fmt.Errorf("prompt name = %q, want daily_brief", params.Name)
+	}
+	topic := params.Arguments["topic"]
+	if topic == "" {
+		topic = "today"
+	}
+	return writeHelperResult(enc, req.ID, map[string]any{
+		"description": "Rendered daily briefing prompt",
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": map[string]any{
+					"type": "text",
+					"text": "Brief me on " + topic + ".",
+				},
+			},
+			{
+				"role": "assistant",
+				"content": map[string]any{
+					"type": "text",
+					"text": "Ready.",
+				},
+			},
+		},
+	})
+}
+
 func handleHelperToolCall(enc *json.Encoder, req helperRequest) error {
 	var params struct {
 		Name      string         `json:"name"`
@@ -366,6 +432,15 @@ func initializeResultForScenario(version, scenario string) map[string]any {
 	case "resources_only":
 		return initializeResultWithCapabilities(version, map[string]any{
 			"resources": map[string]any{},
+		})
+	case "prompts":
+		return initializeResultWithCapabilities(version, map[string]any{
+			"tools":   map[string]any{},
+			"prompts": map[string]any{},
+		})
+	case "prompts_only":
+		return initializeResultWithCapabilities(version, map[string]any{
+			"prompts": map[string]any{},
 		})
 	default:
 		return initializeResult(version)
