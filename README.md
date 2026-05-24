@@ -629,6 +629,17 @@ Startup output prints the effective `base_url` and metadata path but not the
 bearer token. Use `--listen`, `--metadata`, `--work`, and
 `--permission-timeout` to override daemon behavior.
 
+Once `serve` is running, `connect` starts one daemon run, streams text
+events, and brokers permission requests in the terminal:
+
+```sh
+go run ./cmd/glue connect --prompt "Say hi" --id local-dev
+```
+
+By default, `connect` reads the same metadata file written by `serve`.
+Use `--base-url`, `--token`, or `--metadata` when connecting to an
+explicit daemon endpoint.
+
 ### Standard flags for downstream agents
 
 Agents that ship their own CLI binary share the same six flags
