@@ -249,6 +249,56 @@ func TestServerAuthAndHealth(t *testing.T) {
 	}
 }
 
+func TestServerDiagnostics(t *testing.T) {
+	agent := glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}})
+	startedAt := time.Date(2026, 5, 25, 13, 0, 0, 0, time.UTC)
+	srv, err := New(Options{
+		Host:  agent,
+		Token: "token",
+		Now:   func() time.Time { return startedAt },
+		Diagnostics: DiagnosticInfo{
+			Name:         "peggy",
+			ListenAddr:   "127.0.0.1:0",
+			MetadataPath: "/tmp/daemon.json",
+			TokenSource:  "generated",
+			Provider:     "codex",
+			Model:        "codex/default",
+			StoreType:    "sqlite",
+			StorePath:    "/tmp/peggy.db",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/diagnostics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated diagnostics status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/diagnostics", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("diagnostics status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var diag DiagnosticResponse
+	if err := json.NewDecoder(resp.Body).Decode(&diag); err != nil {
+		t.Fatal(err)
+	}
+	if !diag.OK || diag.Version != protocolVersion || diag.Runtime.Provider != "codex" || diag.Runtime.StorePath != "/tmp/peggy.db" {
+		t.Fatalf("diagnostics = %+v", diag)
+	}
+	if !contains(diag.Capabilities, "diagnostics") {
+		t.Fatalf("capabilities = %v, missing diagnostics", diag.Capabilities)
+	}
+}
+
 func TestServerToolsCatalog(t *testing.T) {
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider: scriptedProvider{},

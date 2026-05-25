@@ -66,6 +66,9 @@ peggy-telegram --daemon
 `--daemon-token`, or `--daemon-metadata`; the token also falls back to
 `GLUE_DAEMON_TOKEN`. Telegram still enforces `allow_chats` before any
 daemon request is sent.
+If Telegram cannot reach the daemon, run `glue connect --diagnose`
+from the same shell or host to check metadata, token, and reachability
+without starting a model run.
 
 Daemon-client mode sends an immediate progress reply for daemon runs
 and splits long final answers across Telegram messages. It also

@@ -27,6 +27,10 @@ not formally follow SemVer until v1.0.
 - **Session history browser.** `peggy sessions` lists recent stored
   sessions without starting a provider, with prefix filtering and JSON
   output for scriptable local history inspection.
+- **Daemon ops diagnostics.** Peggy daemon mode now advertises
+  authenticated non-secret runtime diagnostics, and `glue connect
+  --diagnose` distinguishes missing metadata, stale metadata, bad
+  tokens, unreachable daemons, and healthy daemon state.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening
