@@ -8,6 +8,10 @@ not formally follow SemVer until v1.0.
 
 ### Added
 
+- **Dogfood doctor command.** `peggy doctor` now checks local Peggy
+  dogfood readiness without starting a model run, reports required and
+  recommended setup state in text or JSON, and exits non-zero when
+  required prerequisites are missing.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening

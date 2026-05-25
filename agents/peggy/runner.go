@@ -17,6 +17,8 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
+	"github.com/erain/glue/providers"
+	codexauth "github.com/erain/glue/providers/codex/auth"
 	toolsmcp "github.com/erain/glue/tools/mcp"
 )
 
@@ -91,6 +93,21 @@ type statusMCPServer struct {
 	URL       string `json:"url,omitempty"`
 }
 
+type doctorReport struct {
+	Version string        `json:"version"`
+	Ready   bool          `json:"ready"`
+	Checks  []doctorCheck `json:"checks"`
+	Status  statusReport  `json:"status"`
+}
+
+type doctorCheck struct {
+	ID         string `json:"id"`
+	Status     string `json:"status"`
+	Summary    string `json:"summary"`
+	Detail     string `json:"detail,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
 type skillCatalogEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -138,6 +155,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return runRecall(ctx, args[1:], stdout, stderr)
 		case "status":
 			return runStatus(args[1:], stdout, stderr)
+		case "doctor":
+			return runDoctor(args[1:], stdout, stderr)
 		case "mcp":
 			return runMCP(ctx, args[1:], stdout, stderr)
 		}
@@ -167,6 +186,7 @@ Usage:
   peggy memories [flags]
   peggy recall [flags] <query>
   peggy status [flags]
+  peggy doctor [flags]
   peggy mcp [command]
   peggy serve [flags]
 
@@ -182,6 +202,7 @@ Examples:
   peggy recall --config ~/.config/peggy/settings.json "Australian Shepherd"
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
+  peggy doctor --config ~/.config/peggy/settings.json
   peggy mcp tools --config ~/.config/peggy/settings.json
   peggy serve --config ~/.config/peggy/settings.json
 
@@ -1036,6 +1057,338 @@ Flags:
 	}
 	writeStatusReport(stdout, report)
 	return 0
+}
+
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		soulPath   = fs.String("soul", "", "path to identity Markdown (overrides $PEGGY_SOUL / XDG / ~/.config/peggy/SOUL.md)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy doctor — check Peggy dogfood readiness without starting a model run.
+
+Usage:
+  peggy doctor [flags]
+
+Examples:
+  peggy doctor
+  peggy doctor --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md
+  peggy doctor --json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy doctor: positional args not supported")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy doctor: %v\n", err)
+		return 1
+	}
+	soul, soulPathUsed, err := LoadSoul(*soulPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy doctor: %v\n", err)
+		return 1
+	}
+	report := buildDoctorReport(settings, settingsPath, soul, soulPathUsed)
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "peggy doctor: encode report: %v\n", err)
+			return 1
+		}
+	} else {
+		writeDoctorReport(stdout, report)
+	}
+	if !report.Ready {
+		return 1
+	}
+	return 0
+}
+
+func buildDoctorReport(settings Settings, settingsPath, soul, soulPath string) doctorReport {
+	status := buildStatusReport(settings, settingsPath, soul, soulPath)
+	checks := []doctorCheck{
+		doctorSettingsCheck(status.Settings),
+		doctorIdentityCheck(status.Identity),
+		doctorProviderCheck(settings),
+		doctorProviderCredentialCheck(settings.Provider),
+		doctorStoreCheck(settings.Store),
+	}
+	checks = append(checks, doctorWorkspaceChecks(settings.Context)...)
+	checks = append(checks,
+		doctorCodingCheck(settings.Coding),
+		doctorPermissionsCheck(settings),
+		doctorTelegramCheck(settings),
+		doctorMCPCheck(settings.MCP),
+	)
+	ready := true
+	for _, check := range checks {
+		if check.Status == "fail" {
+			ready = false
+			break
+		}
+	}
+	return doctorReport{
+		Version: Version,
+		Ready:   ready,
+		Checks:  checks,
+		Status:  status,
+	}
+}
+
+func doctorSettingsCheck(settings statusFile) doctorCheck {
+	if settings.Found {
+		return doctorPass("settings", "settings file found", settings.Path, "")
+	}
+	return doctorWarn("settings", "using built-in defaults", "no settings.json was found", "Create ~/.config/peggy/settings.json for repeatable dogfood runs.")
+}
+
+func doctorIdentityCheck(identity statusFile) doctorCheck {
+	if identity.Found {
+		return doctorPass("identity", "identity file found", fmt.Sprintf("%s (%d bytes)", identity.Path, identity.Bytes), "")
+	}
+	return doctorWarn("identity", "identity file missing", "Peggy will run without SOUL.md context.", "Create ~/.config/peggy/SOUL.md before daily dogfooding.")
+}
+
+func doctorProviderCheck(settings Settings) doctorCheck {
+	name := normalizedProviderName(settings.Provider)
+	if knownPeggyProvider(name) {
+		model := statusModel(settings.Model)
+		return doctorPass("provider", "provider is registered", fmt.Sprintf("%s %s", name, model), "")
+	}
+	return doctorFail("provider", "provider is unknown", name, "Use one of: "+strings.Join(providers.Known(), ", ")+".")
+}
+
+func doctorProviderCredentialCheck(provider string) doctorCheck {
+	name := normalizedProviderName(provider)
+	if name == "codex" {
+		path, err := codexauth.NewManager().AuthFilePath()
+		if err != nil {
+			return doctorFail("provider_credentials", "codex auth path could not be resolved", err.Error(), "Run codex login or set GLUE_CODEX_AUTH to an auth.json path.")
+		}
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return doctorFail("provider_credentials", "codex auth file missing", path, "Run codex login before starting Peggy.")
+			}
+			return doctorFail("provider_credentials", "codex auth file is not readable", err.Error(), "Fix auth.json permissions or rerun codex login.")
+		}
+		return doctorPass("provider_credentials", "codex auth file found", path, "")
+	}
+	factory, ok := providers.Lookup(name)
+	if !ok {
+		return doctorWarn("provider_credentials", "credential check skipped", "provider is not registered", "Fix the provider setting first.")
+	}
+	if factory.EnvKey == "" {
+		return doctorPass("provider_credentials", "no credential probe advertised", name, "")
+	}
+	if strings.TrimSpace(os.Getenv(factory.EnvKey)) == "" {
+		return doctorFail("provider_credentials", "provider API key missing", factory.EnvKey, "Export "+factory.EnvKey+" before starting Peggy.")
+	}
+	return doctorPass("provider_credentials", "provider API key is present", factory.EnvKey, "")
+}
+
+func doctorStoreCheck(store StoreSettings) doctorCheck {
+	storeType := strings.ToLower(strings.TrimSpace(store.Type))
+	if storeType == "" {
+		storeType = "sqlite"
+	}
+	if strings.TrimSpace(store.Path) == "" {
+		return doctorFail("store", "store path is empty", storeType, "Set store.path in settings.json.")
+	}
+	switch storeType {
+	case "sqlite":
+		return doctorPass("store", "sqlite store configured for recall", store.Path, "")
+	case "file":
+		return doctorFail("store", "file store does not support recall search", store.Path, "Use the sqlite store for dogfood memory and recall.")
+	default:
+		return doctorFail("store", "store type is unknown", storeType, "Use sqlite or file.")
+	}
+}
+
+func doctorWorkspaceChecks(contextSettings ContextSettings) []doctorCheck {
+	workDir := strings.TrimSpace(contextSettings.WorkDir)
+	if workDir == "" {
+		return []doctorCheck{
+			doctorWarn("context", "workspace context disabled", "context.work_dir is empty", "Run peggy init --workdir <workspace> and set context.work_dir."),
+			doctorWarn("workspace_skills", "no workspace skills loaded", "context is disabled", "Add .agents/skills before dogfooding reusable workflows."),
+			doctorWarn("workspace_roles", "no workspace roles loaded", "context is disabled", "Add roles/*.md before dogfooding role-shaped runs."),
+		}
+	}
+	if info, err := os.Stat(workDir); err != nil {
+		return []doctorCheck{
+			doctorFail("context", "workspace directory is not readable", err.Error(), "Fix context.work_dir or run peggy init --workdir "+workDir+"."),
+			doctorWarn("workspace_skills", "workspace skills skipped", workDir, "Fix the workspace directory first."),
+			doctorWarn("workspace_roles", "workspace roles skipped", workDir, "Fix the workspace directory first."),
+		}
+	} else if !info.IsDir() {
+		return []doctorCheck{
+			doctorFail("context", "workspace path is not a directory", workDir, "Set context.work_dir to a directory."),
+			doctorWarn("workspace_skills", "workspace skills skipped", workDir, "Fix the workspace directory first."),
+			doctorWarn("workspace_roles", "workspace roles skipped", workDir, "Fix the workspace directory first."),
+		}
+	}
+	projectContext, err := glue.LoadContext(workDir)
+	if err != nil {
+		return []doctorCheck{
+			doctorFail("context", "workspace context failed to load", err.Error(), "Fix AGENTS.md, roles, or skill frontmatter."),
+			doctorWarn("workspace_skills", "workspace skills skipped", workDir, "Fix workspace context loading first."),
+			doctorWarn("workspace_roles", "workspace roles skipped", workDir, "Fix workspace context loading first."),
+		}
+	}
+	checks := []doctorCheck{doctorPass("context", "workspace context enabled", workDir, "")}
+	if strings.TrimSpace(projectContext.AgentsMD) == "" {
+		checks = append(checks, doctorWarn("agents_md", "AGENTS.md is missing or empty", workDir, "Run peggy init --workdir "+workDir+" or add project context."))
+	} else {
+		checks = append(checks, doctorPass("agents_md", "AGENTS.md loaded", fmt.Sprintf("%d bytes", len([]byte(projectContext.AgentsMD))), ""))
+	}
+	if len(projectContext.Skills) == 0 {
+		checks = append(checks, doctorWarn("workspace_skills", "no workspace skills loaded", workDir, "Run peggy init --workdir "+workDir+" or add .agents/skills."))
+	} else {
+		checks = append(checks, doctorPass("workspace_skills", "workspace skills loaded", fmt.Sprintf("%d skills", len(projectContext.Skills)), ""))
+	}
+	if len(projectContext.Roles) == 0 {
+		checks = append(checks, doctorWarn("workspace_roles", "no workspace roles loaded", workDir, "Run peggy init --workdir "+workDir+" or add roles/*.md."))
+	} else {
+		checks = append(checks, doctorPass("workspace_roles", "workspace roles loaded", fmt.Sprintf("%d roles", len(projectContext.Roles)), ""))
+	}
+	return checks
+}
+
+func doctorCodingCheck(coding CodingSettings) doctorCheck {
+	if !coding.Enabled {
+		return doctorWarn("coding", "coding tools disabled", "Peggy will not read, write, or run local code.", "Enable coding for local developer dogfooding only in trusted workspaces.")
+	}
+	workDir := strings.TrimSpace(coding.WorkDir)
+	if workDir == "" {
+		workDir = "."
+	}
+	if info, err := os.Stat(workDir); err != nil {
+		return doctorFail("coding", "coding workspace is not readable", err.Error(), "Fix coding.work_dir.")
+	} else if !info.IsDir() {
+		return doctorFail("coding", "coding workspace is not a directory", workDir, "Set coding.work_dir to a directory.")
+	}
+	return doctorPass("coding", "coding tools enabled", fmt.Sprintf("work_dir=%s binaries=%s", workDir, strings.Join(coding.AllowedBinaries, ",")), "")
+}
+
+func doctorPermissionsCheck(settings Settings) doctorCheck {
+	if err := validatePermissionSettings(settings.Permissions); err != nil {
+		return doctorFail("permissions", "permission policy is invalid", err.Error(), "Use prompt, read_only, or trusted tiers.")
+	}
+	detail := "default=" + settings.Permissions.DefaultTier
+	keys := sortedStringMapKeys(settings.Permissions.Channels)
+	for _, key := range keys {
+		detail += " " + key + "=" + settings.Permissions.Channels[key]
+	}
+	if settings.Coding.Enabled && settings.Permissions.DefaultTier == "trusted" {
+		return doctorWarn("permissions", "coding is enabled with trusted default permissions", detail, "Prefer prompt or channel-specific trusted tiers while dogfooding.")
+	}
+	return doctorPass("permissions", "permission policy is valid", detail, "")
+}
+
+func doctorTelegramCheck(settings Settings) doctorCheck {
+	raw, ok := settings.Channels["telegram"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return doctorWarn("telegram", "Telegram channel not configured", "CLI and daemon clients can still dogfood Peggy.", "Add channels.telegram when ready to dogfood chat access.")
+	}
+	var cfg struct {
+		BotTokenEnv string  `json:"bot_token_env"`
+		AllowChats  []int64 `json:"allow_chats"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return doctorFail("telegram", "Telegram config is invalid", err.Error(), "Fix channels.telegram in settings.json.")
+	}
+	if cfg.BotTokenEnv == "" {
+		cfg.BotTokenEnv = "PEGGY_TELEGRAM_TOKEN"
+	}
+	var problems []string
+	var suggestions []string
+	if len(cfg.AllowChats) == 0 {
+		problems = append(problems, "allow_chats is empty")
+		suggestions = append(suggestions, "add at least one allowlisted chat id")
+	}
+	if strings.TrimSpace(os.Getenv(cfg.BotTokenEnv)) == "" {
+		problems = append(problems, cfg.BotTokenEnv+" is not set")
+		suggestions = append(suggestions, "export "+cfg.BotTokenEnv)
+	}
+	if len(problems) > 0 {
+		return doctorFail("telegram", "Telegram config is incomplete", strings.Join(problems, "; "), strings.Join(suggestions, "; ")+".")
+	}
+	return doctorPass("telegram", "Telegram config is ready", fmt.Sprintf("allow_chats=%d token_env=%s", len(cfg.AllowChats), cfg.BotTokenEnv), "")
+}
+
+func doctorMCPCheck(settings MCPSettings) doctorCheck {
+	status := buildStatusMCP(settings)
+	if status.Configured == 0 {
+		return doctorPass("mcp", "no MCP servers configured", "MCP is optional.", "")
+	}
+	if _, _, err := MCPServerConfigs(settings); err != nil {
+		return doctorFail("mcp", "MCP config is invalid", err.Error(), "Fix enabled MCP server settings before dogfooding MCP tools.")
+	}
+	return doctorPass("mcp", "MCP config is valid", fmt.Sprintf("%d configured, %d enabled", status.Configured, status.Enabled), "")
+}
+
+func writeDoctorReport(w io.Writer, report doctorReport) {
+	state := "ready"
+	if !report.Ready {
+		state = "not ready"
+	}
+	fmt.Fprintf(w, "Peggy doctor: %s\n", state)
+	for _, check := range report.Checks {
+		fmt.Fprintf(w, "%s %s: %s", strings.ToUpper(check.Status), check.ID, check.Summary)
+		if check.Detail != "" {
+			fmt.Fprintf(w, " - %s", check.Detail)
+		}
+		fmt.Fprintln(w)
+		if check.Suggestion != "" {
+			fmt.Fprintf(w, "  next: %s\n", check.Suggestion)
+		}
+	}
+}
+
+func doctorPass(id, summary, detail, suggestion string) doctorCheck {
+	return doctorCheck{ID: id, Status: "pass", Summary: summary, Detail: detail, Suggestion: suggestion}
+}
+
+func doctorWarn(id, summary, detail, suggestion string) doctorCheck {
+	return doctorCheck{ID: id, Status: "warn", Summary: summary, Detail: detail, Suggestion: suggestion}
+}
+
+func doctorFail(id, summary, detail, suggestion string) doctorCheck {
+	return doctorCheck{ID: id, Status: "fail", Summary: summary, Detail: detail, Suggestion: suggestion}
+}
+
+func normalizedProviderName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return DefaultProvider
+	}
+	return name
+}
+
+func knownPeggyProvider(name string) bool {
+	normalized := normalizedProviderName(name)
+	switch normalized {
+	case "codex", "gemini", "openrouter", "nvidia":
+		return true
+	default:
+		_, ok := providers.Lookup(normalized)
+		return ok
+	}
 }
 
 func buildStatusReport(settings Settings, settingsPath, soul, soulPath string) statusReport {
