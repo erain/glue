@@ -202,6 +202,8 @@ Examples:
   peggy skills --config ~/.config/peggy/settings.json
   peggy roles --config ~/.config/peggy/settings.json
   peggy memories --config ~/.config/peggy/settings.json
+  peggy memories export --config ~/.config/peggy/settings.json --output peggy-memories.json
+  peggy memories import --config ~/.config/peggy/settings.json --dry-run peggy-memories.json
   peggy sessions --config ~/.config/peggy/settings.json --prefix telegram:
   peggy recall --config ~/.config/peggy/settings.json "Australian Shepherd"
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
@@ -715,8 +717,15 @@ func writeRoleCatalog(w io.Writer, catalog []roleCatalogEntry) {
 }
 
 func runMemories(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "forget" {
-		return runMemoriesForget(ctx, args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "export":
+			return runMemoriesExport(ctx, args[1:], stdout, stderr)
+		case "import":
+			return runMemoriesImport(ctx, args[1:], stdout, stderr)
+		case "forget":
+			return runMemoriesForget(ctx, args[1:], stdout, stderr)
+		}
 	}
 	fs := flag.NewFlagSet("peggy memories", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -735,6 +744,8 @@ Examples:
   peggy memories --config ~/.config/peggy/settings.json
   peggy memories --config ~/.config/peggy/settings.json --json
   peggy memories --limit 20
+  peggy memories export --output peggy-memories.json
+  peggy memories import --dry-run peggy-memories.json
   peggy memories forget <id>
 
 Flags:
@@ -787,6 +798,129 @@ Flags:
 		return 0
 	}
 	writeMemories(stdout, memories)
+	return 0
+}
+
+func runMemoriesExport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy memories export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		outputPath = fs.String("output", "", "write backup JSON to this path instead of stdout")
+		force      = fs.Bool("force", false, "overwrite --output if it already exists")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy memories export - export curated memories to backup JSON.
+
+Usage:
+  peggy memories export [flags]
+
+Examples:
+  peggy memories export --config ~/.config/peggy/settings.json > peggy-memories.json
+  peggy memories export --config ~/.config/peggy/settings.json --output peggy-memories.json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy memories export: positional args not supported")
+		return 2
+	}
+	store, missingSettings, err := openStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories export: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy memories export: no settings.json found; using built-in defaults")
+	}
+	if closer, ok := store.(io.Closer); ok {
+		defer closer.Close()
+	}
+	p := &Peggy{store: store}
+	backup, err := p.ExportMemoryBackup(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories export: %v\n", err)
+		return 1
+	}
+	if err := writeMemoryBackupJSON(stdout, *outputPath, *force, backup); err != nil {
+		fmt.Fprintf(stderr, "peggy memories export: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runMemoriesImport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy memories import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		dryRun     = fs.Bool("dry-run", false, "validate and report import decisions without writing")
+		jsonOutput = fs.Bool("json", false, "print machine-readable import report")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy memories import - import curated memories from backup JSON.
+
+Usage:
+  peggy memories import [flags] <backup.json>
+
+Examples:
+  peggy memories import --config ~/.config/peggy/settings.json --dry-run peggy-memories.json
+  peggy memories import --config ~/.config/peggy/settings.json peggy-memories.json
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "peggy memories import: exactly one backup path is required")
+		return 2
+	}
+	backup, err := readMemoryBackupPath(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories import: %v\n", err)
+		return 1
+	}
+	store, missingSettings, err := openStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories import: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy memories import: no settings.json found; using built-in defaults")
+	}
+	if closer, ok := store.(io.Closer); ok {
+		defer closer.Close()
+	}
+	p := &Peggy{store: store}
+	report, err := p.ImportMemoryBackup(ctx, backup, MemoryImportOptions{DryRun: *dryRun})
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories import: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			fmt.Fprintf(stderr, "peggy memories import: encode report: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMemoryImportReport(stdout, report)
 	return 0
 }
 
@@ -902,6 +1036,60 @@ func writeMemories(w io.Writer, memories []Memory) {
 		if len(memory.Tags) > 0 {
 			fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
 		}
+	}
+}
+
+func writeMemoryBackupJSON(stdout io.Writer, outputPath string, force bool, backup MemoryBackup) error {
+	if strings.TrimSpace(outputPath) == "" {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(backup)
+	}
+	flags := os.O_WRONLY | os.O_CREATE
+	if force {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+	file, err := os.OpenFile(outputPath, flags, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s already exists; use --force to overwrite", outputPath)
+		}
+		return err
+	}
+	defer file.Close()
+	enc := json.NewEncoder(file)
+	enc.SetIndent("", "  ")
+	return enc.Encode(backup)
+}
+
+func readMemoryBackupPath(path string) (MemoryBackup, error) {
+	if path == "-" {
+		return DecodeMemoryBackup(os.Stdin)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return MemoryBackup{}, err
+	}
+	return DecodeMemoryBackup(bytes.NewReader(data))
+}
+
+func writeMemoryImportReport(w io.Writer, report MemoryImportReport) {
+	if report.DryRun {
+		fmt.Fprintf(w, "would import %d memories; skipped %d duplicates\n", report.WouldImport, report.Skipped)
+	} else {
+		fmt.Fprintf(w, "imported %d memories; skipped %d duplicates\n", report.Imported, report.Skipped)
+	}
+	for _, entry := range report.Entries {
+		if entry.Status != "skipped" {
+			continue
+		}
+		reason := entry.Reason
+		if reason == "" {
+			reason = "duplicate"
+		}
+		fmt.Fprintf(w, "  skipped %s: %s\n", entry.ID, reason)
 	}
 }
 
