@@ -70,6 +70,9 @@ func TestAddMemory_RoundTripsThroughStore(t *testing.T) {
 	if memories[0].Tags == nil || memories[0].Tags[0] != "preference" {
 		t.Errorf("tags missing: %+v", memories[0])
 	}
+	if memories[0].ID == "" || !strings.HasPrefix(memories[0].ID, "mem_") {
+		t.Errorf("memory id missing: %+v", memories[0])
+	}
 }
 
 func TestAddMemory_PersistsAcrossPeggyRebuild(t *testing.T) {
@@ -112,6 +115,64 @@ func TestAddMemory_RejectsBlankContent(t *testing.T) {
 	p := newFileBackedPeggy(t)
 	if _, err := p.AddMemory(context.Background(), "   ", nil); err == nil {
 		t.Fatal("expected error for blank content")
+	}
+}
+
+func TestListMemoriesSynthesizesIDsForExistingRecords(t *testing.T) {
+	p := newFileBackedPeggy(t)
+	ctx := context.Background()
+	mem, err := p.AddMemory(ctx, "User likes green tea.", []string{"preference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := p.store.Load(ctx, MemoriesSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(state.Messages[0].Metadata, "id")
+	if err := p.store.Save(ctx, MemoriesSessionID, state); err != nil {
+		t.Fatal(err)
+	}
+	memories, err := p.ListMemories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memories) != 1 || memories[0].ID == "" || memories[0].ID != mem.ID {
+		t.Fatalf("memories = %+v, want synthesized stable id %s", memories, mem.ID)
+	}
+}
+
+func TestForgetMemory_RemovesByID(t *testing.T) {
+	p := newFileBackedPeggy(t)
+	ctx := context.Background()
+	keep, err := p.AddMemory(ctx, "User likes green tea.", []string{"preference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove, err := p.AddMemory(ctx, "User dislikes stale context.", []string{"preference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgotten, err := p.ForgetMemory(ctx, remove.ID)
+	if err != nil {
+		t.Fatalf("ForgetMemory: %v", err)
+	}
+	if forgotten.ID != remove.ID {
+		t.Fatalf("forgotten = %+v, want %s", forgotten, remove.ID)
+	}
+	memories, err := p.ListMemories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memories) != 1 || memories[0].ID != keep.ID {
+		t.Fatalf("memories after forget = %+v, want only %s", memories, keep.ID)
+	}
+}
+
+func TestForgetMemory_UnknownIDErrors(t *testing.T) {
+	p := newFileBackedPeggy(t)
+	if _, err := p.ForgetMemory(context.Background(), "mem_missing"); err == nil {
+		t.Fatal("expected error for unknown memory id")
 	}
 }
 

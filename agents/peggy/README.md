@@ -601,10 +601,12 @@ Inspect curated memories from the terminal without starting a provider:
 peggy memories --config ~/.config/peggy/settings.json
 peggy memories --config ~/.config/peggy/settings.json --json
 peggy memories --config ~/.config/peggy/settings.json --limit 20
+peggy memories forget --config ~/.config/peggy/settings.json mem_123
 ```
 
-Memory forgetting remains a near-term follow-up; this command is
-intentionally read-only.
+Each memory has a stable `id` in human and JSON output. `forget` only
+removes curated `remember` records from the dedicated memory session; it
+does not delete ordinary conversation history.
 
 ## What Peggy supports today
 
@@ -665,9 +667,8 @@ priority order:
   runs, and daemon/client discovery for reusable workflows.
 - **Later ecosystem polish.** `providers/anthropic` when budget allows.
 
-Near-term follow-ups that may ship as patches: `peggy memories forget`,
-edit-in-place Telegram streaming, FTS5 prefix-match on session ids for
-channel-scoped recall.
+Near-term follow-ups that may ship as patches: edit-in-place Telegram
+streaming, FTS5 prefix-match on session ids for channel-scoped recall.
 
 ## As a library
 
