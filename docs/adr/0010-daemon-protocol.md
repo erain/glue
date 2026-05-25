@@ -145,7 +145,7 @@ Response:
   "version": 1,
   "active_runs": 0,
   "tools_count": 4,
-  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "memories", "recall", "status"]
+  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "memories", "memory_forget", "recall", "status"]
 }
 ```
 
@@ -286,6 +286,30 @@ Response:
 
 Hosts that do not expose memories return an empty `memories` array. A
 host that exposes memories advertises the `memories` capability in
+`/v1/status`.
+
+Daemon clients can delete one curated host memory by stable id:
+
+```http
+DELETE /v1/memories/mem_1779638400000000000_ab12cd34
+Authorization: Bearer <token>
+```
+
+Response:
+
+```json
+{
+  "memory": {
+    "id": "mem_1779638400000000000_ab12cd34",
+    "content": "The user prefers terse responses.",
+    "tags": ["preference"],
+    "timestamp": "2026-05-24T12:00:00Z"
+  }
+}
+```
+
+Hosts that do not support memory deletion return `404`. A host that
+supports deletion advertises the `memory_forget` capability in
 `/v1/status`.
 
 ### 5. Runs and sessions

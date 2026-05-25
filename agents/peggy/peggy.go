@@ -299,14 +299,31 @@ func (p *Peggy) MemoryCatalog(ctx context.Context, req daemon.MemoryCatalogReque
 	}
 	out := make([]daemon.MemoryEntry, 0, len(memories))
 	for _, memory := range memories {
-		out = append(out, daemon.MemoryEntry{
-			ID:        memory.ID,
-			Content:   memory.Content,
-			Tags:      append([]string(nil), memory.Tags...),
-			Timestamp: memory.Timestamp,
-		})
+		out = append(out, daemonMemoryEntry(memory))
 	}
 	return daemon.MemoryCatalogResponse{Memories: out}, nil
+}
+
+// MemoryForget implements daemon.MemoryForgetHost.
+func (p *Peggy) MemoryForget(ctx context.Context, req daemon.MemoryForgetRequest) (daemon.MemoryForgetResponse, error) {
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		return daemon.MemoryForgetResponse{}, errors.New("memory id is required")
+	}
+	memory, err := p.ForgetMemory(ctx, id)
+	if err != nil {
+		return daemon.MemoryForgetResponse{}, err
+	}
+	return daemon.MemoryForgetResponse{Memory: daemonMemoryEntry(memory)}, nil
+}
+
+func daemonMemoryEntry(memory Memory) daemon.MemoryEntry {
+	return daemon.MemoryEntry{
+		ID:        memory.ID,
+		Content:   memory.Content,
+		Tags:      append([]string(nil), memory.Tags...),
+		Timestamp: memory.Timestamp,
+	}
 }
 
 // MCPResourceCatalog implements daemon.MCPResourceCatalogHost.

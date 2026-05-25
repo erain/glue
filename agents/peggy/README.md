@@ -298,6 +298,7 @@ session history and memory store.
 peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
 glue connect --memories
+glue connect --forget-memory mem_123
 glue connect --skills
 glue connect --roles
 glue connect --skill triage --arg issue=GLUE-123 --id cli:triage
@@ -329,8 +330,10 @@ daemon-advertised skills, daemon-advertised roles, and any
 daemon-advertised MCP resource/prompt catalogs. Use `--skills-json`,
 `--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
 `--mcp-read-json`, `--mcp-prompt-json`, `--recall-json`, or
-`--memories-json` when another client needs the payload as data. Add
-`--usage` to prompt or skill-mode `glue connect` when you want
+`--memories-json` when another client needs catalog/search payloads as
+data. Use `--forget-memory-json` when another client needs the removed
+memory record as data. Add `--usage` to prompt or skill-mode
+`glue connect` when you want
 provider-reported token usage on stderr. Add
 `--usage-input-price`, `--usage-output-price`, and optional cache price
 flags to estimate USD cost from prices you supply. Stop the daemon with
@@ -620,6 +623,8 @@ the same curated memory catalog:
 glue connect --memories
 glue connect --memories-json
 glue connect --memories --memory-limit 20
+glue connect --forget-memory mem_123
+glue connect --forget-memory mem_123 --forget-memory-json
 ```
 
 Search stored sessions and memories directly when using a SQLite store:

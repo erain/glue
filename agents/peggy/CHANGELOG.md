@@ -61,6 +61,9 @@ not formally follow SemVer until v1.0.
   curated-memory listing through the daemon host, and
   `glue connect --memories` can render or JSON-export the live memory
   catalog with an optional limit.
+- **Daemon memory deletion.** `glue connect --forget-memory <id>` now
+  removes one curated memory from a Peggy daemon and can return the
+  removed record as JSON.
 
 ## v0.4.0 — 2026-05-24
 

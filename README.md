@@ -649,11 +649,12 @@ status-and-catalog preflight, or `--status`, `--tools`,
 `--mcp-resources`, or `--mcp-prompts` to render each view separately.
 Peggy daemons also support `--mcp-read` and `--mcp-prompt` for direct
 resource reads and prompt rendering, `--memories` for curated memory
-catalogs, plus `--recall` for direct memory/session search. Each
-inspect/action mode also has a `-json` form for scripts. Add `--usage`
-to `run` or prompt-mode `connect` to print provider-reported token usage
-on stderr without changing streamed stdout. Add the `--usage-*-price`
-flags when you want a local USD estimate from prices you supply.
+catalogs, `--forget-memory` for memory deletion, plus `--recall` for
+direct memory/session search. Each inspect/action mode also has a
+`-json` form for scripts. Add `--usage` to `run` or prompt-mode
+`connect` to print provider-reported token usage on stderr without
+changing streamed stdout. Add the `--usage-*-price` flags when you want
+a local USD estimate from prices you supply.
 
 Peggy can serve the same daemon protocol with the personal-assistant
 agent, settings, memory store, and coding tools loaded once:
@@ -662,6 +663,7 @@ agent, settings, memory store, and coding tools loaded once:
 go run ./agents/peggy/cmd/peggy serve --coding --workdir .
 go run ./cmd/glue connect --inspect
 go run ./cmd/glue connect --memories
+go run ./cmd/glue connect --forget-memory mem_123
 go run ./cmd/glue connect --mcp-resources
 go run ./cmd/glue connect --mcp-prompts
 go run ./cmd/glue connect --mcp-read --server filesystem --uri file:///workspace/README.md

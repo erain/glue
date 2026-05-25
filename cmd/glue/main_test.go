@@ -1752,6 +1752,111 @@ func TestRunCLIConnectMemoriesValidation(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectForgetsMemory(t *testing.T) {
+	var sawForget bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/memories/mem_1":
+			sawForget = true
+			if r.Method != http.MethodDelete {
+				t.Fatalf("forget method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("forget auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.MemoryForgetResponse{Memory: daemon.MemoryEntry{
+				ID:        "mem_1",
+				Content:   "User prefers terse responses.",
+				Tags:      []string{"preference"},
+				Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--forget-memory", "mem_1",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawForget || sawRun {
+		t.Fatalf("sawForget=%v sawRun=%v", sawForget, sawRun)
+	}
+	for _, want := range []string{
+		"mem_1",
+		"timestamp: 2026-05-24T12:00:00Z",
+		"content: User prefers terse responses.",
+		"tags: preference",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectForgetsMemoryJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/memories/mem_1" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemon.MemoryForgetResponse{Memory: daemon.MemoryEntry{
+			ID:      "mem_1",
+			Content: "User prefers terse responses.",
+		}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--forget-memory", "mem_1",
+		"--forget-memory-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var forgotten daemon.MemoryForgetResponse
+	if err := json.Unmarshal(stdout.Bytes(), &forgotten); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if forgotten.Memory.ID != "mem_1" {
+		t.Fatalf("forgotten = %+v", forgotten)
+	}
+}
+
+func TestRunCLIConnectForgetMemoryValidation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--forget-memory-json",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want forget-memory validation failure")
+	}
+	if !strings.Contains(stderr.String(), "--forget-memory is required") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunCLIConnectShowsStatus(t *testing.T) {
 	var sawStatus bool
 	var sawRun bool

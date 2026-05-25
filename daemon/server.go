@@ -83,6 +83,12 @@ type MemoryCatalogHost interface {
 	MemoryCatalog(context.Context, MemoryCatalogRequest) (MemoryCatalogResponse, error)
 }
 
+// MemoryForgetHost is optionally implemented by hosts that can delete one
+// curated memory record without starting a run.
+type MemoryForgetHost interface {
+	MemoryForget(context.Context, MemoryForgetRequest) (MemoryForgetResponse, error)
+}
+
 // SkillCatalogEntry describes one reusable skill advertised by a host.
 type SkillCatalogEntry struct {
 	Name        string `json:"name"`
@@ -209,6 +215,16 @@ type MemoryEntry struct {
 // MemoryCatalogResponse contains curated host memories.
 type MemoryCatalogResponse struct {
 	Memories []MemoryEntry `json:"memories"`
+}
+
+// MemoryForgetRequest selects one curated memory by stable id.
+type MemoryForgetRequest struct {
+	ID string `json:"id"`
+}
+
+// MemoryForgetResponse contains the deleted memory record.
+type MemoryForgetResponse struct {
+	Memory MemoryEntry `json:"memory"`
 }
 
 // Options configures [New].
@@ -496,6 +512,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if memoryID, ok := parseMemoryPath(r.URL.Path); ok {
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleMemoryForget(w, r, memoryID)
+		return
+	}
+
 	if r.URL.Path == "/v1/mcp/resources" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -612,6 +637,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	if _, ok := s.host.(MemoryCatalogHost); ok {
 		capabilities = append(capabilities, "memories")
+	}
+	if _, ok := s.host.(MemoryForgetHost); ok {
+		capabilities = append(capabilities, "memory_forget")
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		OK:           true,
@@ -767,6 +795,25 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 		catalog.Memories = catalog.Memories[:limit]
 	}
 	writeJSON(w, http.StatusOK, catalog)
+}
+
+func (s *Server) handleMemoryForget(w http.ResponseWriter, r *http.Request, id string) {
+	host, ok := s.host.(MemoryForgetHost)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "memory deletion is not supported by this host", false)
+		return
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "memory id is required", false)
+		return
+	}
+	forgotten, err := host.MemoryForget(r.Context(), MemoryForgetRequest{ID: id})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	writeJSON(w, http.StatusOK, forgotten)
 }
 
 func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
@@ -1092,6 +1139,19 @@ func parsePermissionDecisionPath(path string) (runID, permissionID string, ok bo
 
 func parseRunPath(path string) (string, bool) {
 	const prefix = "/v1/runs/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	raw := strings.TrimPrefix(path, prefix)
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	id, err := url.PathUnescape(raw)
+	return id, err == nil && id != ""
+}
+
+func parseMemoryPath(path string) (string, bool) {
+	const prefix = "/v1/memories/"
 	if !strings.HasPrefix(path, prefix) {
 		return "", false
 	}
