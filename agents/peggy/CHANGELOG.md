@@ -43,6 +43,9 @@ not formally follow SemVer until v1.0.
 - **Priced usage estimates.** `glue run --usage` and prompt-mode
   `glue connect --usage` can append `cost_usd=...` when users supply
   USD-per-1M-token price flags for input, output, and cache tokens.
+- **Memory inspection.** `peggy memories` lists curated memories from
+  the configured store without starting a provider, and `--json`
+  exports the same list for scripts or backups.
 
 ## v0.4.0 — 2026-05-24
 

@@ -162,6 +162,7 @@ peggy init [flags]
 peggy skill [flags] <name>
 peggy skills [flags]
 peggy roles [flags]
+peggy memories [flags]
 peggy mcp prompt [flags]
 peggy mcp prompts [flags]
 peggy mcp read [flags]
@@ -594,8 +595,16 @@ for _, m := range mems {
 }
 ```
 
-A `peggy memories` subcommand for list / forget / export is a
-near-term follow-up.
+Inspect curated memories from the terminal without starting a provider:
+
+```sh
+peggy memories --config ~/.config/peggy/settings.json
+peggy memories --config ~/.config/peggy/settings.json --json
+peggy memories --config ~/.config/peggy/settings.json --limit 20
+```
+
+Memory forgetting remains a near-term follow-up; this command is
+intentionally read-only.
 
 ## What Peggy supports today
 
@@ -656,9 +665,9 @@ priority order:
   runs, and daemon/client discovery for reusable workflows.
 - **Later ecosystem polish.** `providers/anthropic` when budget allows.
 
-Near-term follow-ups that may ship as patches: a `peggy memories`
-subcommand (list / export / forget), edit-in-place Telegram
-streaming, FTS5 prefix-match on session ids for channel-scoped recall.
+Near-term follow-ups that may ship as patches: `peggy memories forget`,
+edit-in-place Telegram streaming, FTS5 prefix-match on session ids for
+channel-scoped recall.
 
 ## As a library
 
