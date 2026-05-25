@@ -349,6 +349,9 @@ peggy-telegram --daemon
 In daemon-client mode, Telegram keeps its chat allowlist and inline
 permission buttons, but Peggy, memory, coding tools, and remembered
 permission scopes live in the daemon process.
+Allowlisted chats can also use `/memories [limit]`, `/recall <query>`,
+`/recall_memories <query>`, and `/forget_memory <id>` to inspect and
+correct daemon memory without starting a model run.
 
 Permission tiers apply in daemon mode by daemon `client_id`: `cli:*`
 uses the `cli` tier and `telegram:<chat_id>` uses the `telegram` tier.
@@ -628,6 +631,10 @@ glue connect --forget-memory mem_123
 glue connect --forget-memory mem_123 --forget-memory-json
 ```
 
+Telegram daemon-client users can run the same memory-management loop
+from an allowlisted chat with `/memories [limit]` and
+`/forget_memory <id>`.
+
 Search stored sessions and memories directly when using a SQLite store:
 
 ```sh
@@ -645,9 +652,11 @@ glue connect --recall "preference" --recall-memories
 glue connect --recall "project" --recall-json
 ```
 
-`peggy recall` and daemon `glue connect --recall` use the configured
-store only; neither starts a provider. File-backed stores do not
-support search, so use the default SQLite store for recall.
+Telegram daemon-client users can run `/recall <query>` or
+`/recall_memories <query>` from an allowlisted chat. `peggy recall`,
+daemon `glue connect --recall`, and Telegram daemon recall commands use
+the configured store only; none starts a provider. File-backed stores do
+not support search, so use the default SQLite store for recall.
 
 ## What Peggy supports today
 

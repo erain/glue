@@ -225,6 +225,18 @@ func (c *Channel) handleUpdate(ctx context.Context, u Update) {
 	var text string
 	var err error
 	if c.daemon != nil {
+		if reply, handled, commandErr := c.daemon.Command(ctx, u.Message.Text); handled {
+			if commandErr != nil {
+				fmt.Fprintf(c.stderr, "telegram: daemon command failed for chat %d: %v\n", chatID, commandErr)
+				reply = "Command error: " + commandErr.Error()
+			}
+			if strings.TrimSpace(reply) != "" {
+				if err := c.api.SendMessage(ctx, chatID, strings.TrimSpace(reply)); err != nil {
+					fmt.Fprintf(c.stderr, "telegram: send to chat %d: %v\n", chatID, err)
+				}
+			}
+			return
+		}
 		text, err = c.daemon.Prompt(ctx, sessionID, u.Message.Text, c.api, chatID)
 	} else {
 		text, err = c.peggy.Prompt(ctx, sessionID, u.Message.Text, &buf)

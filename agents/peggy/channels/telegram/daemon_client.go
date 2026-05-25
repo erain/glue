@@ -62,6 +62,11 @@ type daemonPermissionDecision struct {
 	RememberFor string `json:"remember_for,omitempty"`
 }
 
+const (
+	defaultTelegramMemoryLimit = 10
+	defaultTelegramRecallLimit = 5
+)
+
 // ResolveDaemonClientConfig applies metadata and environment fallback rules.
 func ResolveDaemonClientConfig(cfg DaemonClientConfig) (DaemonClientConfig, error) {
 	if strings.TrimSpace(cfg.MetadataPath) == "" {
@@ -133,6 +138,62 @@ func (d *DaemonClient) Prompt(ctx context.Context, sessionID, text string, api *
 	return d.streamRun(ctx, start, api, chatID, clientID)
 }
 
+// Command handles Telegram slash commands that map to daemon runtime actions.
+func (d *DaemonClient) Command(ctx context.Context, text string) (string, bool, error) {
+	if d == nil {
+		return "", false, errors.New("telegram daemon: client is not configured")
+	}
+	trimmed := strings.TrimSpace(text)
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return "", false, nil
+	}
+	token := fields[0]
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, token))
+	switch telegramCommandName(token) {
+	case "memories":
+		limit, err := parseTelegramMemoryLimit(rest)
+		if err != nil {
+			return "", true, err
+		}
+		catalog, err := d.memoryCatalog(ctx, limit)
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramMemories(catalog.Memories), true, nil
+	case "recall":
+		if rest == "" {
+			return "", true, errors.New("/recall query is required")
+		}
+		recall, err := d.recall(ctx, daemon.RecallRequest{Query: rest, Limit: defaultTelegramRecallLimit})
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramRecallHits(recall.Hits), true, nil
+	case "recall_memories":
+		if rest == "" {
+			return "", true, errors.New("/recall_memories query is required")
+		}
+		recall, err := d.recall(ctx, daemon.RecallRequest{Query: rest, Limit: defaultTelegramRecallLimit, MemoriesOnly: true})
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramRecallHits(recall.Hits), true, nil
+	case "forget_memory":
+		id, err := parseTelegramForgetMemoryID(rest)
+		if err != nil {
+			return "", true, err
+		}
+		forgotten, err := d.forgetMemory(ctx, id)
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramForgottenMemory(forgotten.Memory), true, nil
+	default:
+		return "", false, nil
+	}
+}
+
 func (d *DaemonClient) HandleCallback(ctx context.Context, cb CallbackQuery, api *API) bool {
 	if d == nil || !strings.HasPrefix(cb.Data, permissionCallbackPrefix) {
 		return false
@@ -171,6 +232,83 @@ func (d *DaemonClient) HandleCallback(ctx context.Context, cb CallbackQuery, api
 		answerDaemonCallback(ctx, api, cb.ID, "Denied.")
 	}
 	return true
+}
+
+func (d *DaemonClient) recall(ctx context.Context, in daemon.RecallRequest) (daemon.RecallResponse, error) {
+	body, _ := json.Marshal(in)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/v1/recall", bytes.NewReader(body))
+	if err != nil {
+		return daemon.RecallResponse{}, err
+	}
+	d.authorize(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return daemon.RecallResponse{}, redactDaemonErr(err, d.token)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.RecallResponse{}, fmt.Errorf("telegram daemon: recall: %s", httpStatusText(resp))
+	}
+	var out daemon.RecallResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return daemon.RecallResponse{}, err
+	}
+	if out.Hits == nil {
+		out.Hits = []daemon.RecallHit{}
+	}
+	return out, nil
+}
+
+func (d *DaemonClient) memoryCatalog(ctx context.Context, limit int) (daemon.MemoryCatalogResponse, error) {
+	endpoint := d.baseURL + "/v1/memories"
+	if limit > 0 {
+		values := url.Values{}
+		values.Set("limit", strconv.Itoa(limit))
+		endpoint += "?" + values.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return daemon.MemoryCatalogResponse{}, err
+	}
+	d.authorize(req)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return daemon.MemoryCatalogResponse{}, redactDaemonErr(err, d.token)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.MemoryCatalogResponse{}, fmt.Errorf("telegram daemon: memories: %s", httpStatusText(resp))
+	}
+	var out daemon.MemoryCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return daemon.MemoryCatalogResponse{}, err
+	}
+	if out.Memories == nil {
+		out.Memories = []daemon.MemoryEntry{}
+	}
+	return out, nil
+}
+
+func (d *DaemonClient) forgetMemory(ctx context.Context, id string) (daemon.MemoryForgetResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, d.baseURL+"/v1/memories/"+url.PathEscape(id), nil)
+	if err != nil {
+		return daemon.MemoryForgetResponse{}, err
+	}
+	d.authorize(req)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return daemon.MemoryForgetResponse{}, redactDaemonErr(err, d.token)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.MemoryForgetResponse{}, fmt.Errorf("telegram daemon: forget memory: %s", httpStatusText(resp))
+	}
+	var out daemon.MemoryForgetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return daemon.MemoryForgetResponse{}, err
+	}
+	return out, nil
 }
 
 func (d *DaemonClient) startRun(ctx context.Context, sessionID, text, clientID string) (daemonStartRunResponse, error) {
@@ -320,6 +458,106 @@ func (d *DaemonClient) print(format string, args ...any) {
 	if d.stderr != nil {
 		_, _ = fmt.Fprintf(d.stderr, format, args...)
 	}
+}
+
+func telegramCommandName(token string) string {
+	name := strings.TrimPrefix(strings.TrimSpace(token), "/")
+	if at := strings.IndexByte(name, '@'); at >= 0 {
+		name = name[:at]
+	}
+	return strings.ToLower(name)
+}
+
+func parseTelegramMemoryLimit(rest string) (int, error) {
+	if strings.TrimSpace(rest) == "" {
+		return defaultTelegramMemoryLimit, nil
+	}
+	fields := strings.Fields(rest)
+	if len(fields) != 1 {
+		return 0, errors.New("usage: /memories [limit]")
+	}
+	limit, err := strconv.Atoi(fields[0])
+	if err != nil || limit < 0 {
+		return 0, errors.New("/memories limit must be non-negative")
+	}
+	return limit, nil
+}
+
+func parseTelegramForgetMemoryID(rest string) (string, error) {
+	fields := strings.Fields(rest)
+	if len(fields) != 1 {
+		return "", errors.New("usage: /forget_memory <id>")
+	}
+	return fields[0], nil
+}
+
+func formatTelegramMemories(memories []daemon.MemoryEntry) string {
+	if len(memories) == 0 {
+		return "No memories."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Memories (%d):\n", len(memories))
+	for i, memory := range memories {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, memory.ID)
+		if !memory.Timestamp.IsZero() {
+			fmt.Fprintf(&b, "   %s\n", memory.Timestamp.Format(time.RFC3339))
+		}
+		fmt.Fprintf(&b, "   %s\n", telegramOneLine(memory.Content, 260))
+		if len(memory.Tags) > 0 {
+			fmt.Fprintf(&b, "   tags: %s\n", strings.Join(memory.Tags, ", "))
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatTelegramRecallHits(hits []daemon.RecallHit) string {
+	if len(hits) == 0 {
+		return "No recall hits."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Recall hits (%d):\n", len(hits))
+	for i, hit := range hits {
+		sessionID := hit.SessionID
+		if sessionID == "" {
+			sessionID = "(unknown session)"
+		}
+		fmt.Fprintf(&b, "%d. %s#%d", i+1, sessionID, hit.Index)
+		if hit.Role != "" {
+			fmt.Fprintf(&b, " %s", hit.Role)
+		}
+		fmt.Fprintln(&b)
+		if !hit.Timestamp.IsZero() {
+			fmt.Fprintf(&b, "   %s\n", hit.Timestamp.Format(time.RFC3339))
+		}
+		fmt.Fprintf(&b, "   %s\n", telegramOneLine(hit.Snippet, 260))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatTelegramForgottenMemory(memory daemon.MemoryEntry) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Forgot %s", memory.ID)
+	if memory.Content != "" {
+		fmt.Fprintf(&b, ":\n%s", telegramOneLine(memory.Content, 260))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func telegramOneLine(text string, maxRunes int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	const suffix = " ... [truncated]"
+	suffixRunes := []rune(suffix)
+	if maxRunes <= len(suffixRunes) {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-len(suffixRunes)]) + suffix
 }
 
 func daemonTelegramClientID(chatID int64) string {

@@ -110,6 +110,146 @@ func TestDaemonClientMessageStartsRunAndSendsText(t *testing.T) {
 	}
 }
 
+func TestDaemonClientMemoryCommandsUseDaemonWithoutRun(t *testing.T) {
+	var (
+		starts         int
+		memoryLimit    string
+		deletePath     string
+		recallRequests []daemon.RecallRequest
+	)
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+			t.Errorf("auth = %q", auth)
+		}
+		switch r.URL.Path {
+		case "/v1/sessions/telegram:123/runs":
+			starts++
+			http.Error(w, "commands should not start runs", http.StatusInternalServerError)
+		case "/v1/memories":
+			if r.Method != http.MethodGet {
+				t.Errorf("memories method = %s", r.Method)
+			}
+			memoryLimit = r.URL.Query().Get("limit")
+			writeJSON(t, w, http.StatusOK, daemon.MemoryCatalogResponse{Memories: []daemon.MemoryEntry{{
+				ID:        "mem_1",
+				Content:   "Project launch is Friday.",
+				Tags:      []string{"project"},
+				Timestamp: time.Date(2026, 5, 25, 1, 2, 3, 0, time.UTC),
+			}}})
+		case "/v1/recall":
+			if r.Method != http.MethodPost {
+				t.Errorf("recall method = %s", r.Method)
+			}
+			var req daemon.RecallRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			recallRequests = append(recallRequests, req)
+			writeJSON(t, w, http.StatusOK, daemon.RecallResponse{Hits: []daemon.RecallHit{{
+				SessionID: "telegram:123",
+				Index:     7,
+				Role:      glue.MessageRoleAssistant,
+				Snippet:   "The launch checklist is ready.",
+				Score:     1.5,
+			}}})
+		case "/v1/memories/mem_1":
+			if r.Method != http.MethodDelete {
+				t.Errorf("forget method = %s", r.Method)
+			}
+			deletePath = r.URL.Path
+			writeJSON(t, w, http.StatusOK, daemon.MemoryForgetResponse{Memory: daemon.MemoryEntry{
+				ID:      "mem_1",
+				Content: "Project launch is Friday.",
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/memories@PeggyBot 2"))
+	if memoryLimit != "2" {
+		t.Fatalf("memory limit = %q, want 2", memoryLimit)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "mem_1") || !strings.Contains(got, "Project launch is Friday") {
+		t.Fatalf("memories reply = %q", got)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(2, 123, "/recall project launch"))
+	if len(recallRequests) != 1 {
+		t.Fatalf("recall requests = %d, want 1", len(recallRequests))
+	}
+	if recallRequests[0].Query != "project launch" || recallRequests[0].Limit != defaultTelegramRecallLimit || recallRequests[0].MemoriesOnly {
+		t.Fatalf("recall request = %+v", recallRequests[0])
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "telegram:123#7") || !strings.Contains(got, "launch checklist") {
+		t.Fatalf("recall reply = %q", got)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(3, 123, "/recall_memories launch"))
+	if len(recallRequests) != 2 {
+		t.Fatalf("recall requests = %d, want 2", len(recallRequests))
+	}
+	if recallRequests[1].Query != "launch" || recallRequests[1].Limit != defaultTelegramRecallLimit || !recallRequests[1].MemoriesOnly {
+		t.Fatalf("recall memories request = %+v", recallRequests[1])
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(4, 123, "/forget_memory mem_1"))
+	if deletePath != "/v1/memories/mem_1" {
+		t.Fatalf("delete path = %q", deletePath)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Forgot mem_1") || !strings.Contains(got, "Project launch is Friday") {
+		t.Fatalf("forget reply = %q", got)
+	}
+	if starts != 0 {
+		t.Fatalf("daemon runs started = %d, want 0", starts)
+	}
+}
+
+func TestDaemonClientMemoryCommandValidationDoesNotCallDaemon(t *testing.T) {
+	var requests int
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/recall"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Command error: /recall query is required") {
+		t.Fatalf("validation reply = %q", got)
+	}
+}
+
 func TestDaemonClientAllowlistBeforeDaemonRequest(t *testing.T) {
 	var starts int
 	daemonServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
