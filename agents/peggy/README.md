@@ -121,6 +121,7 @@ glue connect --prompt "Dogfood smoke marker: Peggy daemon is reachable." --id cl
 glue connect --recall "Dogfood smoke marker"
 peggy sessions --config ~/.config/peggy/settings.json --prefix cli:
 peggy memories export --config ~/.config/peggy/settings.json --output peggy-memories.json
+peggy dashboard --config ~/.config/peggy/settings.json
 ```
 
 To reach Peggy from your phone, merge a Telegram channel block into
@@ -401,6 +402,7 @@ session history and memory store.
 
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
+peggy dashboard --config ~/.config/peggy/settings.json
 glue connect --diagnose
 glue connect --inspect
 glue connect --memories
@@ -453,6 +455,14 @@ provider-reported token usage on stderr. Add
 `--usage-input-price`, `--usage-output-price`, and optional cache price
 flags to estimate USD cost from prices you supply. Stop the daemon with
 SIGINT/SIGTERM.
+
+`peggy dashboard` starts a local web control surface over the same
+daemon metadata and bearer-token flow. It binds to `127.0.0.1:0` by
+default, fetches daemon status, diagnostics, tools, skills, roles,
+memories, and recall server-side, and reads recent sessions from the
+configured local store. It does not put the bearer token into the HTML.
+Use `--once` to render a single HTML snapshot, or `--allow-nonlocal`
+only when you deliberately want to bind outside loopback.
 
 Restart/recovery is intentionally local-first: stop the current
 `peggy serve` process with SIGINT/SIGTERM, start it again, and let it
