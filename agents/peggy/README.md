@@ -349,9 +349,10 @@ peggy-telegram --daemon
 In daemon-client mode, Telegram keeps its chat allowlist and inline
 permission buttons, but Peggy, memory, coding tools, and remembered
 permission scopes live in the daemon process.
-Allowlisted chats can also use `/skills`, `/skill <name> key=value`,
-`/memories [limit]`, `/recall <query>`, `/recall_memories <query>`,
-and `/forget_memory <id>` to run workspace skills and inspect or
+Allowlisted chats can also use `/roles`, `/role <name> <prompt>`,
+`/skills`, `/skill <name> key=value`, `/memories [limit]`,
+`/recall <query>`, `/recall_memories <query>`, and
+`/forget_memory <id>` to run workspace roles/skills and inspect or
 correct daemon memory from chat.
 
 Permission tiers apply in daemon mode by daemon `client_id`: `cli:*`
@@ -639,6 +640,8 @@ from an allowlisted chat with `/memories [limit]` and
 They can also inspect and run reusable workspace skills from chat:
 
 ```text
+/roles
+/role reviewer summarize the latest diff
 /skills
 /skill triage issue=GLUE-123
 ```

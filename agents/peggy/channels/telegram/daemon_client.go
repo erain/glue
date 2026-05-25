@@ -44,6 +44,7 @@ type daemonStartRunPayload struct {
 	Text      string            `json:"text,omitempty"`
 	Skill     string            `json:"skill,omitempty"`
 	Arguments map[string]string `json:"arguments,omitempty"`
+	Role      string            `json:"role,omitempty"`
 	ClientID  string            `json:"client_id,omitempty"`
 }
 
@@ -54,6 +55,10 @@ type daemonStartRunResponse struct {
 
 type daemonSkillCatalog struct {
 	Skills []daemon.SkillCatalogEntry `json:"skills"`
+}
+
+type daemonRoleCatalog struct {
+	Roles []daemon.RoleCatalogEntry `json:"roles"`
 }
 
 type daemonPermissionPayload struct {
@@ -157,6 +162,27 @@ func (d *DaemonClient) Command(ctx context.Context, sessionID, text string, api 
 	token := fields[0]
 	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, token))
 	switch telegramCommandName(token) {
+	case "roles":
+		if rest != "" {
+			return "", true, errors.New("usage: /roles")
+		}
+		catalog, err := d.roleCatalog(ctx)
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramRoles(catalog.Roles), true, nil
+	case "role":
+		role, prompt, err := parseTelegramRoleRun(rest)
+		if err != nil {
+			return "", true, err
+		}
+		clientID := daemonTelegramClientID(chatID)
+		start, err := d.startRun(ctx, sessionID, daemonStartRunPayload{Text: prompt, Role: role, ClientID: clientID})
+		if err != nil {
+			return "", true, err
+		}
+		text, err := d.streamRun(ctx, start, api, chatID, clientID)
+		return text, true, err
 	case "skills":
 		if rest != "" {
 			return "", true, errors.New("usage: /skills")
@@ -259,6 +285,30 @@ func (d *DaemonClient) HandleCallback(ctx context.Context, cb CallbackQuery, api
 		answerDaemonCallback(ctx, api, cb.ID, "Denied.")
 	}
 	return true
+}
+
+func (d *DaemonClient) roleCatalog(ctx context.Context) (daemonRoleCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/v1/roles", nil)
+	if err != nil {
+		return daemonRoleCatalog{}, err
+	}
+	d.authorize(req)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return daemonRoleCatalog{}, redactDaemonErr(err, d.token)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonRoleCatalog{}, fmt.Errorf("telegram daemon: roles: %s", httpStatusText(resp))
+	}
+	var out daemonRoleCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return daemonRoleCatalog{}, err
+	}
+	if out.Roles == nil {
+		out.Roles = []daemon.RoleCatalogEntry{}
+	}
+	return out, nil
 }
 
 func (d *DaemonClient) skillCatalog(ctx context.Context) (daemonSkillCatalog, error) {
@@ -564,6 +614,40 @@ func parseTelegramSkillRun(rest string) (string, map[string]string, error) {
 		args = nil
 	}
 	return name, args, nil
+}
+
+func parseTelegramRoleRun(rest string) (string, string, error) {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", "", errors.New("/role name is required")
+	}
+	role := strings.TrimSpace(fields[0])
+	if role == "" {
+		return "", "", errors.New("/role name is required")
+	}
+	prompt := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), fields[0]))
+	if prompt == "" {
+		return "", "", errors.New("/role prompt is required")
+	}
+	return role, prompt, nil
+}
+
+func formatTelegramRoles(roles []daemon.RoleCatalogEntry) string {
+	if len(roles) == 0 {
+		return "No daemon roles reported."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Roles (%d):\n", len(roles))
+	for i, role := range roles {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, role.Name)
+		if role.Description != "" {
+			fmt.Fprintf(&b, "   %s\n", telegramOneLine(role.Description, 260))
+		}
+		if role.Model != "" {
+			fmt.Fprintf(&b, "   model: %s\n", role.Model)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func formatTelegramSkills(skills []daemon.SkillCatalogEntry) string {

@@ -226,6 +226,123 @@ func TestDaemonClientSkillCommandValidationDoesNotCallDaemon(t *testing.T) {
 	}
 }
 
+func TestDaemonClientRoleCommandsUseDaemon(t *testing.T) {
+	var (
+		start     daemonStartRunPayload
+		starts    int
+		rolesSeen int
+	)
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+			t.Errorf("auth = %q", auth)
+		}
+		switch r.URL.Path {
+		case "/v1/roles":
+			if r.Method != http.MethodGet {
+				t.Errorf("roles method = %s", r.Method)
+			}
+			rolesSeen++
+			writeJSON(t, w, http.StatusOK, daemonRoleCatalog{Roles: []daemon.RoleCatalogEntry{{
+				Name:        "reviewer",
+				Description: "Review code changes",
+				Model:       "openrouter/free",
+			}}})
+		case "/v1/sessions/telegram:123/runs":
+			if r.Method != http.MethodPost {
+				t.Errorf("role method = %s", r.Method)
+			}
+			starts++
+			if err := json.NewDecoder(r.Body).Decode(&start); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(t, w, http.StatusCreated, daemonStartRunResponse{RunID: "run_1", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			writeSSE(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "role done"}})
+			writeSSE(t, w, daemon.EventEnvelope{Type: "run_done"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/roles@PeggyBot"))
+	if rolesSeen != 1 {
+		t.Fatalf("roles requests = %d, want 1", rolesSeen)
+	}
+	if starts != 0 {
+		t.Fatalf("daemon starts after /roles = %d, want 0", starts)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "reviewer") || !strings.Contains(got, "Review code changes") || !strings.Contains(got, "openrouter/free") {
+		t.Fatalf("roles reply = %q", got)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(2, 123, "/role reviewer summarize the diff"))
+	if starts != 1 {
+		t.Fatalf("daemon starts = %d, want 1", starts)
+	}
+	if start.Text != "summarize the diff" || start.Role != "reviewer" || start.ClientID != "telegram:123" {
+		t.Fatalf("role start payload = %+v", start)
+	}
+	if start.Skill != "" || len(start.Arguments) != 0 {
+		t.Fatalf("unexpected skill fields in role start payload = %+v", start)
+	}
+	if got := tg.lastSendText(); got != "role done" {
+		t.Fatalf("role reply = %q", got)
+	}
+}
+
+func TestDaemonClientRoleCommandValidationDoesNotCallDaemon(t *testing.T) {
+	var requests int
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/role"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Command error: /role name is required") {
+		t.Fatalf("validation reply = %q", got)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(2, 123, "/role reviewer"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Command error: /role prompt is required") {
+		t.Fatalf("prompt validation reply = %q", got)
+	}
+}
+
 func TestDaemonClientMemoryCommandsUseDaemonWithoutRun(t *testing.T) {
 	var (
 		starts         int
