@@ -179,6 +179,42 @@ func TestRunCLIUsageReportsTokens(t *testing.T) {
 	}
 }
 
+func TestRunCLIUsageReportsEstimatedCost(t *testing.T) {
+	t.Parallel()
+
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{{
+		{Type: glue.ProviderEventStart},
+		{Type: glue.ProviderEventTextDelta, Delta: "hello"},
+		{Type: glue.ProviderEventDone, Message: &glue.Message{
+			Role: glue.MessageRoleAssistant,
+			Usage: &glue.Usage{
+				InputTokens:      1_000_000,
+				OutputTokens:     500_000,
+				CacheReadTokens:  250_000,
+				CacheWriteTokens: 100_000,
+				TotalTokens:      1_850_000,
+			},
+		}},
+	}}}
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run",
+		"--prompt", "say hi",
+		"--store", t.TempDir(),
+		"--usage",
+		"--usage-input-price", "1",
+		"--usage-output-price", "2",
+		"--usage-cache-read-price", "0.25",
+		"--usage-cache-write-price", "3",
+	}, &stdout, &stderr, fakeFactory(provider))
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if got, want := stderr.String(), "usage: input=1000000 output=500000 cache_read=250000 cache_write=100000 total=1850000 cost_usd=2.362500\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
 func TestRunCLIUsageSilentWhenMissing(t *testing.T) {
 	t.Parallel()
 
@@ -189,6 +225,7 @@ func TestRunCLIUsageSilentWhenMissing(t *testing.T) {
 		"--prompt", "go",
 		"--store", t.TempDir(),
 		"--usage",
+		"--usage-input-price", "1",
 	}, &stdout, &stderr, fakeFactory(provider))
 	if code != 0 {
 		t.Fatalf("code = %d stderr=%q", code, stderr.String())
@@ -198,6 +235,24 @@ func TestRunCLIUsageSilentWhenMissing(t *testing.T) {
 	}
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want no usage output", stderr.String())
+	}
+}
+
+func TestRunCLIUsagePriceRejectsNegative(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run",
+		"--prompt", "go",
+		"--usage",
+		"--usage-input-price", "-1",
+	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}))
+	if code == 0 {
+		t.Fatal("code = 0, want failure")
+	}
+	if !strings.Contains(stderr.String(), "--usage-input-price must be non-negative") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
@@ -667,6 +722,61 @@ func TestRunCLIConnectUsageReportsTokens(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectUsageReportsEstimatedCost(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/default/runs":
+			writeJSONResponse(t, w, http.StatusCreated, startRunResult{RunID: "run_1", SessionID: "default", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "done"}})
+			writeSSETest(t, w, daemon.EventEnvelope{Type: "run_done", Payload: connectRunDonePayload{
+				NewMessages: []glue.Message{
+					{
+						Role: glue.MessageRoleAssistant,
+						Usage: &glue.Usage{
+							InputTokens:  1_000_000,
+							OutputTokens: 500_000,
+							TotalTokens:  1_500_000,
+						},
+					},
+					{
+						Role: glue.MessageRoleAssistant,
+						Usage: &glue.Usage{
+							CacheReadTokens:  250_000,
+							CacheWriteTokens: 100_000,
+							TotalTokens:      350_000,
+						},
+					},
+				},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--prompt", "hello",
+		"--usage",
+		"--usage-input-price", "1",
+		"--usage-output-price", "2",
+		"--usage-cache-read-price", "0.25",
+		"--usage-cache-write-price", "3",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if got, want := stderr.String(), "usage: input=1000000 output=500000 cache_read=250000 cache_write=100000 total=1850000 cost_usd=2.362500\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
 func TestRunCLIConnectUsageSilentWhenMissing(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -686,6 +796,7 @@ func TestRunCLIConnectUsageSilentWhenMissing(t *testing.T) {
 		"connect",
 		"--prompt", "hello",
 		"--usage",
+		"--usage-input-price", "1",
 		"--base-url", ts.URL,
 		"--token", "tok",
 		"--metadata", "",
