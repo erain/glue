@@ -260,6 +260,46 @@ type PermissionStore interface {
 	SavePermissionGrants([]PermissionGrant) error
 }
 
+// DiagnosticInfo describes non-secret runtime configuration that daemon
+// clients can use for local operations troubleshooting.
+type DiagnosticInfo struct {
+	Name                   string    `json:"name,omitempty"`
+	StartedAt              time.Time `json:"started_at,omitempty"`
+	ListenAddr             string    `json:"listen_addr,omitempty"`
+	MetadataPath           string    `json:"metadata_path,omitempty"`
+	TokenSource            string    `json:"token_source,omitempty"`
+	Provider               string    `json:"provider,omitempty"`
+	Model                  string    `json:"model,omitempty"`
+	StoreType              string    `json:"store_type,omitempty"`
+	StorePath              string    `json:"store_path,omitempty"`
+	SettingsPath           string    `json:"settings_path,omitempty"`
+	IdentityPath           string    `json:"identity_path,omitempty"`
+	CodingEnabled          bool      `json:"coding_enabled"`
+	CodingWorkDir          string    `json:"coding_work_dir,omitempty"`
+	PermissionRememberPath string    `json:"permission_remember_path,omitempty"`
+}
+
+// DiagnosticError is one recent daemon runtime error, redacted for
+// operational display.
+type DiagnosticError struct {
+	Time      time.Time `json:"time"`
+	RunID     string    `json:"run_id,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	ClientID  string    `json:"client_id,omitempty"`
+	Error     string    `json:"error"`
+}
+
+// DiagnosticResponse is the authenticated daemon diagnostics payload.
+type DiagnosticResponse struct {
+	OK           bool              `json:"ok"`
+	Version      int               `json:"version"`
+	ActiveRuns   int               `json:"active_runs"`
+	ToolsCount   int               `json:"tools_count"`
+	Capabilities []string          `json:"capabilities"`
+	Runtime      DiagnosticInfo    `json:"runtime"`
+	RecentErrors []DiagnosticError `json:"recent_errors,omitempty"`
+}
+
 type filePermissionStore struct {
 	path string
 }
@@ -348,6 +388,10 @@ type Options struct {
 	// across daemon restarts.
 	PermissionStore PermissionStore
 
+	// Diagnostics carries non-secret host/runtime details for
+	// authenticated ops tooling.
+	Diagnostics DiagnosticInfo
+
 	// Now supplies event timestamps. Nil uses time.Now.
 	Now func() time.Time
 
@@ -410,12 +454,16 @@ type Server struct {
 	token             string
 	permissionPolicy  PermissionPolicy
 	permissionStore   PermissionStore
+	diagnostics       DiagnosticInfo
 	now               func() time.Time
 	newID             func(prefix string) string
 	permissionTimeout time.Duration
 
 	mu   sync.Mutex
 	runs map[string]*run
+
+	diagMu       sync.Mutex
+	recentErrors []DiagnosticError
 
 	permMu        sync.Mutex
 	sessionAllows map[string]PermissionGrant
@@ -537,11 +585,16 @@ func New(opts Options) (*Server, error) {
 	if permissionTimeout <= 0 {
 		permissionTimeout = defaultPermissionTimeout
 	}
+	diagnostics := opts.Diagnostics
+	if diagnostics.StartedAt.IsZero() {
+		diagnostics.StartedAt = now().UTC()
+	}
 	s := &Server{
 		host:              opts.Host,
 		token:             token,
 		permissionPolicy:  opts.PermissionPolicy,
 		permissionStore:   opts.PermissionStore,
+		diagnostics:       diagnostics,
 		now:               now,
 		newID:             newID,
 		permissionTimeout: permissionTimeout,
@@ -581,6 +634,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleStatus(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/diagnostics" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleDiagnostics(w, r)
 		return
 	}
 
@@ -738,6 +800,10 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.statusResponse())
+}
+
+func (s *Server) statusResponse() statusResponse {
 	toolsCount := 0
 	if host, ok := s.host.(ToolCatalogHost); ok {
 		toolsCount = len(host.ToolCatalog())
@@ -749,6 +815,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"permission_grants",
 		"tools",
 		"status",
+		"diagnostics",
 	}
 	if _, ok := s.host.(MCPResourceCatalogHost); ok {
 		capabilities = append(capabilities, "mcp_resources")
@@ -777,12 +844,28 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if _, ok := s.host.(MemoryForgetHost); ok {
 		capabilities = append(capabilities, "memory_forget")
 	}
-	writeJSON(w, http.StatusOK, statusResponse{
+	return statusResponse{
 		OK:           true,
 		Version:      protocolVersion,
 		ActiveRuns:   s.activeRunCount(),
 		ToolsCount:   toolsCount,
 		Capabilities: capabilities,
+	}
+}
+
+func (s *Server) handleDiagnostics(w http.ResponseWriter, _ *http.Request) {
+	status := s.statusResponse()
+	s.diagMu.Lock()
+	recentErrors := append([]DiagnosticError(nil), s.recentErrors...)
+	s.diagMu.Unlock()
+	writeJSON(w, http.StatusOK, DiagnosticResponse{
+		OK:           status.OK,
+		Version:      status.Version,
+		ActiveRuns:   status.ActiveRuns,
+		ToolsCount:   status.ToolsCount,
+		Capabilities: append([]string(nil), status.Capabilities...),
+		Runtime:      s.diagnostics,
+		RecentErrors: recentErrors,
 	})
 }
 
@@ -1107,7 +1190,15 @@ func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, 
 		result, err = session.Prompt(ctx, req.Text, options...)
 	}
 	if err != nil {
-		r.emit("run_error", map[string]any{"error": errorFor(err)})
+		protocolErr := errorFor(err)
+		s.recordError(DiagnosticError{
+			Time:      s.now().UTC(),
+			RunID:     r.id,
+			SessionID: r.sessionID,
+			ClientID:  r.clientID,
+			Error:     protocolErr.Message,
+		})
+		r.emit("run_error", map[string]any{"error": protocolErr})
 		r.finish()
 		return
 	}
@@ -1117,6 +1208,23 @@ func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, 
 		"new_messages": result.NewMessages,
 	})
 	r.finish()
+}
+
+func (s *Server) recordError(entry DiagnosticError) {
+	entry.Error = strings.TrimSpace(entry.Error)
+	if entry.Error == "" {
+		return
+	}
+	if entry.Time.IsZero() {
+		entry.Time = s.now().UTC()
+	}
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	s.recentErrors = append([]DiagnosticError{entry}, s.recentErrors...)
+	const maxRecentErrors = 10
+	if len(s.recentErrors) > maxRecentErrors {
+		s.recentErrors = s.recentErrors[:maxRecentErrors]
+	}
 }
 
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID string) {

@@ -2465,10 +2465,25 @@ Flags:
 	defer p.Close()
 
 	handler, err := daemon.New(daemon.Options{
-		Host:              p,
-		Token:             token,
-		PermissionPolicy:  NewDaemonPermissionPolicy(settings.Permissions),
-		PermissionStore:   permissionStore,
+		Host:             p,
+		Token:            token,
+		PermissionPolicy: NewDaemonPermissionPolicy(settings.Permissions),
+		PermissionStore:  permissionStore,
+		Diagnostics: daemon.DiagnosticInfo{
+			Name:                   "peggy",
+			ListenAddr:             *listenAddr,
+			MetadataPath:           *metadataPath,
+			TokenSource:            tokenSource,
+			Provider:               settings.Provider,
+			Model:                  statusModel(settings.Model),
+			StoreType:              settings.Store.Type,
+			StorePath:              settings.Store.Path,
+			SettingsPath:           settingsPath,
+			IdentityPath:           soulPathUsed,
+			CodingEnabled:          settings.Coding.Enabled,
+			CodingWorkDir:          settings.Coding.WorkDir,
+			PermissionRememberPath: settings.Permissions.RememberPath,
+		},
 		PermissionTimeout: *permissionTimeout,
 	})
 	if err != nil {

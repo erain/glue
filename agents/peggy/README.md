@@ -400,6 +400,7 @@ session history and memory store.
 
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
+glue connect --diagnose
 glue connect --inspect
 glue connect --memories
 glue connect --forget-memory mem_123
@@ -431,20 +432,32 @@ Useful `serve` flags:
   over the daemon protocol for the connected client to answer.
 
 Startup output prints the `base_url` and metadata path, never the
-bearer token. `glue connect --inspect` includes status, tools,
-daemon-advertised skills, daemon-advertised roles, daemon-advertised
-memories, and any daemon-advertised MCP resource/prompt catalogs. Use
-`--memory-limit` to cap the memory section. Use `--skills-json`,
+bearer token. If a client cannot connect, run `glue connect
+--diagnose` first: it reports whether metadata is missing, points at a
+stale daemon, has a bad token, or reaches a healthy daemon, and it
+shows non-secret runtime details such as provider, model, store path,
+listen address, active runs, and recent daemon run errors.
+
+`glue connect --inspect` includes status, tools, daemon-advertised
+skills, daemon-advertised roles, daemon-advertised memories, and any
+daemon-advertised MCP resource/prompt catalogs. Use `--memory-limit` to
+cap the memory section. Use `--diagnose-json`, `--skills-json`,
 `--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
 `--mcp-read-json`, `--mcp-prompt-json`, `--recall-json`, or
-`--memories-json` when another client needs catalog/search payloads as
-data. Use `--forget-memory-json` when another client needs the removed
-memory record as data. Add `--usage` to prompt or skill-mode
+`--memories-json` when another client needs diagnostics/catalog/search
+payloads as data. Use `--forget-memory-json` when another client needs
+the removed memory record as data. Add `--usage` to prompt or skill-mode
 `glue connect` when you want
 provider-reported token usage on stderr. Add
 `--usage-input-price`, `--usage-output-price`, and optional cache price
 flags to estimate USD cost from prices you supply. Stop the daemon with
 SIGINT/SIGTERM.
+
+Restart/recovery is intentionally local-first: stop the current
+`peggy serve` process with SIGINT/SIGTERM, start it again, and let it
+rewrite the metadata file. Existing SQLite sessions, curated memories,
+and persisted permission grants remain on disk; only in-flight daemon
+runs are lost.
 
 Telegram can attach to the same daemon:
 

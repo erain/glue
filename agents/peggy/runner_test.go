@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/daemon"
 	filestore "github.com/erain/glue/stores/file"
 	sqlitestore "github.com/erain/glue/stores/sqlite"
 	toolsmcp "github.com/erain/glue/tools/mcp"
@@ -1366,6 +1368,20 @@ func TestRunServeBuildsPeggyDaemonConfig(t *testing.T) {
 	}, strings.NewReader(""), &out, &errOut, func(_ context.Context, cfg serveConfig, handler http.Handler, _ io.Writer) error {
 		captured = cfg
 		gotHandler = handler != nil
+		req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics", nil)
+		req.Header.Set("Authorization", "Bearer tok")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("diagnostics status = %d, want 200", rec.Code)
+		}
+		var diag daemon.DiagnosticResponse
+		if err := json.NewDecoder(rec.Body).Decode(&diag); err != nil {
+			t.Fatal(err)
+		}
+		if diag.Runtime.Provider != "openrouter" || diag.Runtime.StoreType != "file" || diag.Runtime.SettingsPath != cfgPath || !diag.Runtime.CodingEnabled {
+			t.Fatalf("diagnostics = %+v", diag.Runtime)
+		}
 		return nil
 	})
 	if code != 0 {

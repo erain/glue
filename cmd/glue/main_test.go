@@ -2086,6 +2086,156 @@ func TestRunCLIConnectShowsStatusJSON(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectDiagnoseHealthyDaemon(t *testing.T) {
+	var sawDiagnostics bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/diagnostics":
+			sawDiagnostics = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("diagnostics method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer secret-token" {
+				t.Fatalf("diagnostics auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.DiagnosticResponse{
+				OK:           true,
+				Version:      1,
+				ActiveRuns:   2,
+				ToolsCount:   5,
+				Capabilities: []string{"runs", "status", "diagnostics"},
+				Runtime: daemon.DiagnosticInfo{
+					Name:         "peggy",
+					ListenAddr:   "127.0.0.1:0",
+					MetadataPath: "/tmp/daemon.json",
+					TokenSource:  "generated",
+					Provider:     "codex",
+					Model:        "codex/default",
+					StoreType:    "sqlite",
+					StorePath:    "/tmp/peggy.db",
+				},
+				RecentErrors: []daemon.DiagnosticError{{
+					Time:      time.Date(2026, 5, 25, 14, 0, 0, 0, time.UTC),
+					RunID:     "run_1",
+					SessionID: "default",
+					ClientID:  "cli:test",
+					Error:     "provider failed",
+				}},
+			})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	metadataPath := filepath.Join(t.TempDir(), "daemon.json")
+	if err := writeDaemonMetadata(metadataPath, daemonMetadata{
+		Version: 1,
+		BaseURL: ts.URL,
+		Token:   "secret-token",
+		PID:     123,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--diagnose",
+		"--metadata", metadataPath,
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawDiagnostics || sawRun {
+		t.Fatalf("sawDiagnostics=%v sawRun=%v", sawDiagnostics, sawRun)
+	}
+	for _, want := range []string{
+		"daemon: healthy",
+		"metadata: " + metadataPath + " (found) pid=123",
+		"token: metadata",
+		"provider: codex",
+		"store: sqlite /tmp/peggy.db",
+		"recent_errors:",
+		"provider failed run=run_1 session=default client=cli:test",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+	if strings.Contains(stdout.String(), "secret-token") {
+		t.Fatalf("stdout leaked token: %q", stdout.String())
+	}
+}
+
+func TestRunCLIConnectDiagnoseAuthFailure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/diagnostics" {
+			http.NotFound(w, r)
+			return
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer good-token" {
+			writeJSONResponse(t, w, http.StatusUnauthorized, map[string]any{"error": map[string]any{"code": "unauthorized", "message": "missing or invalid bearer token"}})
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemon.DiagnosticResponse{OK: true})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--diagnose",
+		"--base-url", ts.URL,
+		"--token", "bad-token",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "daemon: auth_failed") || !strings.Contains(stdout.String(), "http_status: 401") {
+		t.Fatalf("stdout = %q, want auth failure details", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "bad-token") {
+		t.Fatalf("stdout leaked token: %q", stdout.String())
+	}
+}
+
+func TestRunCLIConnectDiagnoseStaleMetadata(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	staleURL := ts.URL
+	ts.Close()
+	metadataPath := filepath.Join(t.TempDir(), "daemon.json")
+	if err := writeDaemonMetadata(metadataPath, daemonMetadata{
+		Version: 1,
+		BaseURL: staleURL,
+		Token:   "tok",
+		PID:     123,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--diagnose-json",
+		"--metadata", metadataPath,
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var diagnosis daemonDiagnosis
+	if err := json.Unmarshal(stdout.Bytes(), &diagnosis); err != nil {
+		t.Fatalf("decode diagnosis: %v\n%s", err, stdout.String())
+	}
+	if diagnosis.OK || diagnosis.State != "stale_metadata" || !diagnosis.MetadataFound || diagnosis.BaseURL != staleURL {
+		t.Fatalf("diagnosis = %+v", diagnosis)
+	}
+}
+
 func TestRunCLIConnectInspectsDaemon(t *testing.T) {
 	var sawStatus bool
 	var sawTools bool

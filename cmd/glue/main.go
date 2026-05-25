@@ -172,6 +172,25 @@ type daemonStatus struct {
 	Capabilities []string `json:"capabilities"`
 }
 
+type daemonDiagnostics = daemon.DiagnosticResponse
+
+type daemonDiagnosis struct {
+	OK            bool               `json:"ok"`
+	State         string             `json:"state"`
+	Summary       string             `json:"summary"`
+	MetadataPath  string             `json:"metadata_path,omitempty"`
+	MetadataFound bool               `json:"metadata_found"`
+	MetadataError string             `json:"metadata_error,omitempty"`
+	MetadataPID   int                `json:"metadata_pid,omitempty"`
+	BaseURL       string             `json:"base_url,omitempty"`
+	BaseURLSource string             `json:"base_url_source,omitempty"`
+	TokenSource   string             `json:"token_source,omitempty"`
+	HTTPStatus    int                `json:"http_status,omitempty"`
+	Status        *daemonStatus      `json:"status,omitempty"`
+	Diagnostics   *daemonDiagnostics `json:"diagnostics,omitempty"`
+	Suggestions   []string           `json:"suggestions,omitempty"`
+}
+
 type daemonInspect struct {
 	Status       daemonStatus                     `json:"status"`
 	Tools        []daemonToolCatalogEntry         `json:"tools"`
@@ -356,8 +375,18 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		return err
 	}
 	handler, err := daemon.New(daemon.Options{
-		Host:              agent,
-		Token:             token,
+		Host:  agent,
+		Token: token,
+		Diagnostics: daemon.DiagnosticInfo{
+			Name:         "glue",
+			ListenAddr:   *listenAddr,
+			MetadataPath: *metadataPath,
+			TokenSource:  tokenSource,
+			Provider:     "gemini",
+			Model:        normalizeModel(*model),
+			StoreType:    "file",
+			StorePath:    *storeDir,
+		},
 		PermissionTimeout: *permissionTimeout,
 	})
 	if err != nil {
@@ -424,6 +453,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	forgetPermissionJSON := flags.Bool("forget-permission-json", false, "print --forget-permission output as JSON")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
+	showDiagnose := flags.Bool("diagnose", false, "diagnose local daemon connectivity and runtime state without starting a run")
+	diagnoseJSON := flags.Bool("diagnose-json", false, "print --diagnose output as JSON")
 	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
 	inspectJSON := flags.Bool("inspect-json", false, "print --inspect output as JSON")
 	var envs envFiles
@@ -462,6 +493,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *statusJSON {
 		*showStatus = true
 	}
+	if *diagnoseJSON {
+		*showDiagnose = true
+	}
 	if *inspectJSON {
 		*showInspect = true
 	}
@@ -478,13 +512,13 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	showForgetMemory := strings.TrimSpace(*forgetMemoryID) != "" || *forgetMemoryJSON
 	showForgetPermission := strings.TrimSpace(*forgetPermissionID) != "" || *forgetPermissionJSON
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, showForgetMemory, *showPermissions, showForgetPermission, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, showForgetMemory, *showPermissions, showForgetPermission, *showStatus, *showDiagnose, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --forget-memory, --permissions, --forget-permission, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --forget-memory, --permissions, --forget-permission, --status, --diagnose, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
 		return errors.New("missing required --prompt or --skill")
@@ -499,7 +533,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if err != nil {
 		return err
 	}
-	cfg, err := resolveConnectConfig(connectConfig{
+	rawCfg := connectConfig{
 		BaseURL:      *baseURL,
 		Token:        *tokenFlag,
 		MetadataPath: *metadataPath,
@@ -511,7 +545,11 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		Model:        *model,
 		Role:         *role,
 		MaxTurns:     *maxTurns,
-	})
+	}
+	if *showDiagnose {
+		return runConnectDiagnose(ctx, rawCfg, *diagnoseJSON, stdout, client)
+	}
+	cfg, err := resolveConnectConfig(rawCfg)
 	if err != nil {
 		return err
 	}
@@ -844,6 +882,17 @@ func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, s
 	return nil
 }
 
+func runConnectDiagnose(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	diagnosis := diagnoseDaemon(ctx, cfg, client)
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(diagnosis)
+	}
+	writeDaemonDiagnosis(stdout, diagnosis)
+	return nil
+}
+
 func runConnectInspect(ctx context.Context, cfg connectConfig, memoryLimit int, jsonOutput bool, stdout io.Writer, client httpDoer) error {
 	if memoryLimit < 0 {
 		return errors.New("--memory-limit must be non-negative")
@@ -929,6 +978,124 @@ func fetchDaemonStatus(ctx context.Context, cfg connectConfig, client httpDoer) 
 	return status, nil
 }
 
+func diagnoseDaemon(ctx context.Context, cfg connectConfig, client httpDoer) daemonDiagnosis {
+	diagnosis := daemonDiagnosis{
+		State:        "unknown",
+		MetadataPath: strings.TrimSpace(cfg.MetadataPath),
+	}
+	var meta daemonMetadata
+	var metadataErr error
+	if diagnosis.MetadataPath != "" {
+		loaded, err := readDaemonMetadata(diagnosis.MetadataPath)
+		if err != nil {
+			metadataErr = err
+			diagnosis.MetadataError = err.Error()
+		} else {
+			meta = loaded
+			diagnosis.MetadataFound = true
+			diagnosis.MetadataPID = meta.PID
+		}
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	switch {
+	case baseURL != "":
+		diagnosis.BaseURLSource = "flag"
+	case strings.TrimSpace(meta.BaseURL) != "":
+		baseURL = strings.TrimRight(strings.TrimSpace(meta.BaseURL), "/")
+		diagnosis.BaseURLSource = "metadata"
+	}
+	diagnosis.BaseURL = baseURL
+
+	token := strings.TrimSpace(cfg.Token)
+	switch {
+	case token != "":
+		diagnosis.TokenSource = "flag"
+	case strings.TrimSpace(meta.Token) != "":
+		token = strings.TrimSpace(meta.Token)
+		diagnosis.TokenSource = "metadata"
+	case strings.TrimSpace(os.Getenv("GLUE_DAEMON_TOKEN")) != "":
+		token = strings.TrimSpace(os.Getenv("GLUE_DAEMON_TOKEN"))
+		diagnosis.TokenSource = "GLUE_DAEMON_TOKEN"
+	default:
+		diagnosis.TokenSource = "missing"
+	}
+
+	if baseURL == "" {
+		if metadataErr != nil {
+			diagnosis.State = "no_metadata"
+			diagnosis.Summary = "daemon metadata is missing or unreadable"
+			diagnosis.Suggestions = []string{"Start Peggy with `peggy serve` or pass --base-url and --token explicitly."}
+			return diagnosis
+		}
+		diagnosis.State = "missing_base_url"
+		diagnosis.Summary = "daemon base URL is not configured"
+		diagnosis.Suggestions = []string{"Start Peggy with `peggy serve` or pass --base-url."}
+		return diagnosis
+	}
+	if token == "" {
+		diagnosis.State = "missing_token"
+		diagnosis.Summary = "daemon bearer token is not configured"
+		diagnosis.Suggestions = []string{"Use daemon metadata, pass --token, or set GLUE_DAEMON_TOKEN."}
+		return diagnosis
+	}
+
+	status, diagnostics, httpStatus, err := requestDaemonDiagnostics(ctx, baseURL, token, client)
+	diagnosis.HTTPStatus = httpStatus
+	if err != nil {
+		diagnosis.Summary = err.Error()
+		switch {
+		case httpStatus == http.StatusUnauthorized:
+			diagnosis.State = "auth_failed"
+			diagnosis.Suggestions = []string{"Use the token from the active metadata file or restart the daemon to refresh metadata."}
+		case httpStatus > 0:
+			diagnosis.State = "unhealthy"
+			diagnosis.Suggestions = []string{"Check daemon logs and restart `peggy serve` if the error persists."}
+		case diagnosis.MetadataFound && strings.TrimSpace(cfg.BaseURL) == "":
+			diagnosis.State = "stale_metadata"
+			diagnosis.Suggestions = []string{"The metadata file points at an unreachable daemon; restart `peggy serve` to refresh it."}
+		default:
+			diagnosis.State = "unreachable"
+			diagnosis.Suggestions = []string{"Check that the daemon is running and the --base-url value is correct."}
+		}
+		return diagnosis
+	}
+	diagnosis.OK = true
+	diagnosis.State = "healthy"
+	diagnosis.Summary = "daemon is reachable and authenticated"
+	diagnosis.Status = &status
+	diagnosis.Diagnostics = &diagnostics
+	return diagnosis
+}
+
+func requestDaemonDiagnostics(ctx context.Context, baseURL, token string, client httpDoer) (daemonStatus, daemonDiagnostics, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/diagnostics", nil)
+	if err != nil {
+		return daemonStatus{}, daemonDiagnostics{}, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemonStatus{}, daemonDiagnostics{}, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonStatus{}, daemonDiagnostics{}, resp.StatusCode, fmt.Errorf("daemon diagnostics: %s", httpStatusError(resp))
+	}
+	var diagnostics daemonDiagnostics
+	if err := json.NewDecoder(resp.Body).Decode(&diagnostics); err != nil {
+		return daemonStatus{}, daemonDiagnostics{}, resp.StatusCode, err
+	}
+	status := daemonStatus{
+		OK:           diagnostics.OK,
+		Version:      diagnostics.Version,
+		ActiveRuns:   diagnostics.ActiveRuns,
+		ToolsCount:   diagnostics.ToolsCount,
+		Capabilities: diagnostics.Capabilities,
+	}
+	return status, diagnostics, resp.StatusCode, nil
+}
+
 func writeDaemonStatus(w io.Writer, status daemonStatus) {
 	state := "error"
 	if status.OK {
@@ -940,6 +1107,107 @@ func writeDaemonStatus(w io.Writer, status daemonStatus) {
 	fmt.Fprintf(w, "tools_count: %d\n", status.ToolsCount)
 	if len(status.Capabilities) > 0 {
 		fmt.Fprintf(w, "capabilities: %s\n", strings.Join(status.Capabilities, ", "))
+	}
+}
+
+func writeDaemonDiagnosis(w io.Writer, diagnosis daemonDiagnosis) {
+	state := diagnosis.State
+	if state == "" {
+		state = "unknown"
+	}
+	fmt.Fprintf(w, "daemon: %s\n", state)
+	if diagnosis.Summary != "" {
+		fmt.Fprintf(w, "summary: %s\n", diagnosis.Summary)
+	}
+	if diagnosis.MetadataPath != "" {
+		fmt.Fprintf(w, "metadata: %s", diagnosis.MetadataPath)
+		if diagnosis.MetadataFound {
+			fmt.Fprint(w, " (found)")
+			if diagnosis.MetadataPID != 0 {
+				fmt.Fprintf(w, " pid=%d", diagnosis.MetadataPID)
+			}
+		} else {
+			fmt.Fprint(w, " (missing)")
+		}
+		fmt.Fprintln(w)
+	}
+	if diagnosis.MetadataError != "" {
+		fmt.Fprintf(w, "metadata_error: %s\n", diagnosis.MetadataError)
+	}
+	if diagnosis.BaseURL != "" {
+		fmt.Fprintf(w, "base_url: %s", diagnosis.BaseURL)
+		if diagnosis.BaseURLSource != "" {
+			fmt.Fprintf(w, " (%s)", diagnosis.BaseURLSource)
+		}
+		fmt.Fprintln(w)
+	}
+	if diagnosis.TokenSource != "" {
+		fmt.Fprintf(w, "token: %s\n", diagnosis.TokenSource)
+	}
+	if diagnosis.HTTPStatus != 0 {
+		fmt.Fprintf(w, "http_status: %d\n", diagnosis.HTTPStatus)
+	}
+	if diagnosis.Status != nil {
+		fmt.Fprintf(w, "active_runs: %d\n", diagnosis.Status.ActiveRuns)
+		fmt.Fprintf(w, "tools_count: %d\n", diagnosis.Status.ToolsCount)
+	}
+	if diagnosis.Diagnostics != nil {
+		runtime := diagnosis.Diagnostics.Runtime
+		if runtime.Provider != "" {
+			fmt.Fprintf(w, "provider: %s\n", runtime.Provider)
+		}
+		if runtime.Model != "" {
+			fmt.Fprintf(w, "model: %s\n", runtime.Model)
+		}
+		if runtime.StoreType != "" || runtime.StorePath != "" {
+			fmt.Fprintf(w, "store: %s", runtime.StoreType)
+			if runtime.StorePath != "" {
+				fmt.Fprintf(w, " %s", runtime.StorePath)
+			}
+			fmt.Fprintln(w)
+		}
+		if runtime.ListenAddr != "" {
+			fmt.Fprintf(w, "listen_addr: %s\n", runtime.ListenAddr)
+		}
+		if runtime.MetadataPath != "" {
+			fmt.Fprintf(w, "runtime_metadata: %s\n", runtime.MetadataPath)
+		}
+		if runtime.TokenSource != "" {
+			fmt.Fprintf(w, "runtime_token_source: %s\n", runtime.TokenSource)
+		}
+		if runtime.CodingEnabled {
+			fmt.Fprintf(w, "coding: enabled")
+			if runtime.CodingWorkDir != "" {
+				fmt.Fprintf(w, " %s", runtime.CodingWorkDir)
+			}
+			fmt.Fprintln(w)
+		}
+		if len(diagnosis.Diagnostics.RecentErrors) > 0 {
+			fmt.Fprintln(w, "recent_errors:")
+			for _, entry := range diagnosis.Diagnostics.RecentErrors {
+				timestamp := "unknown"
+				if !entry.Time.IsZero() {
+					timestamp = entry.Time.Format(time.RFC3339)
+				}
+				fmt.Fprintf(w, "  %s %s", timestamp, entry.Error)
+				if entry.RunID != "" {
+					fmt.Fprintf(w, " run=%s", entry.RunID)
+				}
+				if entry.SessionID != "" {
+					fmt.Fprintf(w, " session=%s", entry.SessionID)
+				}
+				if entry.ClientID != "" {
+					fmt.Fprintf(w, " client=%s", entry.ClientID)
+				}
+				fmt.Fprintln(w)
+			}
+		}
+	}
+	if len(diagnosis.Suggestions) > 0 {
+		fmt.Fprintln(w, "suggestions:")
+		for _, suggestion := range diagnosis.Suggestions {
+			fmt.Fprintf(w, "  - %s\n", suggestion)
+		}
 	}
 }
 
@@ -2025,6 +2293,7 @@ func printUsage(w io.Writer) {
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --status [--status-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --diagnose [--diagnose-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skills [--skills-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --roles [--roles-json] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -2063,6 +2332,10 @@ Flags:
   --status   Connect mode: show daemon status and exit without starting a run.
   --status-json
              Connect --status mode: print JSON.
+  --diagnose
+             Connect mode: diagnose daemon metadata, auth, reachability, and runtime state.
+  --diagnose-json
+             Connect --diagnose mode: print JSON.
   --tools    Connect mode: list daemon tools and exit without starting a run.
   --tools-json
              Connect --tools mode: print JSON.
