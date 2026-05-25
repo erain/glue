@@ -22,7 +22,7 @@ import (
 
 // Version is the package version string surfaced by `peggy --version`.
 // Bumped by hand at release time.
-const Version = "0.4.0"
+const Version = "0.5.0"
 
 const (
 	defaultDaemonListenAddr      = "127.0.0.1:0"

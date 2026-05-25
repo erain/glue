@@ -22,16 +22,20 @@ A long-running personal-assistant agent built on the
   CLI, Telegram, and daemon clients
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
 - opt-in MCP stdio/HTTP tools plus resource and prompt inspection
-- workspace file skills loaded from `.agents/skills/<name>/SKILL.md`
+- workspace file skills and roles loaded from `.agents/`
 - starter workspace scaffolding via `peggy init`
 - local readiness status for config, identity, memory, context,
   coding, and MCP setup
-- daemon-readable curated memory catalogs via `glue connect --memories`
+- daemon-readable skills, roles, MCP catalogs, recall, and curated
+  memory controls
+- Telegram daemon commands for roles, skills, recall, and memory
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
-Tracker: [#110](https://github.com/erain/glue/issues/110). M4
-("ecosystem") is the v0.4 release milestone.
+Tracker: [#110](https://github.com/erain/glue/issues/110). Peggy v0.5
+is the workflow/runtime release: reusable workspace roles and skills,
+auditable memory, daemon recall, priced usage summaries, and mobile
+Telegram commands over one shared daemon.
 
 ## Quickstart
 
@@ -695,7 +699,7 @@ not support search, so use the default SQLite store for recall.
   your existing ChatGPT subscription via `codex login` — no per-token
   bill.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.4 summary and
+See [`CHANGELOG.md`](CHANGELOG.md) for the full v0.5 summary and
 known limitations.
 
 ## Channels
