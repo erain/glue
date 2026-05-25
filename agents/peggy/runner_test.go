@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erain/glue"
 	filestore "github.com/erain/glue/stores/file"
+	sqlitestore "github.com/erain/glue/stores/sqlite"
 	toolsmcp "github.com/erain/glue/tools/mcp"
 )
 
@@ -550,6 +552,104 @@ func readRunnerMemoriesJSON(t *testing.T, cfgPath string) []Memory {
 		t.Fatalf("decode memories: %v\n%s", err, out.String())
 	}
 	return memories
+}
+
+func TestRunRecallSearchesSQLiteWithoutProvider(t *testing.T) {
+	cfgPath := seedRunnerRecallStore(t)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"recall", "--config", cfgPath, "Australian"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), MemoriesSessionID) || !strings.Contains(out.String(), "Australian") {
+		t.Fatalf("stdout = %q, want memory search hit", out.String())
+	}
+}
+
+func TestRunRecallJSONAndLimit(t *testing.T) {
+	cfgPath := seedRunnerRecallStore(t)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"recall", "--config", cfgPath, "--json", "--limit", "1", "Australian"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var hits []glue.SearchHit
+	if err := json.Unmarshal(out.Bytes(), &hits); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, out.String())
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %+v, want one hit", hits)
+	}
+}
+
+func TestRunRecallMemoriesOnly(t *testing.T) {
+	cfgPath := seedRunnerRecallStore(t)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"recall", "--config", cfgPath, "--memories", "Australian"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "casual") {
+		t.Fatalf("stdout = %q, want memories-only hits", out.String())
+	}
+	if !strings.Contains(out.String(), MemoriesSessionID) {
+		t.Fatalf("stdout = %q, want memories session", out.String())
+	}
+}
+
+func TestRunRecallFileStoreExplainsSearchRequirement(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": filepath.Join(t.TempDir(), "sessions"),
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"recall", "--config", cfgPath, "anything"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "use sqlite store") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+func seedRunnerRecallStore(t *testing.T) string {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "peggy.db")
+	store, err := sqlitestore.Open(sqlitestore.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	p, err := New(Options{
+		Settings: Settings{},
+		Provider: &fakeProvider{text: "Australian context saved."},
+		Store:    store,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AddMemory(context.Background(), "User's Australian Shepherd is named Inkblot.", []string{"pet"}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := p.Prompt(context.Background(), "casual", "Australian project note", nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "sqlite",
+			"path": dbPath,
+		},
+	})
 }
 
 func TestRunSkillsListsWorkspaceSkills(t *testing.T) {
