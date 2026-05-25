@@ -110,6 +110,96 @@ func TestDaemonClientMessageStartsRunAndSendsText(t *testing.T) {
 	}
 }
 
+func TestDaemonClientStatusCommandUsesDaemonWithoutRun(t *testing.T) {
+	var (
+		starts     int
+		statusSeen int
+	)
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+			t.Errorf("auth = %q", auth)
+		}
+		switch r.URL.Path {
+		case "/v1/status":
+			if r.Method != http.MethodGet {
+				t.Errorf("status method = %s", r.Method)
+			}
+			statusSeen++
+			writeJSON(t, w, http.StatusOK, daemonStatus{
+				OK:           true,
+				Version:      1,
+				ActiveRuns:   2,
+				ToolsCount:   7,
+				Capabilities: []string{"runs", "roles", "skills", "memories"},
+			})
+		case "/v1/sessions/telegram:123/runs":
+			starts++
+			http.Error(w, "status should not start runs", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/status@PeggyBot"))
+	if statusSeen != 1 {
+		t.Fatalf("status requests = %d, want 1", statusSeen)
+	}
+	if starts != 0 {
+		t.Fatalf("daemon starts = %d, want 0", starts)
+	}
+	got := tg.lastSendText()
+	for _, want := range []string{"Daemon status: ok", "version: 1", "active_runs: 2", "tools: 7", "roles", "skills"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status reply = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestDaemonClientStatusCommandValidationDoesNotCallDaemon(t *testing.T) {
+	var requests int
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/status now"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Command error: usage: /status") {
+		t.Fatalf("validation reply = %q", got)
+	}
+}
+
 func TestDaemonClientSkillCommandsUseDaemon(t *testing.T) {
 	var (
 		start      daemonStartRunPayload

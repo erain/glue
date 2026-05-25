@@ -72,6 +72,7 @@ chats without starting a model run, plus skill commands for reusable
 workspace workflows and role-shaped runs:
 
 ```text
+/status
 /roles
 /role reviewer summarize the latest diff
 /skills
@@ -235,6 +236,8 @@ binary allowlist, overwrite policy, timeouts, and output limits.
   session transcript / sqlite store.
 - Inline-keyboard permission prompts for side-effecting coding tools
   in allowlisted chats.
+- Daemon-client status checks for health, active runs, tools, and
+  advertised capabilities.
 - Daemon-client role commands for listing workspace roles and starting
   role-shaped prompt runs from chat.
 - Daemon-client skill commands for listing and running reusable

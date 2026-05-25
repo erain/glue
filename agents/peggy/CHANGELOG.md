@@ -6,7 +6,12 @@ not formally follow SemVer until v1.0.
 
 ## Unreleased
 
-_No unreleased changes yet._
+### Added
+
+- **Telegram daemon status command.** In daemon-client mode,
+  allowlisted Telegram chats can use `/status` to check daemon health,
+  active runs, tool count, and advertised capabilities without opening
+  a terminal.
 
 ## v0.5.0 — 2026-05-25
 
