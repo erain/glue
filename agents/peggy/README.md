@@ -120,6 +120,7 @@ glue connect --skill daily_plan --id cli:daily-plan
 glue connect --prompt "Dogfood smoke marker: Peggy daemon is reachable." --id cli:smoke
 glue connect --recall "Dogfood smoke marker"
 peggy sessions --config ~/.config/peggy/settings.json --prefix cli:
+peggy memories export --config ~/.config/peggy/settings.json --output peggy-memories.json
 ```
 
 To reach Peggy from your phone, merge a Telegram channel block into
@@ -736,12 +737,21 @@ Inspect curated memories from the terminal without starting a provider:
 peggy memories --config ~/.config/peggy/settings.json
 peggy memories --config ~/.config/peggy/settings.json --json
 peggy memories --config ~/.config/peggy/settings.json --limit 20
+peggy memories export --config ~/.config/peggy/settings.json --output peggy-memories.json
+peggy memories import --config ~/.config/peggy/settings.json --dry-run peggy-memories.json
 peggy memories forget --config ~/.config/peggy/settings.json mem_123
 ```
 
 Each memory has a stable `id` in human and JSON output. `forget` only
 removes curated `remember` records from the dedicated memory session; it
 does not delete ordinary conversation history.
+
+`peggy memories export` writes a backup envelope containing only curated
+memories, preserving ids, timestamps, content, and tags. `peggy memories
+import` validates that envelope before writing; use `--dry-run` to check
+the file first. Imports skip existing memories by stable id or normalized
+content to avoid accidental duplicates, and they do not import ordinary
+session transcripts.
 
 List recent stored sessions without starting a provider:
 

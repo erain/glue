@@ -524,6 +524,104 @@ func TestRunMemoriesJSONAndLimit(t *testing.T) {
 	}
 }
 
+func TestRunMemoriesExportImportRoundTrip(t *testing.T) {
+	sourceStorePath := seedRunnerMemories(t)
+	sourceCfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": sourceStorePath,
+		},
+	})
+	backupPath := filepath.Join(t.TempDir(), "peggy-memories.json")
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "export", "--config", sourceCfgPath, "--output", backupPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("export exit = %d stderr=%q", code, errOut.String())
+	}
+	data, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	backup, err := DecodeMemoryBackup(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode backup: %v", err)
+	}
+	if len(backup.Memories) != 2 {
+		t.Fatalf("backup memories = %+v, want two", backup.Memories)
+	}
+
+	targetStorePath := filepath.Join(t.TempDir(), "sessions")
+	targetCfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": targetStorePath,
+		},
+	})
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"memories", "import", "--config", targetCfgPath, "--dry-run", "--json", backupPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("dry-run exit = %d stderr=%q", code, errOut.String())
+	}
+	var report MemoryImportReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode dry-run report: %v\n%s", err, out.String())
+	}
+	if !report.DryRun || report.WouldImport != 2 || report.Imported != 0 {
+		t.Fatalf("dry-run report = %+v, want two candidates", report)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"memories", "import", "--config", targetCfgPath, backupPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("import exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "imported 2 memories") {
+		t.Fatalf("import stdout = %q", out.String())
+	}
+	imported := readRunnerMemoriesJSON(t, targetCfgPath)
+	if len(imported) != 2 {
+		t.Fatalf("imported memories = %+v, want two", imported)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"memories", "import", "--config", targetCfgPath, backupPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("duplicate import exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "skipped 2 duplicates") {
+		t.Fatalf("duplicate import stdout = %q", out.String())
+	}
+}
+
+func TestRunMemoriesImportRejectsInvalidBackup(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": filepath.Join(t.TempDir(), "sessions"),
+		},
+	})
+	backupPath := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(backupPath, []byte(`{"version":1,"kind":"peggy.memories","memories":[{"id":"mem_bad","content":" ","timestamp":"2026-05-25T12:00:00Z"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "import", "--config", cfgPath, backupPath}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "content is required") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
 func TestRunMemoriesForgetDeletesWithoutProvider(t *testing.T) {
 	storePath := seedRunnerMemories(t)
 	cfgPath := writeRunnerConfig(t, map[string]any{

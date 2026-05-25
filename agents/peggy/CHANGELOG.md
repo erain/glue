@@ -31,6 +31,10 @@ not formally follow SemVer until v1.0.
   authenticated non-secret runtime diagnostics, and `glue connect
   --diagnose` distinguishes missing metadata, stale metadata, bad
   tokens, unreachable daemons, and healthy daemon state.
+- **Memory backup and restore.** `peggy memories export` writes curated
+  memories to a versioned JSON backup, and `peggy memories import`
+  validates, dry-runs, and restores those memories while skipping
+  existing duplicates by id or content.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening
