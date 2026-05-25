@@ -68,9 +68,12 @@ peggy-telegram --daemon
 daemon request is sent.
 
 Daemon-client mode also supports memory commands from allowlisted
-chats without starting a model run:
+chats without starting a model run, plus skill commands for reusable
+workspace workflows:
 
 ```text
+/skills
+/skill triage issue=GLUE-123
 /memories
 /memories 20
 /recall Australian Shepherd
@@ -230,6 +233,8 @@ binary allowlist, overwrite policy, timeouts, and output limits.
   session transcript / sqlite store.
 - Inline-keyboard permission prompts for side-effecting coding tools
   in allowlisted chats.
+- Daemon-client skill commands for listing and running reusable
+  workspace skills from chat.
 - Daemon-client memory commands for listing, recall search,
   memories-only recall, and curated-memory deletion.
 - Optional Peggy permission tiers for prompt/read-only/trusted channel

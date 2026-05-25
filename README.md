@@ -687,9 +687,9 @@ go run ./agents/peggy/cmd/peggy-telegram --daemon
 ```
 
 In daemon-client mode, allowlisted Telegram chats can also use
-`/memories`, `/recall <query>`, `/recall_memories <query>`, and
-`/forget_memory <id>` for memory inspection, search, and correction
-without starting a model run.
+`/skills`, `/skill <name> key=value`, `/memories`, `/recall <query>`,
+`/recall_memories <query>`, and `/forget_memory <id>` for reusable
+workflow runs plus memory inspection, search, and correction.
 
 Peggy can assign permission tiers by daemon client/channel in
 `settings.json`. The default remains `prompt`; `read_only` denies

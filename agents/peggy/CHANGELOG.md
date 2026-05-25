@@ -70,6 +70,10 @@ not formally follow SemVer until v1.0.
   allowlisted Telegram chats can use `/memories`, `/recall`,
   `/recall_memories`, and `/forget_memory` to list, search, and delete
   curated daemon memory without starting a model run.
+- **Telegram daemon skill commands.** In daemon-client mode,
+  allowlisted Telegram chats can use `/skills` to inspect reusable
+  workspace skills and `/skill <name> key=value` to run one through the
+  shared daemon.
 
 ## v0.4.0 — 2026-05-24
 

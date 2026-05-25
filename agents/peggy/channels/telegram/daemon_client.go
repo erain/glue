@@ -41,13 +41,19 @@ type daemonPendingPermission struct {
 }
 
 type daemonStartRunPayload struct {
-	Text     string `json:"text"`
-	ClientID string `json:"client_id,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	Skill     string            `json:"skill,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
+	ClientID  string            `json:"client_id,omitempty"`
 }
 
 type daemonStartRunResponse struct {
 	RunID     string `json:"run_id"`
 	EventsURL string `json:"events_url"`
+}
+
+type daemonSkillCatalog struct {
+	Skills []daemon.SkillCatalogEntry `json:"skills"`
 }
 
 type daemonPermissionPayload struct {
@@ -131,7 +137,7 @@ func (d *DaemonClient) Prompt(ctx context.Context, sessionID, text string, api *
 		return "", errors.New("telegram daemon: client is not configured")
 	}
 	clientID := daemonTelegramClientID(chatID)
-	start, err := d.startRun(ctx, sessionID, text, clientID)
+	start, err := d.startRun(ctx, sessionID, daemonStartRunPayload{Text: text, ClientID: clientID})
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +145,7 @@ func (d *DaemonClient) Prompt(ctx context.Context, sessionID, text string, api *
 }
 
 // Command handles Telegram slash commands that map to daemon runtime actions.
-func (d *DaemonClient) Command(ctx context.Context, text string) (string, bool, error) {
+func (d *DaemonClient) Command(ctx context.Context, sessionID, text string, api *API, chatID int64) (string, bool, error) {
 	if d == nil {
 		return "", false, errors.New("telegram daemon: client is not configured")
 	}
@@ -151,6 +157,27 @@ func (d *DaemonClient) Command(ctx context.Context, text string) (string, bool, 
 	token := fields[0]
 	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, token))
 	switch telegramCommandName(token) {
+	case "skills":
+		if rest != "" {
+			return "", true, errors.New("usage: /skills")
+		}
+		catalog, err := d.skillCatalog(ctx)
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramSkills(catalog.Skills), true, nil
+	case "skill":
+		name, args, err := parseTelegramSkillRun(rest)
+		if err != nil {
+			return "", true, err
+		}
+		clientID := daemonTelegramClientID(chatID)
+		start, err := d.startRun(ctx, sessionID, daemonStartRunPayload{Skill: name, Arguments: args, ClientID: clientID})
+		if err != nil {
+			return "", true, err
+		}
+		text, err := d.streamRun(ctx, start, api, chatID, clientID)
+		return text, true, err
 	case "memories":
 		limit, err := parseTelegramMemoryLimit(rest)
 		if err != nil {
@@ -234,6 +261,30 @@ func (d *DaemonClient) HandleCallback(ctx context.Context, cb CallbackQuery, api
 	return true
 }
 
+func (d *DaemonClient) skillCatalog(ctx context.Context) (daemonSkillCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/v1/skills", nil)
+	if err != nil {
+		return daemonSkillCatalog{}, err
+	}
+	d.authorize(req)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return daemonSkillCatalog{}, redactDaemonErr(err, d.token)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonSkillCatalog{}, fmt.Errorf("telegram daemon: skills: %s", httpStatusText(resp))
+	}
+	var out daemonSkillCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return daemonSkillCatalog{}, err
+	}
+	if out.Skills == nil {
+		out.Skills = []daemon.SkillCatalogEntry{}
+	}
+	return out, nil
+}
+
 func (d *DaemonClient) recall(ctx context.Context, in daemon.RecallRequest) (daemon.RecallResponse, error) {
 	body, _ := json.Marshal(in)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/v1/recall", bytes.NewReader(body))
@@ -311,10 +362,10 @@ func (d *DaemonClient) forgetMemory(ctx context.Context, id string) (daemon.Memo
 	return out, nil
 }
 
-func (d *DaemonClient) startRun(ctx context.Context, sessionID, text, clientID string) (daemonStartRunResponse, error) {
-	payload, _ := json.Marshal(daemonStartRunPayload{Text: text, ClientID: clientID})
+func (d *DaemonClient) startRun(ctx context.Context, sessionID string, payload daemonStartRunPayload) (daemonStartRunResponse, error) {
+	body, _ := json.Marshal(payload)
 	endpoint := d.baseURL + "/v1/sessions/" + url.PathEscape(sessionID) + "/runs"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return daemonStartRunResponse{}, err
 	}
@@ -489,6 +540,45 @@ func parseTelegramForgetMemoryID(rest string) (string, error) {
 		return "", errors.New("usage: /forget_memory <id>")
 	}
 	return fields[0], nil
+}
+
+func parseTelegramSkillRun(rest string) (string, map[string]string, error) {
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", nil, errors.New("/skill name is required")
+	}
+	name := strings.TrimSpace(fields[0])
+	if name == "" {
+		return "", nil, errors.New("/skill name is required")
+	}
+	args := make(map[string]string, len(fields)-1)
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(field, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return "", nil, errors.New("usage: /skill <name> [key=value ...]")
+		}
+		args[key] = strings.TrimSpace(value)
+	}
+	if len(args) == 0 {
+		args = nil
+	}
+	return name, args, nil
+}
+
+func formatTelegramSkills(skills []daemon.SkillCatalogEntry) string {
+	if len(skills) == 0 {
+		return "No daemon skills reported."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Skills (%d):\n", len(skills))
+	for i, skill := range skills {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, skill.Name)
+		if skill.Description != "" {
+			fmt.Fprintf(&b, "   %s\n", telegramOneLine(skill.Description, 260))
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func formatTelegramMemories(memories []daemon.MemoryEntry) string {
