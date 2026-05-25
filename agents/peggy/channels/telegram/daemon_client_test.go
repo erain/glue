@@ -110,6 +110,122 @@ func TestDaemonClientMessageStartsRunAndSendsText(t *testing.T) {
 	}
 }
 
+func TestDaemonClientSkillCommandsUseDaemon(t *testing.T) {
+	var (
+		start      daemonStartRunPayload
+		starts     int
+		skillsSeen int
+	)
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+			t.Errorf("auth = %q", auth)
+		}
+		switch r.URL.Path {
+		case "/v1/skills":
+			if r.Method != http.MethodGet {
+				t.Errorf("skills method = %s", r.Method)
+			}
+			skillsSeen++
+			writeJSON(t, w, http.StatusOK, daemonSkillCatalog{Skills: []daemon.SkillCatalogEntry{{
+				Name:        "triage",
+				Description: "Triage one issue",
+			}}})
+		case "/v1/sessions/telegram:123/runs":
+			if r.Method != http.MethodPost {
+				t.Errorf("skill method = %s", r.Method)
+			}
+			starts++
+			if err := json.NewDecoder(r.Body).Decode(&start); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(t, w, http.StatusCreated, daemonStartRunResponse{RunID: "run_1", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			writeSSE(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "skill done"}})
+			writeSSE(t, w, daemon.EventEnvelope{Type: "run_done"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/skills@PeggyBot"))
+	if skillsSeen != 1 {
+		t.Fatalf("skills requests = %d, want 1", skillsSeen)
+	}
+	if starts != 0 {
+		t.Fatalf("daemon starts after /skills = %d, want 0", starts)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "triage") || !strings.Contains(got, "Triage one issue") {
+		t.Fatalf("skills reply = %q", got)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(2, 123, "/skill triage issue=GLUE-123 priority=high"))
+	if starts != 1 {
+		t.Fatalf("daemon starts = %d, want 1", starts)
+	}
+	if start.Text != "" || start.Skill != "triage" || start.ClientID != "telegram:123" {
+		t.Fatalf("skill start payload = %+v", start)
+	}
+	if start.Arguments["issue"] != "GLUE-123" || start.Arguments["priority"] != "high" {
+		t.Fatalf("skill start arguments = %+v", start.Arguments)
+	}
+	if got := tg.lastSendText(); got != "skill done" {
+		t.Fatalf("skill reply = %q", got)
+	}
+}
+
+func TestDaemonClientSkillCommandValidationDoesNotCallDaemon(t *testing.T) {
+	var requests int
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/skill"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Command error: /skill name is required") {
+		t.Fatalf("validation reply = %q", got)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(2, 123, "/skill triage issue"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	if got := tg.lastSendText(); !strings.Contains(got, "Command error: usage: /skill <name> [key=value ...]") {
+		t.Fatalf("argument validation reply = %q", got)
+	}
+}
+
 func TestDaemonClientMemoryCommandsUseDaemonWithoutRun(t *testing.T) {
 	var (
 		starts         int
