@@ -37,37 +37,119 @@ is the workflow/runtime release: reusable workspace roles and skills,
 auditable memory, daemon recall, priced usage summaries, and mobile
 Telegram commands over one shared daemon.
 
-## Quickstart
+## Dogfood Quickstart
+
+This path sets up local CLI and daemon dogfooding. Telegram is optional;
+wire it after the CLI/daemon loop passes `peggy doctor`.
 
 ```sh
-# 1. Install.
+# 1. Install the local commands.
 go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
+go install github.com/erain/glue/agents/peggy/cmd/peggy-telegram@latest
+go install github.com/erain/glue/cmd/glue@latest
 
-# 2. One-time auth (Codex subscription is the default provider).
+# 2. One-time auth. Codex is the default provider and uses your
+# ChatGPT subscription through the upstream Codex CLI.
 codex login
 
-# 3. Optional: drop an identity file so Peggy knows who you are.
-mkdir -p ~/.config/peggy
-$EDITOR ~/.config/peggy/SOUL.md         # see "SOUL.md" below
-$EDITOR ~/.config/peggy/settings.json   # see "settings.json" below
-peggy init --workdir ~/workspace        # optional starter skills/roles
-
-# 4. Talk to her.
-peggy "Hello — what should I be working on today?"
-
-# 5. Optional: let Peggy work in a trusted repo.
-cd /path/to/repo
-peggy --coding --workdir . "read the failing test and propose a fix"
-
-# 6. Optional: keep one Peggy process running and connect to it.
-go install github.com/erain/glue/cmd/glue@latest  # if needed
-peggy serve --coding --workdir .
-glue connect --inspect
-glue connect --prompt "what should I do next?" --id cli:daily
+# 3. Create a starter workspace for AGENTS.md, roles, and skills.
+mkdir -p ~/.config/peggy ~/.peggy ~/workspace
+peggy init --workdir ~/workspace
 ```
 
-To reach her from your phone, set up Telegram next — see
-[Channels](#channels) below.
+Create `~/.config/peggy/settings.json` for repeatable local dogfooding:
+
+```json
+{
+  "provider": "codex",
+  "model": "gpt-5-codex",
+  "store": {
+    "type": "sqlite",
+    "path": "~/.peggy/peggy.db"
+  },
+  "context": {
+    "work_dir": "~/workspace"
+  },
+  "coding": {
+    "enabled": true,
+    "work_dir": "~/workspace",
+    "allowed_binaries": ["go", "git", "make", "node", "npm", "python", "python3"],
+    "allow_overwrite": false
+  },
+  "permissions": {
+    "default_tier": "prompt",
+    "channels": {
+      "cli": "trusted",
+      "telegram": "prompt"
+    }
+  }
+}
+```
+
+Create `~/.config/peggy/SOUL.md` using the template below, then run the
+doctor:
+
+```sh
+peggy doctor --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md
+```
+
+The doctor should have no `FAIL` rows before dogfooding. Warnings mean
+Peggy can run, but the setup is still thinner than the full local
+assistant loop.
+
+Smoke the single-prompt CLI:
+
+```sh
+peggy --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md \
+  "Hello. Give me a one-line status check."
+```
+
+Start the shared daemon in one terminal:
+
+```sh
+peggy serve --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md
+```
+
+Attach from another terminal:
+
+```sh
+glue connect --inspect
+glue connect --roles
+glue connect --skills
+glue connect --skill daily_plan --id cli:daily-plan
+glue connect --prompt "Dogfood smoke marker: Peggy daemon is reachable." --id cli:smoke
+glue connect --recall "Dogfood smoke marker"
+```
+
+To reach Peggy from your phone, merge a Telegram channel block into
+`settings.json` after the terminal loop works:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "bot_token_env": "PEGGY_TELEGRAM_TOKEN",
+      "allow_chats": [123456789],
+      "daemon": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Then export the bot token, keep `peggy serve` running, and start the
+Telegram bridge:
+
+```sh
+export PEGGY_TELEGRAM_TOKEN=...
+peggy doctor --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md
+peggy-telegram --daemon
+```
+
+Useful Telegram daemon commands: `/status`, `/roles`, `/skills`,
+`/memories`, `/recall <query>`, `/recall_memories <query>`, and
+`/forget_memory <id>`.
 
 ## SOUL.md
 
