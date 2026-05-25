@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -123,6 +124,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		switch args[0] {
 		case "serve":
 			return runServe(ctx, args[1:], stdout, stderr, serve)
+		case "init":
+			return runInit(args[1:], stdout, stderr)
 		case "skill":
 			return runSkill(ctx, args[1:], stdin, stdout, stderr)
 		case "skills":
@@ -153,6 +156,7 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 
 Usage:
   peggy [flags] "<prompt text>"
+  peggy init [flags]
   peggy skill [flags] <name>
   peggy skills [flags]
   peggy roles [flags]
@@ -165,6 +169,7 @@ Examples:
   peggy --session work "remind me about the migration plan"
   peggy --config /tmp/peggy.json "what do you know about my Aussie?"
   peggy --coding --workdir . "run the tests and fix the failure"
+  peggy init --workdir .
   peggy skills --config ~/.config/peggy/settings.json
   peggy roles --config ~/.config/peggy/settings.json
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
@@ -267,6 +272,121 @@ func promptOptionsForRole(roleName string) []glue.PromptOption {
 		return nil
 	}
 	return []glue.PromptOption{glue.WithRole(roleName)}
+}
+
+type initStarterFile struct {
+	Path    string
+	Content string
+}
+
+func runInit(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		workDir = fs.String("workdir", ".", "workspace root to initialize")
+		force   = fs.Bool("force", false, "overwrite existing starter files")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy init - create a starter Peggy workspace.
+
+Usage:
+  peggy init [flags]
+
+Examples:
+  peggy init --workdir .
+  peggy init --workdir ~/workspace --force
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy init: positional args not supported")
+		return 2
+	}
+	root := strings.TrimSpace(*workDir)
+	if root == "" {
+		fmt.Fprintln(stderr, "peggy init: --workdir is required")
+		return 2
+	}
+	expanded, err := expandPath(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy init: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(expanded, 0o755); err != nil {
+		fmt.Fprintf(stderr, "peggy init: create %s: %v\n", expanded, err)
+		return 1
+	}
+	for _, file := range peggyStarterFiles() {
+		path := filepath.Join(expanded, file.Path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			fmt.Fprintf(stderr, "peggy init: create %s: %v\n", filepath.Dir(path), err)
+			return 1
+		}
+		if !*force {
+			if _, err := os.Stat(path); err == nil {
+				fmt.Fprintf(stdout, "skipped %s (exists)\n", file.Path)
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintf(stderr, "peggy init: stat %s: %v\n", path, err)
+				return 1
+			}
+		}
+		if err := os.WriteFile(path, []byte(file.Content), 0o644); err != nil {
+			fmt.Fprintf(stderr, "peggy init: write %s: %v\n", path, err)
+			return 1
+		}
+		if *force {
+			fmt.Fprintf(stdout, "wrote %s\n", file.Path)
+		} else {
+			fmt.Fprintf(stdout, "created %s\n", file.Path)
+		}
+	}
+	return 0
+}
+
+func peggyStarterFiles() []initStarterFile {
+	return []initStarterFile{
+		{
+			Path: "AGENTS.md",
+			Content: "# Peggy Workspace\n\n" +
+				"Use this workspace context for local project conventions, active goals, and constraints.\n\n" +
+				"- Prefer small, verifiable changes.\n" +
+				"- Keep plans concrete and update them as work progresses.\n",
+		},
+		{
+			Path: "roles/reviewer.md",
+			Content: "---\nname: reviewer\ndescription: Review diffs for bugs, regressions, and missing tests\n---\n\n" +
+				"Review like a senior engineer. Prioritize correctness, behavior changes, security, and test gaps. Lead with actionable findings tied to files or commands.\n",
+		},
+		{
+			Path: "roles/operator.md",
+			Content: "---\nname: operator\ndescription: Drive implementation work end to end\n---\n\n" +
+				"Act as an implementation operator. Keep momentum, prefer repository patterns, verify changes locally, and summarize only the decisions and results that matter.\n",
+		},
+		{
+			Path: ".agents/skills/triage/SKILL.md",
+			Content: "---\nname: triage\ndescription: Triage one issue or task into an implementation plan\n---\n\n" +
+				"Read the supplied context, identify the user-visible goal, list concrete acceptance criteria, note risks or unknowns, and propose the next implementation slice.\n",
+		},
+		{
+			Path: ".agents/skills/daily_plan/SKILL.md",
+			Content: "---\nname: daily_plan\ndescription: Produce a focused work plan for the current day\n---\n\n" +
+				"Review the current project context and produce a short plan with priorities, blockers, validation steps, and the first concrete action.\n",
+		},
+		{
+			Path: ".agents/skills/implementation_plan/SKILL.md",
+			Content: "---\nname: implementation_plan\ndescription: Turn a task into a scoped build plan\n---\n\n" +
+				"Break the task into a small implementation plan. Include files or subsystems to inspect, likely edits, tests to run, and rollout or follow-up notes.\n",
+		},
+	}
 }
 
 func runSkills(args []string, stdout, stderr io.Writer) int {

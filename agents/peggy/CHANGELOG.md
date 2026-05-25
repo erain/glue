@@ -36,6 +36,10 @@ not formally follow SemVer until v1.0.
   daemon clients can inspect roles with `glue connect --roles` /
   `--roles-json`. `glue connect --inspect` includes roles when the
   daemon advertises them.
+- **Starter workspace scaffolding.** `peggy init --workdir <path>`
+  creates a safe starter `AGENTS.md`, reviewer/operator roles, and
+  triage/daily-plan/implementation-plan skills. Existing files are
+  skipped unless `--force` is explicit.
 
 ## v0.4.0 — 2026-05-24
 

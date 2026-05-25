@@ -23,6 +23,7 @@ A long-running personal-assistant agent built on the
 - per-channel permission tiers (`prompt`, `read_only`, `trusted`)
 - opt-in MCP stdio/HTTP tools plus resource and prompt inspection
 - workspace file skills loaded from `.agents/skills/<name>/SKILL.md`
+- starter workspace scaffolding via `peggy init`
 - local readiness status for config, identity, memory, context,
   coding, and MCP setup
 - four model backends: Codex (ChatGPT subscription), Gemini,
@@ -44,6 +45,7 @@ codex login
 mkdir -p ~/.config/peggy
 $EDITOR ~/.config/peggy/SOUL.md         # see "SOUL.md" below
 $EDITOR ~/.config/peggy/settings.json   # see "settings.json" below
+peggy init --workdir ~/workspace        # optional starter skills/roles
 
 # 4. Talk to her.
 peggy "Hello — what should I be working on today?"
@@ -156,6 +158,7 @@ defaults above and emits a stderr diagnostic.
 
 ```
 peggy [flags] "<prompt text>"
+peggy init [flags]
 peggy skill [flags] <name>
 peggy skills [flags]
 peggy roles [flags]
@@ -197,6 +200,17 @@ project context:
   }
 }
 ```
+
+Create a starter workspace layout:
+
+```sh
+peggy init --workdir ~/workspace
+peggy init --workdir ~/workspace --force
+```
+
+The initializer writes `AGENTS.md`, starter roles under `roles/`, and
+starter skills under `.agents/skills/`. Existing files are skipped
+unless `--force` is explicit.
 
 Peggy loads `AGENTS.md` into the system prompt and scans skills under
 `.agents/skills/<name>/SKILL.md`. A skill file is Markdown with
@@ -598,8 +612,9 @@ near-term follow-up.
   files, run allowlisted commands, and inspect git branch context with
   per-call permission prompts for side effects.
 - **Workspace file skills**: `context.work_dir` loads `AGENTS.md`,
-  `.agents/skills`, and roles; local and daemon clients can list the
-  catalogs, apply roles, and run one skill through Peggy.
+  `.agents/skills`, and roles; `peggy init` can scaffold starter
+  workspace files; local and daemon clients can list the catalogs,
+  apply roles, and run one skill through Peggy.
 - **Permission tiers** by channel/client: prompt, read-only, or trusted.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
