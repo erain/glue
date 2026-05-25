@@ -1857,6 +1857,145 @@ func TestRunCLIConnectForgetMemoryValidation(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectListsPermissions(t *testing.T) {
+	var sawPermissions bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/permissions":
+			sawPermissions = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("permissions method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("permissions auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.PermissionCatalogResponse{Permissions: []daemon.PermissionGrant{{
+				ID:        "grant_1",
+				Scope:     "forever",
+				Owner:     "client:telegram:123",
+				ClientID:  "telegram:123",
+				SessionID: "telegram:123",
+				Tool:      "shell_exec",
+				Action:    "exec",
+				Target:    "go test ./...",
+				CreatedAt: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--permissions",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawPermissions || sawRun {
+		t.Fatalf("sawPermissions=%v sawRun=%v", sawPermissions, sawRun)
+	}
+	for _, want := range []string{
+		"grant_1",
+		"scope: forever",
+		"owner: client:telegram:123",
+		"client_id: telegram:123",
+		"session_id: telegram:123",
+		"tool: shell_exec",
+		"action: exec",
+		"target: go test ./...",
+		"created_at: 2026-05-24T12:00:00Z",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectForgetsPermission(t *testing.T) {
+	var sawForget bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/permissions/grant_1":
+			sawForget = true
+			if r.Method != http.MethodDelete {
+				t.Fatalf("forget method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("forget auth = %q", auth)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.PermissionForgetResponse{Permission: daemon.PermissionGrant{
+				ID:       "grant_1",
+				Scope:    "session_target",
+				Owner:    "client:cli:test",
+				ClientID: "cli:test",
+				Tool:     "shell_exec",
+				Action:   "exec",
+				Target:   "go test ./...",
+			}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--forget-permission", "grant_1",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawForget || sawRun {
+		t.Fatalf("sawForget=%v sawRun=%v", sawForget, sawRun)
+	}
+	for _, want := range []string{
+		"grant_1",
+		"scope: session_target",
+		"owner: client:cli:test",
+		"tool: shell_exec",
+		"target: go test ./...",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectForgetPermissionValidation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--forget-permission-json",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want forget-permission validation failure")
+	}
+	if !strings.Contains(stderr.String(), "--forget-permission is required") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunCLIConnectShowsStatus(t *testing.T) {
 	var sawStatus bool
 	var sawRun bool
@@ -2028,7 +2167,7 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
 				OK:           true,
 				Version:      1,
-				Capabilities: []string{"status", "tools", "memories"},
+				Capabilities: []string{"status", "tools", "memories", "permission_grants"},
 			})
 		case "/v1/tools":
 			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{Tools: []daemonToolCatalogEntry{{
@@ -2043,6 +2182,14 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemon.MemoryCatalogResponse{Memories: []daemon.MemoryEntry{{
 				ID:      "mem_1",
 				Content: "User prefers terse responses.",
+			}}})
+		case "/v1/permissions":
+			writeJSONResponse(t, w, http.StatusOK, daemon.PermissionCatalogResponse{Permissions: []daemon.PermissionGrant{{
+				ID:     "grant_1",
+				Scope:  "forever",
+				Owner:  "client:cli:test",
+				Tool:   "shell_exec",
+				Action: "exec",
 			}}})
 		default:
 			http.NotFound(w, r)
@@ -2074,6 +2221,9 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 	}
 	if len(inspect.Memories) != 1 || inspect.Memories[0].ID != "mem_1" {
 		t.Fatalf("memories = %+v", inspect.Memories)
+	}
+	if len(inspect.Permissions) != 1 || inspect.Permissions[0].ID != "grant_1" {
+		t.Fatalf("permissions = %+v", inspect.Permissions)
 	}
 }
 

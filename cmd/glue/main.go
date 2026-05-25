@@ -151,6 +151,10 @@ type daemonMCPPromptCatalog struct {
 	Prompts []daemon.MCPPromptCatalogEntry `json:"prompts"`
 }
 
+type daemonPermissionCatalog struct {
+	Permissions []daemon.PermissionGrant `json:"permissions"`
+}
+
 type daemonToolCatalogEntry struct {
 	Name                    string          `json:"name"`
 	Description             string          `json:"description,omitempty"`
@@ -174,6 +178,7 @@ type daemonInspect struct {
 	Skills       []daemon.SkillCatalogEntry       `json:"skills,omitempty"`
 	Roles        []daemon.RoleCatalogEntry        `json:"roles,omitempty"`
 	Memories     []daemon.MemoryEntry             `json:"memories,omitempty"`
+	Permissions  []daemon.PermissionGrant         `json:"permissions,omitempty"`
 	MCPResources []daemon.MCPResourceCatalogEntry `json:"mcp_resources,omitempty"`
 	MCPPrompts   []daemon.MCPPromptCatalogEntry   `json:"mcp_prompts,omitempty"`
 }
@@ -413,6 +418,10 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	memoryLimit := flags.Int("memory-limit", 0, "maximum memories to return; 0 means no limit")
 	forgetMemoryID := flags.String("forget-memory", "", "delete one daemon memory by id and exit without starting a run")
 	forgetMemoryJSON := flags.Bool("forget-memory-json", false, "print --forget-memory output as JSON")
+	showPermissions := flags.Bool("permissions", false, "list daemon permission grants and exit without starting a run")
+	permissionsJSON := flags.Bool("permissions-json", false, "print --permissions output as JSON")
+	forgetPermissionID := flags.String("forget-permission", "", "delete one daemon permission grant by id and exit without starting a run")
+	forgetPermissionJSON := flags.Bool("forget-permission-json", false, "print --forget-permission output as JSON")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
 	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
@@ -462,16 +471,20 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *memoriesJSON {
 		*showMemories = true
 	}
+	if *permissionsJSON {
+		*showPermissions = true
+	}
 	showRecall := strings.TrimSpace(*recallQuery) != "" || *recallJSON
 	showForgetMemory := strings.TrimSpace(*forgetMemoryID) != "" || *forgetMemoryJSON
+	showForgetPermission := strings.TrimSpace(*forgetPermissionID) != "" || *forgetPermissionJSON
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, showForgetMemory, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, showForgetMemory, *showPermissions, showForgetPermission, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --forget-memory, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --forget-memory, --permissions, --forget-permission, --status, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
 		return errors.New("missing required --prompt or --skill")
@@ -531,6 +544,12 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if showForgetMemory {
 		return runConnectForgetMemory(ctx, cfg, *forgetMemoryID, *forgetMemoryJSON, stdout, client)
+	}
+	if *showPermissions {
+		return runConnectPermissions(ctx, cfg, *permissionsJSON, stdout, client)
+	}
+	if showForgetPermission {
+		return runConnectForgetPermission(ctx, cfg, *forgetPermissionID, *forgetPermissionJSON, stdout, client)
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
@@ -779,6 +798,38 @@ func runConnectForgetMemory(ctx context.Context, cfg connectConfig, id string, j
 	return nil
 }
 
+func runConnectPermissions(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	catalog, err := fetchDaemonPermissions(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(catalog)
+	}
+	writeDaemonPermissions(stdout, catalog.Permissions)
+	return nil
+}
+
+func runConnectForgetPermission(ctx context.Context, cfg connectConfig, id string, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("--forget-permission is required")
+	}
+	forgotten, err := requestDaemonForgetPermission(ctx, cfg, id, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(forgotten)
+	}
+	writeDaemonPermission(stdout, forgotten.Permission)
+	return nil
+}
+
 func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
 	status, err := fetchDaemonStatus(ctx, cfg, client)
 	if err != nil {
@@ -826,6 +877,13 @@ func runConnectInspect(ctx context.Context, cfg connectConfig, memoryLimit int, 
 			return err
 		}
 		inspect.Memories = memories.Memories
+	}
+	if daemonHasCapability(status, "permission_grants") {
+		permissions, err := fetchDaemonPermissions(ctx, cfg, client)
+		if err != nil {
+			return err
+		}
+		inspect.Permissions = permissions.Permissions
 	}
 	if daemonHasCapability(status, "mcp_resources") {
 		resources, err := fetchDaemonMCPResources(ctx, cfg, client)
@@ -904,6 +962,11 @@ func writeDaemonInspect(w io.Writer, inspect daemonInspect) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "memories:")
 		writeDaemonMemoriesIndented(w, inspect.Memories, "  ")
+	}
+	if daemonHasCapability(inspect.Status, "permission_grants") {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "permissions:")
+		writeDaemonPermissionsIndented(w, inspect.Permissions, "  ")
 	}
 	if daemonHasCapability(inspect.Status, "mcp_resources") {
 		fmt.Fprintln(w)
@@ -1036,6 +1099,51 @@ func requestDaemonForgetMemory(ctx context.Context, cfg connectConfig, id string
 	var forgotten daemon.MemoryForgetResponse
 	if err := json.NewDecoder(resp.Body).Decode(&forgotten); err != nil {
 		return daemon.MemoryForgetResponse{}, err
+	}
+	return forgotten, nil
+}
+
+func fetchDaemonPermissions(ctx context.Context, cfg connectConfig, client httpDoer) (daemonPermissionCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/permissions", nil)
+	if err != nil {
+		return daemonPermissionCatalog{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemonPermissionCatalog{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonPermissionCatalog{}, fmt.Errorf("daemon permissions: %s", httpStatusError(resp))
+	}
+	var catalog daemonPermissionCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return daemonPermissionCatalog{}, err
+	}
+	if catalog.Permissions == nil {
+		catalog.Permissions = []daemon.PermissionGrant{}
+	}
+	return catalog, nil
+}
+
+func requestDaemonForgetPermission(ctx context.Context, cfg connectConfig, id string, client httpDoer) (daemon.PermissionForgetResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfg.BaseURL+"/v1/permissions/"+url.PathEscape(id), nil)
+	if err != nil {
+		return daemon.PermissionForgetResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemon.PermissionForgetResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.PermissionForgetResponse{}, fmt.Errorf("daemon permission delete: %s", httpStatusError(resp))
+	}
+	var forgotten daemon.PermissionForgetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&forgotten); err != nil {
+		return daemon.PermissionForgetResponse{}, err
 	}
 	return forgotten, nil
 }
@@ -1276,6 +1384,50 @@ func writeDaemonMemoryFields(w io.Writer, memory daemon.MemoryEntry, indent stri
 	fmt.Fprintf(w, "%s  content: %s\n", indent, oneLine(memory.Content))
 	if len(memory.Tags) > 0 {
 		fmt.Fprintf(w, "%s  tags: %s\n", indent, strings.Join(memory.Tags, ", "))
+	}
+}
+
+func writeDaemonPermissions(w io.Writer, permissions []daemon.PermissionGrant) {
+	writeDaemonPermissionsIndented(w, permissions, "")
+}
+
+func writeDaemonPermissionsIndented(w io.Writer, permissions []daemon.PermissionGrant, indent string) {
+	if len(permissions) == 0 {
+		fmt.Fprintf(w, "%sNo daemon permissions remembered.\n", indent)
+		return
+	}
+	for i, permission := range permissions {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "%s%d. %s\n", indent, i+1, permission.ID)
+		writeDaemonPermissionFields(w, permission, indent)
+	}
+}
+
+func writeDaemonPermission(w io.Writer, permission daemon.PermissionGrant) {
+	fmt.Fprintln(w, permission.ID)
+	writeDaemonPermissionFields(w, permission, "")
+}
+
+func writeDaemonPermissionFields(w io.Writer, permission daemon.PermissionGrant, indent string) {
+	fmt.Fprintf(w, "%s  scope: %s\n", indent, permission.Scope)
+	if permission.Owner != "" {
+		fmt.Fprintf(w, "%s  owner: %s\n", indent, permission.Owner)
+	}
+	if permission.ClientID != "" {
+		fmt.Fprintf(w, "%s  client_id: %s\n", indent, permission.ClientID)
+	}
+	if permission.SessionID != "" {
+		fmt.Fprintf(w, "%s  session_id: %s\n", indent, permission.SessionID)
+	}
+	fmt.Fprintf(w, "%s  tool: %s\n", indent, permission.Tool)
+	fmt.Fprintf(w, "%s  action: %s\n", indent, permission.Action)
+	if permission.Target != "" {
+		fmt.Fprintf(w, "%s  target: %s\n", indent, permission.Target)
+	}
+	if !permission.CreatedAt.IsZero() {
+		fmt.Fprintf(w, "%s  created_at: %s\n", indent, permission.CreatedAt.Format(time.RFC3339))
 	}
 }
 
@@ -1883,6 +2035,8 @@ func printUsage(w io.Writer) {
   glue connect --recall <query> [--recall-json] [--recall-memories] [--recall-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --memories [--memories-json] [--memory-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --forget-memory <id> [--forget-memory-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --permissions [--permissions-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --forget-permission <id> [--forget-permission-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
@@ -1950,6 +2104,14 @@ Flags:
              Connect mode: delete one daemon memory by id and exit without starting a run.
   --forget-memory-json
              Connect --forget-memory mode: print JSON.
+  --permissions
+             Connect mode: list daemon permission grants and exit without starting a run.
+  --permissions-json
+             Connect --permissions mode: print JSON.
+  --forget-permission
+             Connect mode: delete one daemon permission grant by id and exit without starting a run.
+  --forget-permission-json
+             Connect --forget-permission mode: print JSON.
   --server   MCP server name for --mcp-read or --mcp-prompt.
   --uri      MCP resource URI for --mcp-read.
   --name     MCP prompt name for --mcp-prompt.

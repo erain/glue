@@ -236,6 +236,7 @@ and emits a stderr diagnostic.
 | `mcp.servers.<name>.headers_env` | `{}` | Map HTTP header names to env var names. Peggy resolves the env vars at startup and does not write secret values back to settings. |
 | `mcp.servers.<name>.timeout_seconds` | `30` | Timeout for initialize, `tools/list`, `tools/call`, `resources/list`, and `resources/read` requests. |
 | `permissions.default_tier` | `prompt` | Permission tier for side-effecting tools when a channel has no override. One of `prompt`, `read_only`, or `trusted`. |
+| `permissions.remember_path` | `~/.peggy/permissions.json` | JSON file where daemon-mode remembered permission grants are persisted. Set to `off` to keep remembers process-local. |
 | `permissions.channels.<name>` | inherited | Channel override keyed by `cli`, `telegram`, or a future daemon client prefix. |
 
 Missing `settings.json` is non-fatal — Peggy uses the built-in
@@ -399,6 +400,8 @@ peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
 glue connect --memories
 glue connect --forget-memory mem_123
+glue connect --permissions
+glue connect --forget-permission grant_123
 glue connect --skills
 glue connect --roles
 glue connect --skill triage --arg issue=GLUE-123 --id cli:triage

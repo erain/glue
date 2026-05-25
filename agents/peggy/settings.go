@@ -122,8 +122,9 @@ type MCPServerSettings struct {
 // PermissionSettings configures Peggy permission tiers. Channel keys are
 // lower-case names such as "cli" and "telegram".
 type PermissionSettings struct {
-	DefaultTier string            `json:"default_tier"`
-	Channels    map[string]string `json:"channels,omitempty"`
+	DefaultTier  string            `json:"default_tier"`
+	RememberPath string            `json:"remember_path,omitempty"`
+	Channels     map[string]string `json:"channels,omitempty"`
 }
 
 // Environment variables consulted when paths aren't given explicitly.
@@ -196,6 +197,15 @@ func LoadSettings(path string) (Settings, string, error) {
 			return Settings{}, resolved, err
 		}
 		s.Context.WorkDir = expanded
+	}
+	if permissionRememberPathDisabled(s.Permissions.RememberPath) {
+		s.Permissions.RememberPath = ""
+	} else if s.Permissions.RememberPath != "" {
+		expanded, err := expandPath(s.Permissions.RememberPath)
+		if err != nil {
+			return Settings{}, resolved, err
+		}
+		s.Permissions.RememberPath = expanded
 	}
 	if len(s.MCP.Servers) > 0 {
 		expanded, err := expandMCPSettings(s.MCP)
@@ -345,5 +355,18 @@ func fillDefaults(s Settings) Settings {
 		s.Coding.AllowedBinaries = append([]string(nil), DefaultCodingAllowedBinaries...)
 	}
 	s.Permissions = normalizePermissionSettings(s.Permissions)
+	if s.Permissions.RememberPath == "" {
+		home, _ := os.UserHomeDir()
+		s.Permissions.RememberPath = filepath.Join(home, ".peggy", "permissions.json")
+	}
 	return s
+}
+
+func permissionRememberPathDisabled(path string) bool {
+	switch strings.ToLower(strings.TrimSpace(path)) {
+	case "off", "none", "false":
+		return true
+	default:
+		return false
+	}
 }
