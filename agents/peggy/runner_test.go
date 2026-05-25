@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	filestore "github.com/erain/glue/stores/file"
 	toolsmcp "github.com/erain/glue/tools/mcp"
 )
 
@@ -377,6 +378,115 @@ func TestRunInitSkipsExistingAndForceOverwrites(t *testing.T) {
 	if !strings.Contains(out.String(), "wrote AGENTS.md") {
 		t.Fatalf("force stdout = %q", out.String())
 	}
+}
+
+func TestRunMemoriesListsWithoutProvider(t *testing.T) {
+	storePath := seedRunnerMemories(t)
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": storePath,
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	for _, want := range []string{"content: User prefers terse responses.", "tags: preference"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", out.String(), want)
+		}
+	}
+}
+
+func TestRunMemoriesJSONAndLimit(t *testing.T) {
+	storePath := seedRunnerMemories(t)
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": storePath,
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "--config", cfgPath, "--json", "--limit", "1"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var memories []Memory
+	if err := json.Unmarshal(out.Bytes(), &memories); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, out.String())
+	}
+	if len(memories) != 1 {
+		t.Fatalf("memories = %+v, want one result", memories)
+	}
+}
+
+func TestRunMemoriesEmpty(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": filepath.Join(t.TempDir(), "sessions"),
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if got, want := out.String(), "No memories recorded.\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"memories", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("json exit = %d stderr=%q", code, errOut.String())
+	}
+	if got, want := strings.TrimSpace(out.String()), "[]"; got != want {
+		t.Fatalf("json stdout = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRunMemoriesRejectsNegativeLimit(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "--limit", "-1"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "--limit must be non-negative") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+func seedRunnerMemories(t *testing.T) string {
+	t.Helper()
+	storePath := filepath.Join(t.TempDir(), "sessions")
+	p, err := New(Options{
+		Settings: Settings{},
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(storePath),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AddMemory(context.Background(), "User's Aussie is named Inkblot.", []string{"pet"}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := p.AddMemory(context.Background(), "User prefers terse responses.", []string{"preference"}); err != nil {
+		t.Fatalf("AddMemory 2: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return storePath
 }
 
 func TestRunSkillsListsWorkspaceSkills(t *testing.T) {

@@ -132,6 +132,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return runSkills(args[1:], stdout, stderr)
 		case "roles":
 			return runRoles(args[1:], stdout, stderr)
+		case "memories":
+			return runMemories(ctx, args[1:], stdout, stderr)
 		case "status":
 			return runStatus(args[1:], stdout, stderr)
 		case "mcp":
@@ -160,6 +162,7 @@ Usage:
   peggy skill [flags] <name>
   peggy skills [flags]
   peggy roles [flags]
+  peggy memories [flags]
   peggy status [flags]
   peggy mcp [command]
   peggy serve [flags]
@@ -172,6 +175,7 @@ Examples:
   peggy init --workdir .
   peggy skills --config ~/.config/peggy/settings.json
   peggy roles --config ~/.config/peggy/settings.json
+  peggy memories --config ~/.config/peggy/settings.json
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
   peggy mcp tools --config ~/.config/peggy/settings.json
@@ -677,6 +681,104 @@ func writeRoleCatalog(w io.Writer, catalog []roleCatalogEntry) {
 		}
 		if entry.Model != "" {
 			fmt.Fprintf(w, "  model: %s\n", entry.Model)
+		}
+	}
+}
+
+func runMemories(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy memories", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+		limit      = fs.Int("limit", 0, "maximum memories to return; 0 means no limit")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy memories - list curated memories from Peggy's store.
+
+Usage:
+  peggy memories [flags]
+
+Examples:
+  peggy memories --config ~/.config/peggy/settings.json
+  peggy memories --config ~/.config/peggy/settings.json --json
+  peggy memories --limit 20
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy memories: positional args not supported")
+		return 2
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "peggy memories: --limit must be non-negative")
+		return 2
+	}
+
+	settings, settingsPath, err := LoadSettings(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories: %v\n", err)
+		return 1
+	}
+	if settingsPath == "" {
+		fmt.Fprintln(stderr, "peggy memories: no settings.json found; using built-in defaults")
+	}
+	store, err := buildStore(settings)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories: store: %v\n", err)
+		return 1
+	}
+	if closer, ok := store.(io.Closer); ok {
+		defer closer.Close()
+	}
+
+	p := &Peggy{store: store}
+	memories, err := p.ListMemories(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories: %v\n", err)
+		return 1
+	}
+	if *limit > 0 && len(memories) > *limit {
+		memories = memories[:*limit]
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(memories); err != nil {
+			fmt.Fprintf(stderr, "peggy memories: encode memories: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeMemories(stdout, memories)
+	return 0
+}
+
+func writeMemories(w io.Writer, memories []Memory) {
+	if len(memories) == 0 {
+		fmt.Fprintln(w, "No memories recorded.")
+		return
+	}
+	for i, memory := range memories {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		timestamp := "unknown"
+		if !memory.Timestamp.IsZero() {
+			timestamp = memory.Timestamp.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%s\n", timestamp)
+		fmt.Fprintf(w, "  content: %s\n", singleLine(memory.Content))
+		if len(memory.Tags) > 0 {
+			fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
 		}
 	}
 }
