@@ -264,6 +264,100 @@ func TestRunStatusJSON(t *testing.T) {
 	}
 }
 
+func TestRunDoctorReadyJSON(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("PEGGY_TEST_TELEGRAM_TOKEN", "telegram-token")
+
+	workDir := t.TempDir()
+	var initOut, initErr bytes.Buffer
+	code := Run(context.Background(), []string{"init", "--workdir", workDir}, &initOut, &initErr)
+	if code != 0 {
+		t.Fatalf("init exit = %d stderr=%q", code, initErr.String())
+	}
+	soulPath := filepath.Join(t.TempDir(), "SOUL.md")
+	if err := os.WriteFile(soulPath, []byte("You are Peggy."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "openrouter",
+		"store": map[string]any{
+			"type": "sqlite",
+			"path": filepath.Join(t.TempDir(), "peggy.db"),
+		},
+		"context": map[string]any{
+			"work_dir": workDir,
+		},
+		"coding": map[string]any{
+			"enabled":  true,
+			"work_dir": workDir,
+		},
+		"permissions": map[string]any{
+			"default_tier": "prompt",
+			"channels": map[string]string{
+				"telegram": "prompt",
+			},
+		},
+		"channels": map[string]any{
+			"telegram": map[string]any{
+				"bot_token_env": "PEGGY_TEST_TELEGRAM_TOKEN",
+				"allow_chats":   []int64{123},
+			},
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code = Run(context.Background(), []string{"doctor", "--config", cfgPath, "--soul", soulPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q stdout=%s", code, errOut.String(), out.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor: %v\nstdout=%s", err, out.String())
+	}
+	if !report.Ready {
+		t.Fatalf("doctor report not ready: %+v", report.Checks)
+	}
+	if !doctorReportHasCheck(report, "provider_credentials", "pass") ||
+		!doctorReportHasCheck(report, "store", "pass") ||
+		!doctorReportHasCheck(report, "workspace_skills", "pass") ||
+		!doctorReportHasCheck(report, "workspace_roles", "pass") ||
+		!doctorReportHasCheck(report, "telegram", "pass") {
+		t.Fatalf("checks = %+v", report.Checks)
+	}
+}
+
+func TestRunDoctorFailsMissingRequirements(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	missingWorkDir := filepath.Join(t.TempDir(), "missing")
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "openrouter",
+		"store": map[string]any{
+			"type": "file",
+			"path": filepath.Join(t.TempDir(), "sessions"),
+		},
+		"context": map[string]any{
+			"work_dir": missingWorkDir,
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"doctor", "--config", cfgPath}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 stderr=%q stdout=%s", code, errOut.String(), out.String())
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Peggy doctor: not ready",
+		"FAIL provider_credentials",
+		"FAIL store",
+		"FAIL context",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stdout = %q, missing %q", text, want)
+		}
+	}
+}
+
 func TestRunInitCreatesStarterWorkspace(t *testing.T) {
 	workDir := t.TempDir()
 	var out, errOut bytes.Buffer
@@ -1203,6 +1297,15 @@ func TestRunServeBuildsPeggyDaemonConfig(t *testing.T) {
 	if !strings.Contains(errOut.String(), "coding tools enabled for "+workDir) {
 		t.Fatalf("stderr = %q, want coding diagnostic", errOut.String())
 	}
+}
+
+func doctorReportHasCheck(report doctorReport, id, status string) bool {
+	for _, check := range report.Checks {
+		if check.ID == id && check.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func writeRunnerConfig(t *testing.T, cfg map[string]any) string {

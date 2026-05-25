@@ -169,6 +169,7 @@ peggy skills [flags]
 peggy roles [flags]
 peggy memories [flags]
 peggy recall [flags] <query>
+peggy doctor [flags]
 peggy mcp prompt [flags]
 peggy mcp prompts [flags]
 peggy mcp read [flags]
@@ -287,6 +288,19 @@ provider, starting a prompt, or connecting to MCP servers:
 ```sh
 peggy status --config ~/.config/peggy/settings.json
 peggy status --config ~/.config/peggy/settings.json --json
+```
+
+`peggy doctor` turns that summary into a dogfood gate. It still avoids
+model calls and MCP server startup, but it exits non-zero when required
+local prerequisites are missing: a registered provider with local
+credentials, SQLite recall storage, readable workspace paths, valid
+MCP settings, complete configured Telegram settings, and valid
+permission policy. Missing identity, starter skills/roles, coding
+mode, or optional Telegram setup are reported as warnings.
+
+```sh
+peggy doctor --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.md
+peggy doctor --config ~/.config/peggy/settings.json --json
 ```
 
 ## Daemon Mode
@@ -694,6 +708,8 @@ not support search, so use the default SQLite store for recall.
   `.agents/skills`, and roles; `peggy init` can scaffold starter
   workspace files; local and daemon clients can list the catalogs,
   apply roles, and run one skill through Peggy.
+- **Dogfood readiness checks** via `peggy doctor`, with text and JSON
+  output for local setup scripts.
 - **Permission tiers** by channel/client: prompt, read-only, or trusted.
 - All four shipped providers: `codex` (ChatGPT subscription),
   `gemini`, `openrouter`, `nvidia`. Codex is the default and uses
@@ -725,16 +741,12 @@ external transports. The pattern is designed in
 
 ## What's coming
 
-Per tracker [#110](https://github.com/erain/glue/issues/110), in
-priority order:
-
-- **M5 — file skills and workspace context.** Make Peggy a richer
-  operator over glue project context: file-backed skills, role-aware
-  runs, and daemon/client discovery for reusable workflows.
-- **Later ecosystem polish.** `providers/anthropic` when budget allows.
-
-Near-term follow-ups that may ship as patches: edit-in-place Telegram
-streaming, FTS5 prefix-match on session ids for channel-scoped recall.
+Per tracker [#110](https://github.com/erain/glue/issues/110), the next
+dogfood hardening passes are first-run onboarding, persistent
+permission policy, richer Telegram replies, session/history browsing,
+daemon ops diagnostics, memory backup/export, and a more visual local
+control surface. Later ecosystem polish includes `providers/anthropic`
+when budget allows.
 
 ## As a library
 
