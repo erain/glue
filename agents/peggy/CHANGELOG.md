@@ -74,6 +74,9 @@ not formally follow SemVer until v1.0.
   allowlisted Telegram chats can use `/skills` to inspect reusable
   workspace skills and `/skill <name> key=value` to run one through the
   shared daemon.
+- **Telegram daemon role commands.** In daemon-client mode,
+  allowlisted Telegram chats can use `/roles` to inspect workspace
+  roles and `/role <name> <prompt>` to start a role-shaped daemon run.
 
 ## v0.4.0 — 2026-05-24
 
