@@ -216,6 +216,7 @@ func TestFixtureReplayFixBlockMatcher(t *testing.T) {
 	for _, review := range []string{
 		"```markdown\nFix the following in this PR before merging.\n```",
 		"```\nmarkdown\nFix the following in this PR before merging.\n```",
+		"```markdown\nDo NOT apply the current diff. Instead:\n\n1. Replace the panic placeholder with a real implementation.\n   Acceptance: building the module succeeds.\n```",
 	} {
 		if !fixBlockPattern.MatchString(review) {
 			t.Fatalf("fix block pattern did not match %q", review)
@@ -413,10 +414,11 @@ func assertGlueReviewHeader(t *testing.T, review string) {
 	}
 }
 
-// fixBlockPattern accepts the canonical fenced ```markdown fix block.
-// Free models sometimes split the language marker onto its own first
-// line inside an unlabeled fence, so that form is tolerated too.
-var fixBlockPattern = regexp.MustCompile("(?is)```\\s*(?:markdown\\s*)?(?:\\n\\s*markdown\\s*)?Fix the following")
+// fixBlockPattern accepts a fenced markdown block with actionable fix
+// instructions. Free models vary the lead sentence, and sometimes
+// split the language marker onto its own first line inside an unlabeled
+// fence, so those forms are tolerated too.
+var fixBlockPattern = regexp.MustCompile("(?is)```\\s*(?:markdown\\s*)?(?:\\n\\s*markdown\\s*)?(?:Fix the following|Do NOT apply\\b|.{0,400}\\bAcceptance:)")
 
 // assertHasFixBlock checks that the fenced ```markdown fix-instruction
 // block is present. Required for Variant A (issues found); not required
