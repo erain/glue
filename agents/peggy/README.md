@@ -147,7 +147,8 @@ peggy doctor --config ~/.config/peggy/settings.json --soul ~/.config/peggy/SOUL.
 peggy-telegram --daemon
 ```
 
-Useful Telegram daemon commands: `/status`, `/roles`, `/skills`,
+Useful Telegram daemon commands: `/help`, `/status`, `/roles`,
+`/role <name> <prompt>`, `/skills`, `/skill <name> key=value`,
 `/memories`, `/recall <query>`, `/recall_memories <query>`, and
 `/forget_memory <id>`.
 
@@ -452,7 +453,9 @@ peggy-telegram --daemon
 In daemon-client mode, Telegram keeps its chat allowlist and inline
 permission buttons, but Peggy, memory, coding tools, and remembered
 permission scopes live in the daemon process.
-Allowlisted chats can also use `/status`, `/roles`,
+Allowlisted chats get an immediate progress reply for daemon runs and
+long final replies are split across Telegram messages. They can also
+use `/help`, `/status`, `/roles`,
 `/role <name> <prompt>`, `/skills`, `/skill <name> key=value`,
 `/memories [limit]`, `/recall <query>`, `/recall_memories <query>`, and
 `/forget_memory <id>` to run workspace roles/skills and inspect or

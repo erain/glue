@@ -67,11 +67,14 @@ peggy-telegram --daemon
 `GLUE_DAEMON_TOKEN`. Telegram still enforces `allow_chats` before any
 daemon request is sent.
 
-Daemon-client mode also supports memory commands from allowlisted
-chats without starting a model run, plus skill commands for reusable
-workspace workflows and role-shaped runs:
+Daemon-client mode sends an immediate progress reply for daemon runs
+and splits long final answers across Telegram messages. It also
+supports memory commands from allowlisted chats without starting a
+model run, plus skill commands for reusable workspace workflows and
+role-shaped runs:
 
 ```text
+/help
 /status
 /roles
 /role reviewer summarize the latest diff

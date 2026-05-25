@@ -20,6 +20,10 @@ not formally follow SemVer until v1.0.
   remembered daemon permission grants to `permissions.remember_path`,
   and terminal daemon clients can list or revoke them with
   `glue connect --permissions` and `--forget-permission`.
+- **Telegram daemon reply UX.** Telegram daemon-client runs now send
+  an immediate progress message, split long final replies into multiple
+  Telegram messages instead of truncating them, and expose `/help` for
+  daemon chat commands.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening
