@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,6 +231,105 @@ type MemoryForgetResponse struct {
 	Memory MemoryEntry `json:"memory"`
 }
 
+// PermissionGrant is one remembered daemon permission decision.
+type PermissionGrant struct {
+	ID        string    `json:"id"`
+	Scope     string    `json:"scope"`
+	Owner     string    `json:"owner"`
+	ClientID  string    `json:"client_id,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	Tool      string    `json:"tool"`
+	Action    string    `json:"action"`
+	Target    string    `json:"target,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+
+// PermissionCatalogResponse contains remembered daemon permissions.
+type PermissionCatalogResponse struct {
+	Permissions []PermissionGrant `json:"permissions"`
+}
+
+// PermissionForgetResponse contains the deleted permission grant.
+type PermissionForgetResponse struct {
+	Permission PermissionGrant `json:"permission"`
+}
+
+// PermissionStore persists remembered daemon permission grants.
+type PermissionStore interface {
+	LoadPermissionGrants() ([]PermissionGrant, error)
+	SavePermissionGrants([]PermissionGrant) error
+}
+
+type filePermissionStore struct {
+	path string
+}
+
+type permissionStoreFile struct {
+	Version     int               `json:"version"`
+	Permissions []PermissionGrant `json:"permissions"`
+}
+
+// NewFilePermissionStore returns a JSON-file-backed permission store. An empty
+// path returns nil so callers can keep process-local permission remembers.
+func NewFilePermissionStore(path string) PermissionStore {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	return filePermissionStore{path: path}
+}
+
+func (s filePermissionStore) LoadPermissionGrants() ([]PermissionGrant, error) {
+	data, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("daemon: read permission store %s: %w", s.path, err)
+	}
+	var file permissionStoreFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("daemon: parse permission store %s: %w", s.path, err)
+	}
+	return file.Permissions, nil
+}
+
+func (s filePermissionStore) SavePermissionGrants(grants []PermissionGrant) error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return fmt.Errorf("daemon: prepare permission store: %w", err)
+	}
+	file := permissionStoreFile{Version: 1, Permissions: grants}
+	data, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return fmt.Errorf("daemon: encode permission store: %w", err)
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".permissions-*.tmp")
+	if err != nil {
+		return fmt.Errorf("daemon: create permission store temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("daemon: write permission store temp: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("daemon: chmod permission store temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("daemon: close permission store temp: %w", err)
+	}
+	if err := os.Rename(tmpName, s.path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("daemon: replace permission store: %w", err)
+	}
+	return nil
+}
+
 // Options configures [New].
 type Options struct {
 	// Host is required. A *glue.Agent satisfies this interface.
@@ -240,6 +343,10 @@ type Options struct {
 	// permission_request event. The daemon package remains channel-blind:
 	// hosts that need channel/client policy decide from the supplied context.
 	PermissionPolicy PermissionPolicy
+
+	// PermissionStore, when non-nil, persists remembered permission grants
+	// across daemon restarts.
+	PermissionStore PermissionStore
 
 	// Now supplies event timestamps. Nil uses time.Now.
 	Now func() time.Time
@@ -302,6 +409,7 @@ type Server struct {
 	host              Host
 	token             string
 	permissionPolicy  PermissionPolicy
+	permissionStore   PermissionStore
 	now               func() time.Time
 	newID             func(prefix string) string
 	permissionTimeout time.Duration
@@ -310,9 +418,9 @@ type Server struct {
 	runs map[string]*run
 
 	permMu        sync.Mutex
-	sessionAllows map[string]struct{}
-	targetAllows  map[string]struct{}
-	foreverAllows map[string]struct{}
+	sessionAllows map[string]PermissionGrant
+	targetAllows  map[string]PermissionGrant
+	foreverAllows map[string]PermissionGrant
 }
 
 // EventEnvelope is the JSON payload sent in each SSE data frame.
@@ -429,18 +537,27 @@ func New(opts Options) (*Server, error) {
 	if permissionTimeout <= 0 {
 		permissionTimeout = defaultPermissionTimeout
 	}
-	return &Server{
+	s := &Server{
 		host:              opts.Host,
 		token:             token,
 		permissionPolicy:  opts.PermissionPolicy,
+		permissionStore:   opts.PermissionStore,
 		now:               now,
 		newID:             newID,
 		permissionTimeout: permissionTimeout,
 		runs:              map[string]*run{},
-		sessionAllows:     map[string]struct{}{},
-		targetAllows:      map[string]struct{}{},
-		foreverAllows:     map[string]struct{}{},
-	}, nil
+		sessionAllows:     map[string]PermissionGrant{},
+		targetAllows:      map[string]PermissionGrant{},
+		foreverAllows:     map[string]PermissionGrant{},
+	}
+	if opts.PermissionStore != nil {
+		grants, err := opts.PermissionStore.LoadPermissionGrants()
+		if err != nil {
+			return nil, err
+		}
+		s.loadPermissionGrants(grants)
+	}
+	return s, nil
 }
 
 // ServeHTTP implements http.Handler.
@@ -509,6 +626,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleMemories(w, r)
+		return
+	}
+
+	if r.URL.Path == "/v1/permissions" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handlePermissions(w, r)
+		return
+	}
+
+	if permissionID, ok := parsePermissionGrantPath(r.URL.Path); ok {
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handlePermissionForget(w, r, permissionID)
 		return
 	}
 
@@ -611,6 +746,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"runs",
 		"events",
 		"permissions",
+		"permission_grants",
 		"tools",
 		"status",
 	}
@@ -795,6 +931,28 @@ func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
 		catalog.Memories = catalog.Memories[:limit]
 	}
 	writeJSON(w, http.StatusOK, catalog)
+}
+
+func (s *Server) handlePermissions(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, PermissionCatalogResponse{Permissions: s.permissionGrants()})
+}
+
+func (s *Server) handlePermissionForget(w http.ResponseWriter, _ *http.Request, id string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "permission id is required", false)
+		return
+	}
+	grant, ok, err := s.forgetPermissionGrant(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "permission grant not found", false)
+		return
+	}
+	writeJSON(w, http.StatusOK, PermissionForgetResponse{Permission: grant})
 }
 
 func (s *Server) handleMemoryForget(w http.ResponseWriter, r *http.Request, id string) {
@@ -1163,6 +1321,19 @@ func parseMemoryPath(path string) (string, bool) {
 	return id, err == nil && id != ""
 }
 
+func parsePermissionGrantPath(path string) (string, bool) {
+	const prefix = "/v1/permissions/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	raw := strings.TrimPrefix(path, prefix)
+	if raw == "" || strings.Contains(raw, "/") {
+		return "", false
+	}
+	id, err := url.PathUnescape(raw)
+	return id, err == nil && id != ""
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1251,19 +1422,25 @@ func (s *Server) decidePermission(ctx context.Context, run *run, req glue.Permis
 	defer timer.Stop()
 	select {
 	case decision := <-pending.done:
-		s.rememberPermission(run, req, decision)
+		if err := s.rememberPermission(run, req, decision); err != nil {
+			return glue.PermissionDecision{}, err
+		}
 		return decision, nil
 	case <-timer.C:
 		if !run.expirePermission(permissionID, pending) {
 			decision := <-pending.done
-			s.rememberPermission(run, req, decision)
+			if err := s.rememberPermission(run, req, decision); err != nil {
+				return glue.PermissionDecision{}, err
+			}
 			return decision, nil
 		}
 		return glue.PermissionDecision{Allow: false, Reason: "permission denied: daemon permission request timed out"}, nil
 	case <-ctx.Done():
 		if !run.expirePermission(permissionID, pending) {
 			decision := <-pending.done
-			s.rememberPermission(run, req, decision)
+			if err := s.rememberPermission(run, req, decision); err != nil {
+				return glue.PermissionDecision{}, err
+			}
 			return decision, nil
 		}
 		return glue.PermissionDecision{}, ctx.Err()
@@ -1325,19 +1502,168 @@ func (s *Server) cachedPermission(run *run, req glue.PermissionRequest) (glue.Pe
 	return glue.PermissionDecision{}, false
 }
 
-func (s *Server) rememberPermission(run *run, req glue.PermissionRequest, decision glue.PermissionDecision) {
+func (s *Server) rememberPermission(run *run, req glue.PermissionRequest, decision glue.PermissionDecision) error {
 	if !decision.Allow {
-		return
+		return nil
 	}
 	s.permMu.Lock()
 	defer s.permMu.Unlock()
 	switch decision.RememberFor {
 	case glue.RememberSession:
-		s.sessionAllows[permissionSessionKey(run, req)] = struct{}{}
+		grant := permissionGrantFor(run, req, decision.RememberFor, s.now())
+		s.sessionAllows[permissionSessionKey(run, req)] = grant
 	case glue.RememberSessionTarget:
-		s.targetAllows[permissionTargetKey(run, req)] = struct{}{}
+		grant := permissionGrantFor(run, req, decision.RememberFor, s.now())
+		s.targetAllows[permissionTargetKey(run, req)] = grant
 	case glue.RememberForever:
-		s.foreverAllows[permissionForeverKey(run, req)] = struct{}{}
+		grant := permissionGrantFor(run, req, decision.RememberFor, s.now())
+		s.foreverAllows[permissionForeverKey(run, req)] = grant
+	default:
+		return nil
+	}
+	return s.persistPermissionGrantsLocked()
+}
+
+func (s *Server) loadPermissionGrants(grants []PermissionGrant) {
+	s.permMu.Lock()
+	defer s.permMu.Unlock()
+	for _, grant := range grants {
+		grant = normalizePermissionGrant(grant)
+		if grant.ID == "" || grant.Owner == "" || grant.Tool == "" || grant.Action == "" {
+			continue
+		}
+		switch grant.Scope {
+		case "session":
+			if grant.SessionID != "" {
+				s.sessionAllows[permissionSessionKeyFromGrant(grant)] = grant
+			}
+		case "session_target":
+			if grant.SessionID != "" {
+				s.targetAllows[permissionTargetKeyFromGrant(grant)] = grant
+			}
+		case "forever":
+			s.foreverAllows[permissionForeverKeyFromGrant(grant)] = grant
+		}
+	}
+}
+
+func (s *Server) permissionGrants() []PermissionGrant {
+	s.permMu.Lock()
+	defer s.permMu.Unlock()
+	return s.permissionGrantsLocked()
+}
+
+func (s *Server) permissionGrantsLocked() []PermissionGrant {
+	out := make([]PermissionGrant, 0, len(s.sessionAllows)+len(s.targetAllows)+len(s.foreverAllows))
+	for _, grant := range s.sessionAllows {
+		out = append(out, grant)
+	}
+	for _, grant := range s.targetAllows {
+		out = append(out, grant)
+	}
+	for _, grant := range s.foreverAllows {
+		out = append(out, grant)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func (s *Server) forgetPermissionGrant(id string) (PermissionGrant, bool, error) {
+	s.permMu.Lock()
+	defer s.permMu.Unlock()
+	for key, grant := range s.sessionAllows {
+		if grant.ID == id {
+			delete(s.sessionAllows, key)
+			return grant, true, s.persistPermissionGrantsLocked()
+		}
+	}
+	for key, grant := range s.targetAllows {
+		if grant.ID == id {
+			delete(s.targetAllows, key)
+			return grant, true, s.persistPermissionGrantsLocked()
+		}
+	}
+	for key, grant := range s.foreverAllows {
+		if grant.ID == id {
+			delete(s.foreverAllows, key)
+			return grant, true, s.persistPermissionGrantsLocked()
+		}
+	}
+	return PermissionGrant{}, false, nil
+}
+
+func (s *Server) persistPermissionGrantsLocked() error {
+	if s.permissionStore == nil {
+		return nil
+	}
+	return s.permissionStore.SavePermissionGrants(s.permissionGrantsLocked())
+}
+
+func permissionGrantFor(run *run, req glue.PermissionRequest, scope glue.RememberScope, now time.Time) PermissionGrant {
+	grant := PermissionGrant{
+		Scope:     rememberScopeString(scope),
+		Owner:     permissionOwnerKey(run, req),
+		SessionID: strings.TrimSpace(req.SessionID),
+		Tool:      strings.TrimSpace(req.Tool),
+		Action:    strings.TrimSpace(req.Action),
+		Target:    strings.TrimSpace(req.Target),
+		CreatedAt: now.UTC(),
+	}
+	if run != nil {
+		grant.ClientID = strings.TrimSpace(run.clientID)
+		if grant.SessionID == "" {
+			grant.SessionID = strings.TrimSpace(run.sessionID)
+		}
+	}
+	grant.ID = permissionGrantID(grant)
+	return grant
+}
+
+func normalizePermissionGrant(grant PermissionGrant) PermissionGrant {
+	grant.Scope = strings.TrimSpace(grant.Scope)
+	grant.Owner = strings.TrimSpace(grant.Owner)
+	grant.ClientID = strings.TrimSpace(grant.ClientID)
+	grant.SessionID = strings.TrimSpace(grant.SessionID)
+	grant.Tool = strings.TrimSpace(grant.Tool)
+	grant.Action = strings.TrimSpace(grant.Action)
+	grant.Target = strings.TrimSpace(grant.Target)
+	if grant.ID == "" {
+		grant.ID = permissionGrantID(grant)
+	}
+	return grant
+}
+
+func permissionGrantID(grant PermissionGrant) string {
+	var key string
+	switch grant.Scope {
+	case "session":
+		key = grant.Scope + "\x00" + permissionSessionKeyFromGrant(grant)
+	case "session_target":
+		key = grant.Scope + "\x00" + permissionTargetKeyFromGrant(grant)
+	case "forever":
+		key = grant.Scope + "\x00" + permissionForeverKeyFromGrant(grant)
+	default:
+		key = grant.Scope + "\x00" + grant.Owner + "\x00" + grant.SessionID + "\x00" + grant.Tool + "\x00" + grant.Action + "\x00" + grant.Target
+	}
+	sum := sha256.Sum256([]byte(key))
+	return "grant_" + hex.EncodeToString(sum[:8])
+}
+
+func rememberScopeString(scope glue.RememberScope) string {
+	switch scope {
+	case glue.RememberSession:
+		return "session"
+	case glue.RememberSessionTarget:
+		return "session_target"
+	case glue.RememberForever:
+		return "forever"
+	default:
+		return "never"
 	}
 }
 
@@ -1351,6 +1677,18 @@ func permissionTargetKey(run *run, req glue.PermissionRequest) string {
 
 func permissionForeverKey(run *run, req glue.PermissionRequest) string {
 	return permissionOwnerKey(run, req) + "\x00" + req.Tool + "\x00" + req.Action + "\x00" + req.Target
+}
+
+func permissionSessionKeyFromGrant(grant PermissionGrant) string {
+	return grant.Owner + "\x00" + grant.SessionID + "\x00" + grant.Tool + "\x00" + grant.Action
+}
+
+func permissionTargetKeyFromGrant(grant PermissionGrant) string {
+	return permissionSessionKeyFromGrant(grant) + "\x00" + grant.Target
+}
+
+func permissionForeverKeyFromGrant(grant PermissionGrant) string {
+	return grant.Owner + "\x00" + grant.Tool + "\x00" + grant.Action + "\x00" + grant.Target
 }
 
 func permissionOwnerKey(run *run, req glue.PermissionRequest) string {

@@ -1290,6 +1290,9 @@ func doctorPermissionsCheck(settings Settings) doctorCheck {
 		return doctorFail("permissions", "permission policy is invalid", err.Error(), "Use prompt, read_only, or trusted tiers.")
 	}
 	detail := "default=" + settings.Permissions.DefaultTier
+	if settings.Permissions.RememberPath != "" {
+		detail += " remember_path=" + settings.Permissions.RememberPath
+	}
 	keys := sortedStringMapKeys(settings.Permissions.Channels)
 	for _, key := range keys {
 		detail += " " + key + "=" + settings.Permissions.Channels[key]
@@ -1523,6 +1526,9 @@ func writeStatusCoding(w io.Writer, coding statusCoding) {
 
 func writeStatusPermissions(w io.Writer, permissions PermissionSettings) {
 	fmt.Fprintf(w, "permissions: default=%s", permissions.DefaultTier)
+	if permissions.RememberPath != "" {
+		fmt.Fprintf(w, " remember_path=%s", permissions.RememberPath)
+	}
 	keys := sortedStringMapKeys(permissions.Channels)
 	for _, key := range keys {
 		fmt.Fprintf(w, " %s=%s", key, permissions.Channels[key])
@@ -2324,6 +2330,10 @@ Flags:
 		}
 		fmt.Fprintf(stderr, "peggy serve: coding tools enabled for %s\n", workDir)
 	}
+	permissionStore := daemon.NewFilePermissionStore(settings.Permissions.RememberPath)
+	if permissionStore != nil {
+		fmt.Fprintf(stderr, "peggy serve: permission remembers persisted at %s\n", settings.Permissions.RememberPath)
+	}
 
 	token, tokenSource, err := daemon.ResolveToken(*tokenFlag)
 	if err != nil {
@@ -2350,6 +2360,7 @@ Flags:
 		Host:              p,
 		Token:             token,
 		PermissionPolicy:  NewDaemonPermissionPolicy(settings.Permissions),
+		PermissionStore:   permissionStore,
 		PermissionTimeout: *permissionTimeout,
 	})
 	if err != nil {

@@ -16,6 +16,10 @@ not formally follow SemVer until v1.0.
   fresh-setup path covering install, Codex auth, starter workspace,
   minimal dogfood settings, `peggy doctor`, daemon smoke checks,
   recall, and optional Telegram daemon wiring.
+- **Persistent daemon permission grants.** `peggy serve` now persists
+  remembered daemon permission grants to `permissions.remember_path`,
+  and terminal daemon clients can list or revoke them with
+  `glue connect --permissions` and `--forget-permission`.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1423,6 +1424,92 @@ func TestServerPermissionRememberForeverIsClientScoped(t *testing.T) {
 	}
 }
 
+func TestServerPermissionStorePersistsAndRevokes(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "permissions.json")
+
+	var firstExecuted atomic.Int32
+	firstAgent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("first done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&firstExecuted)},
+	})
+	firstSrv := newTestServerWithPermissionStore(t, firstAgent, storePath)
+	firstTS := httptest.NewServer(firstSrv)
+	defer firstTS.Close()
+
+	first := startRunWithClient(t, firstTS.URL, "telegram:123", "telegram:123")
+	firstEvents, err := collectSSE(t, firstTS.URL+first.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, firstTS.URL, first.RunID, permissionID(t, event), "token", `{"allow":true,"remember_for":"forever"}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(eventTypes(firstEvents), "permission_request") || firstExecuted.Load() != 1 {
+		t.Fatalf("first events=%v executed=%d", eventTypes(firstEvents), firstExecuted.Load())
+	}
+
+	catalog := getPermissions(t, firstTS.URL)
+	if len(catalog.Permissions) != 1 {
+		t.Fatalf("permissions = %+v, want one grant", catalog.Permissions)
+	}
+	grant := catalog.Permissions[0]
+	if grant.Scope != "forever" || grant.ClientID != "telegram:123" || grant.Owner != "client:telegram:123" {
+		t.Fatalf("grant = %+v", grant)
+	}
+
+	var secondExecuted atomic.Int32
+	secondAgent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("second done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&secondExecuted)},
+	})
+	secondSrv := newTestServerWithPermissionStore(t, secondAgent, storePath)
+	secondTS := httptest.NewServer(secondSrv)
+	defer secondTS.Close()
+
+	second := startRunWithClient(t, secondTS.URL, "telegram:123", "telegram:123")
+	secondEvents := getSSE(t, secondTS.URL+second.EventsURL, "token")
+	if secondExecuted.Load() != 1 {
+		t.Fatalf("second executions = %d, want 1", secondExecuted.Load())
+	}
+	if contains(eventTypes(secondEvents), "permission_request") {
+		t.Fatalf("second events = %v, want persisted grant cache hit", eventTypes(secondEvents))
+	}
+
+	forgotten := deletePermission(t, secondTS.URL, grant.ID)
+	if forgotten.Permission.ID != grant.ID {
+		t.Fatalf("forgotten = %+v, want %s", forgotten.Permission, grant.ID)
+	}
+
+	var thirdExecuted atomic.Int32
+	thirdAgent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			toolCallTurn(), textTurn("third done"),
+		}},
+		Tools: []glue.Tool{permissionTool(&thirdExecuted)},
+	})
+	thirdSrv := newTestServerWithPermissionStore(t, thirdAgent, storePath)
+	thirdTS := httptest.NewServer(thirdSrv)
+	defer thirdTS.Close()
+
+	third := startRunWithClient(t, thirdTS.URL, "telegram:123", "telegram:123")
+	thirdEvents, err := collectSSE(t, thirdTS.URL+third.EventsURL, "token", func(event EventEnvelope) {
+		if event.Type == "permission_request" {
+			postDecision(t, thirdTS.URL, third.RunID, permissionID(t, event), "token", `{"allow":true}`)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(eventTypes(thirdEvents), "permission_request") {
+		t.Fatalf("third events = %v, want prompt after revoke", eventTypes(thirdEvents))
+	}
+}
+
 func newTestServer(t *testing.T, host Host) *Server {
 	return newTestServerWithTimeout(t, host, time.Second)
 }
@@ -1437,6 +1524,23 @@ func newTestServerWithPolicy(t *testing.T, host Host, policy PermissionPolicy) *
 		Now:               func() time.Time { return now },
 		NewID:             sequenceIDs(),
 		PermissionTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv
+}
+
+func newTestServerWithPermissionStore(t *testing.T, host Host, path string) *Server {
+	t.Helper()
+	now := time.Date(2026, 5, 23, 20, 46, 0, 0, time.UTC)
+	srv, err := New(Options{
+		Host:              host,
+		Token:             "token",
+		Now:               func() time.Time { return now },
+		NewID:             sequenceIDs(),
+		PermissionTimeout: time.Second,
+		PermissionStore:   NewFilePermissionStore(path),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1651,6 +1755,50 @@ func permissionID(t *testing.T, event EventEnvelope) string {
 func postDecision(t *testing.T, baseURL, runID, permissionID, token, body string) {
 	t.Helper()
 	postDecisionStatus(t, baseURL, runID, permissionID, token, "", body, http.StatusOK)
+}
+
+func getPermissions(t *testing.T, baseURL string) PermissionCatalogResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/permissions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("permissions status = %d, want 200", resp.StatusCode)
+	}
+	var out PermissionCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func deletePermission(t *testing.T, baseURL, id string) PermissionForgetResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, baseURL+"/v1/permissions/"+url.PathEscape(id), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("permission delete status = %d, want 200", resp.StatusCode)
+	}
+	var out PermissionForgetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func postDecisionStatus(t *testing.T, baseURL, runID, permissionID, token, clientID, body string, want int) {

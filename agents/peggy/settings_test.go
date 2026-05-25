@@ -51,6 +51,9 @@ func TestLoadSettings_HappyPathWithDefaults(t *testing.T) {
 	if s.Compaction.KeepRecent != 8 {
 		t.Errorf("keep_recent default = %d", s.Compaction.KeepRecent)
 	}
+	if !strings.HasSuffix(s.Permissions.RememberPath, filepath.Join(".peggy", "permissions.json")) {
+		t.Errorf("permissions.remember_path default = %q", s.Permissions.RememberPath)
+	}
 }
 
 func TestLoadSettings_ContextWorkDir(t *testing.T) {
@@ -66,6 +69,36 @@ func TestLoadSettings_ContextWorkDir(t *testing.T) {
 	}
 	if got := s.Context.WorkDir; got != filepath.Join(home, "workspace") {
 		t.Fatalf("context.work_dir = %q, want expanded path", got)
+	}
+}
+
+func TestLoadSettings_PermissionRememberPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeJSON(t, path, map[string]any{
+		"permissions": map[string]any{"remember_path": "$HOME/peggy-permissions.json"},
+	})
+	s, _, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if got := s.Permissions.RememberPath; got != filepath.Join(home, "peggy-permissions.json") {
+		t.Fatalf("permissions.remember_path = %q, want expanded path", got)
+	}
+}
+
+func TestLoadSettings_PermissionRememberPathDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeJSON(t, path, map[string]any{
+		"permissions": map[string]any{"remember_path": "off"},
+	})
+	s, _, err := LoadSettings(path)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if s.Permissions.RememberPath != "" {
+		t.Fatalf("permissions.remember_path = %q, want disabled", s.Permissions.RememberPath)
 	}
 }
 
