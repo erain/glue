@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
 	"github.com/erain/glue"
+	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 
 // Options configures a Store.
@@ -25,6 +25,7 @@ type Options struct {
 }
 
 const defaultTimeout = 5 * time.Second
+const defaultSessionListLimit = 50
 
 // Store implements glue.Store against a SQLite file with FTS5 over
 // message text.
@@ -251,6 +252,67 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// ListSessions implements glue.SessionLister.
+func (s *Store) ListSessions(ctx context.Context, opts glue.ListSessionsOptions) ([]glue.SessionSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite: nil store")
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = defaultSessionListLimit
+	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	prefix := strings.TrimSpace(opts.Prefix)
+	likePrefix := escapeSQLiteLike(prefix) + "%"
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id,
+       s.created_at,
+       s.updated_at,
+       COUNT(m.rowid) AS messages,
+       COALESCE(SUM(CASE WHEN m.role = ? THEN 1 ELSE 0 END), 0) AS user_messages,
+       COALESCE(SUM(CASE WHEN m.role = ? THEN 1 ELSE 0 END), 0) AS assistant_messages
+  FROM sessions s
+  LEFT JOIN messages m ON m.session_id = s.id
+ WHERE (? = '' OR s.id LIKE ? ESCAPE '\')
+ GROUP BY s.id, s.created_at, s.updated_at
+ ORDER BY s.updated_at DESC, s.id ASC
+ LIMIT ? OFFSET ?
+`, string(glue.MessageRoleUser), string(glue.MessageRoleAssistant), prefix, likePrefix, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]glue.SessionSummary, 0, limit)
+	for rows.Next() {
+		var (
+			summary   glue.SessionSummary
+			createdUx int64
+			updatedUx int64
+		)
+		if err := rows.Scan(
+			&summary.ID,
+			&createdUx,
+			&updatedUx,
+			&summary.Messages,
+			&summary.UserMessages,
+			&summary.AssistantMessages,
+		); err != nil {
+			return nil, fmt.Errorf("sqlite: scan session summary: %w", err)
+		}
+		summary.CreatedAt = time.Unix(createdUx, 0).UTC()
+		summary.UpdatedAt = time.Unix(updatedUx, 0).UTC()
+		out = append(out, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // textForFTS concatenates the text content of a message's parts with
 // "\n" separators. Tool calls, tool-call args, image content, and
 // thinking are intentionally excluded from the FTS index — searches
@@ -269,6 +331,15 @@ func textForFTS(parts []glue.ContentPart) string {
 	}
 	return b.String()
 }
+
+func escapeSQLiteLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
+var _ glue.SessionLister = (*Store)(nil)
 
 // DB returns the underlying *sql.DB for tests and future Searcher
 // implementations that need direct query access. Public consumers

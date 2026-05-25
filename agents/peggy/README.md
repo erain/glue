@@ -119,6 +119,7 @@ glue connect --skills
 glue connect --skill daily_plan --id cli:daily-plan
 glue connect --prompt "Dogfood smoke marker: Peggy daemon is reachable." --id cli:smoke
 glue connect --recall "Dogfood smoke marker"
+peggy sessions --config ~/.config/peggy/settings.json --prefix cli:
 ```
 
 To reach Peggy from your phone, merge a Telegram channel block into
@@ -252,6 +253,7 @@ peggy skill [flags] <name>
 peggy skills [flags]
 peggy roles [flags]
 peggy memories [flags]
+peggy sessions [flags]
 peggy recall [flags] <query>
 peggy doctor [flags]
 peggy mcp prompt [flags]
@@ -727,6 +729,18 @@ peggy memories forget --config ~/.config/peggy/settings.json mem_123
 Each memory has a stable `id` in human and JSON output. `forget` only
 removes curated `remember` records from the dedicated memory session; it
 does not delete ordinary conversation history.
+
+List recent stored sessions without starting a provider:
+
+```sh
+peggy sessions --config ~/.config/peggy/settings.json
+peggy sessions --config ~/.config/peggy/settings.json --prefix telegram:
+peggy sessions --config ~/.config/peggy/settings.json --json --limit 20
+```
+
+Session listings are ordered by recent activity and include stable JSON
+fields for the session id, created/updated timestamps, and user,
+assistant, and total message counts.
 
 When Peggy is already running as a daemon, connected clients can list
 the same curated memory catalog:

@@ -611,6 +611,92 @@ func TestRunMemoriesRejectsNegativeLimit(t *testing.T) {
 	}
 }
 
+func TestRunSessionsListsSQLiteHistory(t *testing.T) {
+	cfgPath := seedRunnerSessionStore(t)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"sessions", "--config", cfgPath, "--prefix", "telegram:", "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	var sessions []glue.SessionSummary
+	if err := json.Unmarshal(out.Bytes(), &sessions); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, out.String())
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %+v, want one telegram session", sessions)
+	}
+	got := sessions[0]
+	if got.ID != "telegram:123" || got.Messages != 3 || got.UserMessages != 2 || got.AssistantMessages != 1 {
+		t.Fatalf("session summary = %+v", got)
+	}
+}
+
+func TestRunSessionsNoResults(t *testing.T) {
+	cfgPath := seedRunnerSessionStore(t)
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"sessions", "--config", cfgPath, "--prefix", "missing:"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if got, want := out.String(), "No sessions found.\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func seedRunnerSessionStore(t *testing.T) string {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "peggy.db")
+	store, err := sqlitestore.Open(sqlitestore.Options{Path: dbPath})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
+	states := map[string]glue.SessionState{
+		"telegram:123": {
+			ID:        "telegram:123",
+			CreatedAt: base,
+			UpdatedAt: base.Add(3 * time.Hour),
+			Messages: []glue.Message{
+				runnerTextMessage(glue.MessageRoleUser, "hello from telegram"),
+				runnerTextMessage(glue.MessageRoleAssistant, "hello back"),
+				runnerTextMessage(glue.MessageRoleUser, "second prompt"),
+			},
+		},
+		"cli:dev": {
+			ID:        "cli:dev",
+			CreatedAt: base.Add(time.Hour),
+			UpdatedAt: base.Add(2 * time.Hour),
+			Messages: []glue.Message{
+				runnerTextMessage(glue.MessageRoleUser, "cli prompt"),
+				runnerTextMessage(glue.MessageRoleAssistant, "cli answer"),
+			},
+		},
+	}
+	for id, state := range states {
+		if err := store.Save(context.Background(), id, state); err != nil {
+			t.Fatalf("save %s: %v", id, err)
+		}
+	}
+	return writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "sqlite",
+			"path": dbPath,
+		},
+	})
+}
+
+func runnerTextMessage(role glue.MessageRole, body string) glue.Message {
+	return glue.Message{
+		Role:    role,
+		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: body}},
+	}
+}
+
 func seedRunnerMemories(t *testing.T) string {
 	t.Helper()
 	storePath := filepath.Join(t.TempDir(), "sessions")

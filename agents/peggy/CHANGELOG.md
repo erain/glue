@@ -24,6 +24,9 @@ not formally follow SemVer until v1.0.
   an immediate progress message, split long final replies into multiple
   Telegram messages instead of truncating them, and expose `/help` for
   daemon chat commands.
+- **Session history browser.** `peggy sessions` lists recent stored
+  sessions without starting a provider, with prefix filtering and JSON
+  output for scriptable local history inspection.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening
