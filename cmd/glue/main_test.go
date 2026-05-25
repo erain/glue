@@ -1643,6 +1643,115 @@ func TestRunCLIConnectRecallValidation(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectListsMemories(t *testing.T) {
+	var sawMemories bool
+	var sawRun bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/memories":
+			sawMemories = true
+			if r.Method != http.MethodGet {
+				t.Fatalf("memories method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("memories auth = %q", auth)
+			}
+			if got := r.URL.Query().Get("limit"); got != "1" {
+				t.Fatalf("limit query = %q, want 1", got)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.MemoryCatalogResponse{Memories: []daemon.MemoryEntry{{
+				ID:        "mem_1",
+				Content:   "User prefers terse responses.",
+				Tags:      []string{"preference"},
+				Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--memories",
+		"--memory-limit", "1",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawMemories || sawRun {
+		t.Fatalf("sawMemories=%v sawRun=%v", sawMemories, sawRun)
+	}
+	for _, want := range []string{
+		"mem_1",
+		"timestamp: 2026-05-24T12:00:00Z",
+		"content: User prefers terse responses.",
+		"tags: preference",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectListsMemoriesJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/memories" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemon.MemoryCatalogResponse{Memories: []daemon.MemoryEntry{{
+			ID:      "mem_1",
+			Content: "User prefers terse responses.",
+		}}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--memories-json",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	var catalog daemon.MemoryCatalogResponse
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if len(catalog.Memories) != 1 || catalog.Memories[0].ID != "mem_1" {
+		t.Fatalf("catalog = %+v", catalog)
+	}
+}
+
+func TestRunCLIConnectMemoriesValidation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--memories",
+		"--memory-limit", "-1",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want memory limit validation failure")
+	}
+	if !strings.Contains(stderr.String(), "--memory-limit must be non-negative") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunCLIConnectShowsStatus(t *testing.T) {
 	var sawStatus bool
 	var sawRun bool

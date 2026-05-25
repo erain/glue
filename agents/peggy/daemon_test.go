@@ -411,6 +411,49 @@ func TestPeggyDaemonRecallFileStoreExplainsSearchRequirement(t *testing.T) {
 	}
 }
 
+func TestPeggyDaemonListsMemories(t *testing.T) {
+	p, err := New(Options{
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	if _, err := p.AddMemory(context.Background(), "User's Australian Shepherd is named Inkblot.", []string{"pet"}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := p.AddMemory(context.Background(), "User prefers terse responses.", []string{"preference"}); err != nil {
+		t.Fatalf("AddMemory 2: %v", err)
+	}
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var catalog daemon.MemoryCatalogResponse
+	getPeggyDaemonJSON(t, ts.URL+"/v1/memories?limit=1", &catalog)
+	if len(catalog.Memories) != 1 || catalog.Memories[0].ID == "" || !strings.Contains(catalog.Memories[0].Content, "terse") {
+		t.Fatalf("memories = %+v", catalog.Memories)
+	}
+	if len(catalog.Memories[0].Tags) != 1 || catalog.Memories[0].Tags[0] != "preference" {
+		t.Fatalf("tags = %+v", catalog.Memories[0].Tags)
+	}
+
+	var status struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/status", &status)
+	if !containsString(status.Capabilities, "memories") {
+		t.Fatalf("capabilities = %v, missing memories", status.Capabilities)
+	}
+}
+
 type startRunResponse struct {
 	RunID     string `json:"run_id"`
 	EventsURL string `json:"events_url"`

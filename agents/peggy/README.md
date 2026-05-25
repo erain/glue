@@ -26,6 +26,7 @@ A long-running personal-assistant agent built on the
 - starter workspace scaffolding via `peggy init`
 - local readiness status for config, identity, memory, context,
   coding, and MCP setup
+- daemon-readable curated memory catalogs via `glue connect --memories`
 - four model backends: Codex (ChatGPT subscription), Gemini,
   OpenRouter, NVIDIA build
 
@@ -296,6 +297,7 @@ session history and memory store.
 ```sh
 peggy serve --config ~/.config/peggy/settings.json
 glue connect --inspect
+glue connect --memories
 glue connect --skills
 glue connect --roles
 glue connect --skill triage --arg issue=GLUE-123 --id cli:triage
@@ -326,9 +328,10 @@ bearer token. `glue connect --inspect` includes status, tools,
 daemon-advertised skills, daemon-advertised roles, and any
 daemon-advertised MCP resource/prompt catalogs. Use `--skills-json`,
 `--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
-`--mcp-read-json`, `--mcp-prompt-json`, or `--recall-json` when another
-client needs the payload as data. Add `--usage` to prompt or skill-mode
-`glue connect` when you want provider-reported token usage on stderr. Add
+`--mcp-read-json`, `--mcp-prompt-json`, `--recall-json`, or
+`--memories-json` when another client needs the payload as data. Add
+`--usage` to prompt or skill-mode `glue connect` when you want
+provider-reported token usage on stderr. Add
 `--usage-input-price`, `--usage-output-price`, and optional cache price
 flags to estimate USD cost from prices you supply. Stop the daemon with
 SIGINT/SIGTERM.
@@ -609,6 +612,15 @@ peggy memories forget --config ~/.config/peggy/settings.json mem_123
 Each memory has a stable `id` in human and JSON output. `forget` only
 removes curated `remember` records from the dedicated memory session; it
 does not delete ordinary conversation history.
+
+When Peggy is already running as a daemon, connected clients can list
+the same curated memory catalog:
+
+```sh
+glue connect --memories
+glue connect --memories-json
+glue connect --memories --memory-limit 20
+```
 
 Search stored sessions and memories directly when using a SQLite store:
 

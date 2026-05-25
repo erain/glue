@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,12 @@ type MCPPromptRendererHost interface {
 // history without starting a run.
 type RecallHost interface {
 	RecallSearch(context.Context, RecallRequest) (RecallResponse, error)
+}
+
+// MemoryCatalogHost is optionally implemented by hosts that can expose curated
+// memory records without starting a run.
+type MemoryCatalogHost interface {
+	MemoryCatalog(context.Context, MemoryCatalogRequest) (MemoryCatalogResponse, error)
 }
 
 // SkillCatalogEntry describes one reusable skill advertised by a host.
@@ -184,6 +191,24 @@ type RecallHit struct {
 // RecallResponse contains stored session search hits.
 type RecallResponse struct {
 	Hits []RecallHit `json:"hits"`
+}
+
+// MemoryCatalogRequest configures a memory catalog request.
+type MemoryCatalogRequest struct {
+	Limit int
+}
+
+// MemoryEntry describes one curated host memory.
+type MemoryEntry struct {
+	ID        string    `json:"id"`
+	Content   string    `json:"content"`
+	Tags      []string  `json:"tags,omitempty"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
+}
+
+// MemoryCatalogResponse contains curated host memories.
+type MemoryCatalogResponse struct {
+	Memories []MemoryEntry `json:"memories"`
 }
 
 // Options configures [New].
@@ -462,6 +487,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/memories" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleMemories(w, r)
+		return
+	}
+
 	if r.URL.Path == "/v1/mcp/resources" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -575,6 +609,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	if _, ok := s.host.(RecallHost); ok {
 		capabilities = append(capabilities, "recall")
+	}
+	if _, ok := s.host.(MemoryCatalogHost); ok {
+		capabilities = append(capabilities, "memories")
 	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		OK:           true,
@@ -705,6 +742,31 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		hits.Hits = []RecallHit{}
 	}
 	writeJSON(w, http.StatusOK, RecallResponse{Hits: hits.Hits})
+}
+
+func (s *Server) handleMemories(w http.ResponseWriter, r *http.Request) {
+	limit, err := nonNegativeIntQuery(r, "limit")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), false)
+		return
+	}
+	host, ok := s.host.(MemoryCatalogHost)
+	if !ok {
+		writeJSON(w, http.StatusOK, MemoryCatalogResponse{Memories: []MemoryEntry{}})
+		return
+	}
+	catalog, err := host.MemoryCatalog(r.Context(), MemoryCatalogRequest{Limit: limit})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if catalog.Memories == nil {
+		catalog.Memories = []MemoryEntry{}
+	}
+	if limit > 0 && len(catalog.Memories) > limit {
+		catalog.Memories = catalog.Memories[:limit]
+	}
+	writeJSON(w, http.StatusOK, catalog)
 }
 
 func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
@@ -1049,6 +1111,18 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, code, message string, retryable bool) {
 	writeJSON(w, status, errorResponse{Error: protocolError{Code: code, Message: message, Retryable: retryable}})
+}
+
+func nonNegativeIntQuery(r *http.Request, name string) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
+	}
+	return n, nil
 }
 
 func writeSSE(w http.ResponseWriter, event EventEnvelope) error {

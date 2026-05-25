@@ -145,7 +145,7 @@ Response:
   "version": 1,
   "active_runs": 0,
   "tools_count": 4,
-  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "recall", "status"]
+  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "memories", "recall", "status"]
 }
 ```
 
@@ -260,6 +260,33 @@ Response:
 
 Hosts that do not expose recall return `404`. A host that exposes
 recall advertises the `recall` capability in `/v1/status`.
+
+Daemon clients can inspect curated host memories without starting a
+run:
+
+```http
+GET /v1/memories?limit=20
+Authorization: Bearer <token>
+```
+
+Response:
+
+```json
+{
+  "memories": [
+    {
+      "id": "mem_1779638400000000000_ab12cd34",
+      "content": "The user prefers terse responses.",
+      "tags": ["preference"],
+      "timestamp": "2026-05-24T12:00:00Z"
+    }
+  ]
+}
+```
+
+Hosts that do not expose memories return an empty `memories` array. A
+host that exposes memories advertises the `memories` capability in
+`/v1/status`.
 
 ### 5. Runs and sessions
 

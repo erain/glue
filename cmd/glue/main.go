@@ -407,6 +407,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	recallJSON := flags.Bool("recall-json", false, "print --recall output as JSON")
 	recallMemories := flags.Bool("recall-memories", false, "restrict --recall to curated memories")
 	recallLimit := flags.Int("recall-limit", 0, "maximum recall hits; 0 uses daemon default")
+	showMemories := flags.Bool("memories", false, "list daemon memories and exit without starting a run")
+	memoriesJSON := flags.Bool("memories-json", false, "print --memories output as JSON")
+	memoryLimit := flags.Int("memory-limit", 0, "maximum memories to return; 0 means no limit")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
 	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
@@ -453,15 +456,18 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *recallJSON && strings.TrimSpace(*recallQuery) == "" && flags.NArg() == 1 {
 		*recallQuery = flags.Arg(0)
 	}
+	if *memoriesJSON {
+		*showMemories = true
+	}
 	showRecall := strings.TrimSpace(*recallQuery) != "" || *recallJSON
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --status, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
 		return errors.New("missing required --prompt or --skill")
@@ -515,6 +521,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if showRecall {
 		return runConnectRecall(ctx, cfg, *recallQuery, *recallMemories, *recallLimit, *recallJSON, stdout, client)
+	}
+	if *showMemories {
+		return runConnectMemories(ctx, cfg, *memoryLimit, *memoriesJSON, stdout, client)
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
@@ -728,6 +737,23 @@ func runConnectRecall(ctx context.Context, cfg connectConfig, query string, memo
 	return nil
 }
 
+func runConnectMemories(ctx context.Context, cfg connectConfig, limit int, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	if limit < 0 {
+		return errors.New("--memory-limit must be non-negative")
+	}
+	catalog, err := fetchDaemonMemories(ctx, cfg, limit, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(catalog)
+	}
+	writeDaemonMemories(stdout, catalog.Memories)
+	return nil
+}
+
 func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
 	status, err := fetchDaemonStatus(ctx, cfg, client)
 	if err != nil {
@@ -919,6 +945,36 @@ func fetchDaemonRoles(ctx context.Context, cfg connectConfig, client httpDoer) (
 	}
 	if catalog.Roles == nil {
 		catalog.Roles = []daemon.RoleCatalogEntry{}
+	}
+	return catalog, nil
+}
+
+func fetchDaemonMemories(ctx context.Context, cfg connectConfig, limit int, client httpDoer) (daemon.MemoryCatalogResponse, error) {
+	endpoint := cfg.BaseURL + "/v1/memories"
+	if limit > 0 {
+		values := url.Values{}
+		values.Set("limit", fmt.Sprint(limit))
+		endpoint += "?" + values.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return daemon.MemoryCatalogResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemon.MemoryCatalogResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.MemoryCatalogResponse{}, fmt.Errorf("daemon memories: %s", httpStatusError(resp))
+	}
+	var catalog daemon.MemoryCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return daemon.MemoryCatalogResponse{}, err
+	}
+	if catalog.Memories == nil {
+		catalog.Memories = []daemon.MemoryEntry{}
 	}
 	return catalog, nil
 }
@@ -1125,6 +1181,30 @@ func writeDaemonRoleCatalogIndented(w io.Writer, roles []daemon.RoleCatalogEntry
 		}
 		if role.Model != "" {
 			fmt.Fprintf(w, "%s  model: %s\n", indent, role.Model)
+		}
+	}
+}
+
+func writeDaemonMemories(w io.Writer, memories []daemon.MemoryEntry) {
+	if len(memories) == 0 {
+		fmt.Fprintln(w, "No daemon memories reported.")
+		return
+	}
+	for i, memory := range memories {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		timestamp := ""
+		if !memory.Timestamp.IsZero() {
+			timestamp = memory.Timestamp.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%d. %s\n", i+1, memory.ID)
+		if timestamp != "" {
+			fmt.Fprintf(w, "  timestamp: %s\n", timestamp)
+		}
+		fmt.Fprintf(w, "  content: %s\n", oneLine(memory.Content))
+		if len(memory.Tags) > 0 {
+			fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
 		}
 	}
 }
@@ -1731,6 +1811,7 @@ func printUsage(w io.Writer) {
   glue connect --mcp-read --server <name> --uri <uri> [--mcp-read-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-prompt --server <name> --name <prompt> [--arg key=value] [--mcp-prompt-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --recall <query> [--recall-json] [--recall-memories] [--recall-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --memories [--memories-json] [--memory-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
@@ -1789,6 +1870,11 @@ Flags:
              Connect --recall mode: search only curated memories.
   --recall-limit
              Connect --recall mode: maximum hits; 0 uses daemon default.
+  --memories Connect mode: list daemon memories and exit without starting a run.
+  --memories-json
+             Connect --memories mode: print JSON.
+  --memory-limit
+             Connect --memories mode: maximum memories; 0 means no limit.
   --server   MCP server name for --mcp-read or --mcp-prompt.
   --uri      MCP resource URI for --mcp-read.
   --name     MCP prompt name for --mcp-prompt.
