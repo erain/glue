@@ -686,6 +686,11 @@ allowlist and inline permission buttons:
 go run ./agents/peggy/cmd/peggy-telegram --daemon
 ```
 
+In daemon-client mode, allowlisted Telegram chats can also use
+`/memories`, `/recall <query>`, `/recall_memories <query>`, and
+`/forget_memory <id>` for memory inspection, search, and correction
+without starting a model run.
+
 Peggy can assign permission tiers by daemon client/channel in
 `settings.json`. The default remains `prompt`; `read_only` denies
 side-effecting tools before any client prompt, and `trusted` allows

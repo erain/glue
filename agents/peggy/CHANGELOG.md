@@ -66,6 +66,10 @@ not formally follow SemVer until v1.0.
   removed record as JSON.
 - **Inspect memory panel.** `glue connect --inspect` now includes
   daemon-advertised memories, with `--memory-limit` to cap the section.
+- **Telegram daemon memory commands.** In daemon-client mode,
+  allowlisted Telegram chats can use `/memories`, `/recall`,
+  `/recall_memories`, and `/forget_memory` to list, search, and delete
+  curated daemon memory without starting a model run.
 
 ## v0.4.0 — 2026-05-24
 

@@ -67,6 +67,17 @@ peggy-telegram --daemon
 `GLUE_DAEMON_TOKEN`. Telegram still enforces `allow_chats` before any
 daemon request is sent.
 
+Daemon-client mode also supports memory commands from allowlisted
+chats without starting a model run:
+
+```text
+/memories
+/memories 20
+/recall Australian Shepherd
+/recall_memories preference
+/forget_memory mem_123
+```
+
 You can also put daemon settings under `channels.telegram.daemon`:
 
 ```json
@@ -219,6 +230,8 @@ binary allowlist, overwrite policy, timeouts, and output limits.
   session transcript / sqlite store.
 - Inline-keyboard permission prompts for side-effecting coding tools
   in allowlisted chats.
+- Daemon-client memory commands for listing, recall search,
+  memories-only recall, and curated-memory deletion.
 - Optional Peggy permission tiers for prompt/read-only/trusted channel
   behavior.
 
