@@ -163,6 +163,7 @@ peggy skill [flags] <name>
 peggy skills [flags]
 peggy roles [flags]
 peggy memories [flags]
+peggy recall [flags] <query>
 peggy mcp prompt [flags]
 peggy mcp prompts [flags]
 peggy mcp read [flags]
@@ -607,6 +608,18 @@ peggy memories forget --config ~/.config/peggy/settings.json mem_123
 Each memory has a stable `id` in human and JSON output. `forget` only
 removes curated `remember` records from the dedicated memory session; it
 does not delete ordinary conversation history.
+
+Search stored sessions and memories directly when using a SQLite store:
+
+```sh
+peggy recall --config ~/.config/peggy/settings.json "Australian Shepherd"
+peggy recall --config ~/.config/peggy/settings.json --memories "preference"
+peggy recall --config ~/.config/peggy/settings.json --json "project"
+```
+
+`peggy recall` uses the configured store only; it does not start a
+provider. File-backed stores do not support search, so use the default
+SQLite store for recall.
 
 ## What Peggy supports today
 

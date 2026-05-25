@@ -50,6 +50,9 @@ not formally follow SemVer until v1.0.
   `peggy memories forget <id>` removes one memory from the dedicated
   `__memories__` session without touching ordinary conversation
   history.
+- **Recall search command.** `peggy recall <query>` searches the
+  configured SQLite store without starting a provider, with
+  memories-only, limit, and JSON modes.
 
 ## v0.4.0 — 2026-05-24
 
