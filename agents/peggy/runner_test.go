@@ -261,6 +261,124 @@ func TestRunStatusJSON(t *testing.T) {
 	}
 }
 
+func TestRunInitCreatesStarterWorkspace(t *testing.T) {
+	workDir := t.TempDir()
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"init", "--workdir", workDir}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	for _, rel := range []string{
+		"AGENTS.md",
+		filepath.Join("roles", "reviewer.md"),
+		filepath.Join("roles", "operator.md"),
+		filepath.Join(".agents", "skills", "triage", "SKILL.md"),
+		filepath.Join(".agents", "skills", "daily_plan", "SKILL.md"),
+		filepath.Join(".agents", "skills", "implementation_plan", "SKILL.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(workDir, rel)); err != nil {
+			t.Fatalf("%s missing: %v", rel, err)
+		}
+	}
+	if !strings.Contains(out.String(), "created AGENTS.md") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+
+	skills, err := loadSkillCatalog(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, err := loadRoleCatalog(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 3 || len(roles) != 2 {
+		t.Fatalf("skills=%+v roles=%+v", skills, roles)
+	}
+
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"context": map[string]any{"work_dir": workDir},
+	})
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"skills", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("skills exit = %d stderr=%q", code, errOut.String())
+	}
+	var skillCatalog []skillCatalogEntry
+	if err := json.Unmarshal(out.Bytes(), &skillCatalog); err != nil {
+		t.Fatalf("decode skills: %v\n%s", err, out.String())
+	}
+	haveSkills := map[string]bool{}
+	for _, entry := range skillCatalog {
+		haveSkills[entry.Name] = true
+	}
+	for _, want := range []string{"daily_plan", "implementation_plan", "triage"} {
+		if !haveSkills[want] {
+			t.Fatalf("skill catalog = %+v, missing %q", skillCatalog, want)
+		}
+	}
+	if len(skillCatalog) != 3 {
+		t.Fatalf("skill catalog = %+v", skillCatalog)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"roles", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("roles exit = %d stderr=%q", code, errOut.String())
+	}
+	var roleCatalog []roleCatalogEntry
+	if err := json.Unmarshal(out.Bytes(), &roleCatalog); err != nil {
+		t.Fatalf("decode roles: %v\n%s", err, out.String())
+	}
+	haveRoles := map[string]bool{}
+	for _, entry := range roleCatalog {
+		haveRoles[entry.Name] = true
+	}
+	for _, want := range []string{"operator", "reviewer"} {
+		if !haveRoles[want] {
+			t.Fatalf("role catalog = %+v, missing %q", roleCatalog, want)
+		}
+	}
+	if len(roleCatalog) != 2 {
+		t.Fatalf("role catalog = %+v", roleCatalog)
+	}
+}
+
+func TestRunInitSkipsExistingAndForceOverwrites(t *testing.T) {
+	workDir := t.TempDir()
+	agentsPath := filepath.Join(workDir, "AGENTS.md")
+	if err := os.WriteFile(agentsPath, []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"init", "--workdir", workDir}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if got := readFileString(t, agentsPath); got != "custom" {
+		t.Fatalf("AGENTS.md = %q, want custom", got)
+	}
+	if !strings.Contains(out.String(), "skipped AGENTS.md") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	code = Run(context.Background(), []string{"init", "--workdir", workDir, "--force"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("force exit = %d stderr=%q", code, errOut.String())
+	}
+	if got := readFileString(t, agentsPath); got == "custom" || !strings.Contains(got, "Peggy Workspace") {
+		t.Fatalf("AGENTS.md after force = %q", got)
+	}
+	if !strings.Contains(out.String(), "wrote AGENTS.md") {
+		t.Fatalf("force stdout = %q", out.String())
+	}
+}
+
 func TestRunSkillsListsWorkspaceSkills(t *testing.T) {
 	t.Setenv(EnvConfigPath, "")
 	t.Setenv(EnvSoulPath, "")
