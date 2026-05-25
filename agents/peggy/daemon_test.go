@@ -3,6 +3,7 @@ package peggy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
 	filestore "github.com/erain/glue/stores/file"
+	sqlitestore "github.com/erain/glue/stores/sqlite"
 )
 
 func TestPeggyDaemonCodingPermissionViaDaemon(t *testing.T) {
@@ -315,6 +317,97 @@ func TestPeggyDaemonReadsMCPResourceAndRendersPrompt(t *testing.T) {
 	postPeggyDaemonJSON(t, ts.URL+"/v1/mcp/prompts/get", `{"server":"briefs","name":"daily_brief","arguments":{"topic":"Go"}}`, &rendered)
 	if rendered.Server != "briefs" || rendered.Name != "daily_brief" || len(rendered.Messages) != 1 || !strings.Contains(string(rendered.Messages[0].Content), "Brief me on Go.") {
 		t.Fatalf("rendered = %+v", rendered)
+	}
+}
+
+func TestPeggyDaemonRecallSearchesSQLite(t *testing.T) {
+	store, err := sqlitestore.Open(sqlitestore.Options{Path: filepath.Join(t.TempDir(), "peggy.db")})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	p, err := New(Options{
+		Provider: &fakeProvider{text: "Australian context saved."},
+		Store:    store,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	if _, err := p.AddMemory(context.Background(), "User's Australian Shepherd is named Inkblot.", []string{"pet"}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := p.Prompt(context.Background(), "casual", "Australian project note", nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	var recall daemon.RecallResponse
+	postPeggyDaemonJSON(t, ts.URL+"/v1/recall", `{"query":"Australian","limit":1,"memories_only":true}`, &recall)
+	if len(recall.Hits) != 1 || recall.Hits[0].SessionID != MemoriesSessionID || !strings.Contains(recall.Hits[0].Snippet, "Australian") {
+		t.Fatalf("recall = %+v", recall.Hits)
+	}
+
+	var status struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/status", &status)
+	if !containsString(status.Capabilities, "recall") {
+		t.Fatalf("capabilities = %v, missing recall", status.Capabilities)
+	}
+}
+
+func TestPeggyDaemonRecallFileStoreExplainsSearchRequirement(t *testing.T) {
+	p, err := New(Options{
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/recall", strings.NewReader(`{"query":"anything"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body.Error.Message, "use sqlite store") {
+		t.Fatalf("error = %+v", body.Error)
 	}
 }
 

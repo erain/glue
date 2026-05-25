@@ -403,6 +403,10 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	mcpServer := flags.String("server", "", "MCP server name for --mcp-read or --mcp-prompt")
 	mcpURI := flags.String("uri", "", "MCP resource URI for --mcp-read")
 	mcpName := flags.String("name", "", "MCP prompt name for --mcp-prompt")
+	recallQuery := flags.String("recall", "", "search daemon recall history and exit without starting a run")
+	recallJSON := flags.Bool("recall-json", false, "print --recall output as JSON")
+	recallMemories := flags.Bool("recall-memories", false, "restrict --recall to curated memories")
+	recallLimit := flags.Int("recall-limit", 0, "maximum recall hits; 0 uses daemon default")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
 	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
@@ -446,14 +450,18 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *inspectJSON {
 		*showInspect = true
 	}
+	if *recallJSON && strings.TrimSpace(*recallQuery) == "" && flags.NArg() == 1 {
+		*recallQuery = flags.Arg(0)
+	}
+	showRecall := strings.TrimSpace(*recallQuery) != "" || *recallJSON
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --status, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
 		return errors.New("missing required --prompt or --skill")
@@ -504,6 +512,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if *showMCPPrompt {
 		return runConnectMCPPrompt(ctx, cfg, *mcpServer, *mcpName, runArgsMap, *mcpPromptJSON, stdout, client)
+	}
+	if showRecall {
+		return runConnectRecall(ctx, cfg, *recallQuery, *recallMemories, *recallLimit, *recallJSON, stdout, client)
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
@@ -689,6 +700,31 @@ func runConnectMCPPrompt(ctx context.Context, cfg connectConfig, server, name st
 		return enc.Encode(rendered)
 	}
 	writeDaemonMCPPrompt(stdout, rendered)
+	return nil
+}
+
+func runConnectRecall(ctx context.Context, cfg connectConfig, query string, memoriesOnly bool, limit int, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return errors.New("--recall query is required")
+	}
+	if limit < 0 {
+		return errors.New("--recall-limit must be non-negative")
+	}
+	recall, err := requestDaemonRecall(ctx, cfg, daemon.RecallRequest{
+		Query:        query,
+		Limit:        limit,
+		MemoriesOnly: memoriesOnly,
+	}, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(recall)
+	}
+	writeDaemonRecallHits(stdout, recall.Hits)
 	return nil
 }
 
@@ -995,6 +1031,35 @@ func requestDaemonMCPPrompt(ctx context.Context, cfg connectConfig, server, name
 	return rendered, nil
 }
 
+func requestDaemonRecall(ctx context.Context, cfg connectConfig, request daemon.RecallRequest, client httpDoer) (daemon.RecallResponse, error) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(request); err != nil {
+		return daemon.RecallResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+"/v1/recall", &body)
+	if err != nil {
+		return daemon.RecallResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemon.RecallResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.RecallResponse{}, fmt.Errorf("daemon recall: %s", httpStatusError(resp))
+	}
+	var recall daemon.RecallResponse
+	if err := json.NewDecoder(resp.Body).Decode(&recall); err != nil {
+		return daemon.RecallResponse{}, err
+	}
+	if recall.Hits == nil {
+		recall.Hits = []daemon.RecallHit{}
+	}
+	return recall, nil
+}
+
 func writeDaemonToolCatalog(w io.Writer, tools []daemonToolCatalogEntry) {
 	writeDaemonToolCatalogIndented(w, tools, "")
 }
@@ -1193,6 +1258,28 @@ func writeDaemonMCPPrompt(w io.Writer, rendered daemon.MCPPromptRenderResponse) 
 			continue
 		}
 		fmt.Fprintf(w, "      content: %s\n", compactJSON(message.Content))
+	}
+}
+
+func writeDaemonRecallHits(w io.Writer, hits []daemon.RecallHit) {
+	if len(hits) == 0 {
+		fmt.Fprintln(w, "No recall hits.")
+		return
+	}
+	for i, hit := range hits {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		timestamp := ""
+		if !hit.Timestamp.IsZero() {
+			timestamp = hit.Timestamp.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%d. %s#%d\n", i+1, hit.SessionID, hit.Index)
+		if timestamp != "" {
+			fmt.Fprintf(w, "  timestamp: %s\n", timestamp)
+		}
+		fmt.Fprintf(w, "  score: %.2f\n", hit.Score)
+		fmt.Fprintf(w, "  snippet: %s\n", oneLine(hit.Snippet))
 	}
 }
 
@@ -1643,11 +1730,12 @@ func printUsage(w io.Writer) {
   glue connect --mcp-prompts [--mcp-prompts-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-read --server <name> --uri <uri> [--mcp-read-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --mcp-prompt --server <name> --name <prompt> [--arg key=value] [--mcp-prompt-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --recall <query> [--recall-json] [--recall-memories] [--recall-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
   serve    Start a local HTTP+SSE daemon for Glue sessions.
-  connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP catalogs.
+  connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
 
 Flags:
   --id       Session id. Defaults to "default".
@@ -1694,6 +1782,13 @@ Flags:
              Connect mode: render one daemon MCP prompt and exit without starting a run.
   --mcp-prompt-json
              Connect --mcp-prompt mode: print JSON.
+  --recall   Connect mode: search daemon recall history and exit without starting a run.
+  --recall-json
+             Connect --recall mode: print JSON. With no --recall flag, one positional query is accepted.
+  --recall-memories
+             Connect --recall mode: search only curated memories.
+  --recall-limit
+             Connect --recall mode: maximum hits; 0 uses daemon default.
   --server   MCP server name for --mcp-read or --mcp-prompt.
   --uri      MCP resource URI for --mcp-read.
   --name     MCP prompt name for --mcp-prompt.

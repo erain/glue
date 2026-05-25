@@ -258,6 +258,36 @@ func (p *Peggy) RoleCatalog(ctx context.Context) ([]daemon.RoleCatalogEntry, err
 	return out, nil
 }
 
+// RecallSearch implements daemon.RecallHost.
+func (p *Peggy) RecallSearch(ctx context.Context, req daemon.RecallRequest) (daemon.RecallResponse, error) {
+	var opts []RecallOption
+	if req.Limit > 0 {
+		opts = append(opts, WithRecallLimit(req.Limit))
+	}
+	if req.MemoriesOnly {
+		opts = append(opts, WithMemoriesOnly())
+	}
+	hits, err := p.Recall(ctx, req.Query, opts...)
+	if err != nil {
+		if errors.Is(err, glue.ErrSearchNotSupported) {
+			return daemon.RecallResponse{}, errors.New("configured store does not support search; use sqlite store")
+		}
+		return daemon.RecallResponse{}, err
+	}
+	out := make([]daemon.RecallHit, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, daemon.RecallHit{
+			SessionID: hit.SessionID,
+			Index:     hit.Index,
+			Role:      hit.Role,
+			Snippet:   hit.Snippet,
+			Score:     hit.Score,
+			Timestamp: hit.Timestamp,
+		})
+	}
+	return daemon.RecallResponse{Hits: out}, nil
+}
+
 // MCPResourceCatalog implements daemon.MCPResourceCatalogHost.
 func (p *Peggy) MCPResourceCatalog(ctx context.Context) ([]daemon.MCPResourceCatalogEntry, error) {
 	if p == nil || p.mcpManager == nil {

@@ -176,6 +176,21 @@ func (mcpActionHost) MCPRenderPrompt(_ context.Context, req MCPPromptRenderReque
 	}, nil
 }
 
+type recallHost struct {
+	req  RecallRequest
+	hits []RecallHit
+	err  error
+}
+
+func (recallHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (h *recallHost) RecallSearch(_ context.Context, req RecallRequest) (RecallResponse, error) {
+	h.req = req
+	return RecallResponse{Hits: h.hits}, h.err
+}
+
 func TestServerAuthAndHealth(t *testing.T) {
 	srv := newTestServer(t, glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}}))
 	ts := httptest.NewServer(srv)
@@ -557,6 +572,77 @@ func TestServerMCPActionValidation(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("prompt validation status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestServerRecall(t *testing.T) {
+	host := &recallHost{hits: []RecallHit{{
+		SessionID: "default",
+		Index:     3,
+		Role:      glue.MessageRoleAssistant,
+		Snippet:   "User prefers terse responses.",
+		Score:     1.25,
+		Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+	}}}
+	srv := newTestServer(t, host)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/recall", "", `{"query":"terse"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated recall status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/recall", "token", `{"query":"terse","limit":1,"memories_only":true}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("recall status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var recall RecallResponse
+	if err := json.NewDecoder(resp.Body).Decode(&recall); err != nil {
+		t.Fatal(err)
+	}
+	if len(recall.Hits) != 1 || recall.Hits[0].SessionID != "default" || host.req.Query != "terse" || host.req.Limit != 1 || !host.req.MemoriesOnly {
+		t.Fatalf("recall=%+v request=%+v", recall, host.req)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	var status statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(status.Capabilities, "recall") {
+		t.Fatalf("capabilities = %v, missing recall", status.Capabilities)
+	}
+}
+
+func TestServerRecallValidationAndUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/v1/recall", "token", `{"query":"anything"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unsupported recall status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+
+	srv = newTestServer(t, &recallHost{})
+	ts = httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp = postJSON(t, ts.URL+"/v1/recall", "token", `{"query":"   "}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty query status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	resp = postJSON(t, ts.URL+"/v1/recall", "token", `{"query":"x","limit":-1}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("negative limit status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
 

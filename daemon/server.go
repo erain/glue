@@ -70,6 +70,12 @@ type MCPPromptRendererHost interface {
 	MCPRenderPrompt(context.Context, MCPPromptRenderRequest) (MCPPromptRenderResponse, error)
 }
 
+// RecallHost is optionally implemented by hosts that can search stored session
+// history without starting a run.
+type RecallHost interface {
+	RecallSearch(context.Context, RecallRequest) (RecallResponse, error)
+}
+
 // SkillCatalogEntry describes one reusable skill advertised by a host.
 type SkillCatalogEntry struct {
 	Name        string `json:"name"`
@@ -155,6 +161,29 @@ type MCPPromptRenderResponse struct {
 type MCPPromptMessage struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
+}
+
+// RecallRequest searches stored session history.
+type RecallRequest struct {
+	Query        string `json:"query"`
+	Limit        int    `json:"limit,omitempty"`
+	MemoriesOnly bool   `json:"memories_only,omitempty"`
+}
+
+// RecallHit is one stored session search result returned by a recall-capable
+// daemon host.
+type RecallHit struct {
+	SessionID string           `json:"session_id"`
+	Index     int              `json:"index"`
+	Role      glue.MessageRole `json:"role,omitempty"`
+	Snippet   string           `json:"snippet"`
+	Score     float64          `json:"score"`
+	Timestamp time.Time        `json:"timestamp,omitempty"`
+}
+
+// RecallResponse contains stored session search hits.
+type RecallResponse struct {
+	Hits []RecallHit `json:"hits"`
 }
 
 // Options configures [New].
@@ -424,6 +453,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/recall" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleRecall(w, r)
+		return
+	}
+
 	if r.URL.Path == "/v1/mcp/resources" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -535,6 +573,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if _, ok := s.host.(RoleCatalogHost); ok {
 		capabilities = append(capabilities, "roles")
 	}
+	if _, ok := s.host.(RecallHost); ok {
+		capabilities = append(capabilities, "recall")
+	}
 	writeJSON(w, http.StatusOK, statusResponse{
 		OK:           true,
 		Version:      protocolVersion,
@@ -633,6 +674,37 @@ func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request) {
 		roles = []RoleCatalogEntry{}
 	}
 	writeJSON(w, http.StatusOK, roleCatalogResponse{Roles: roles})
+}
+
+func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
+	host, ok := s.host.(RecallHost)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "recall is not supported by this host", false)
+		return
+	}
+	var req RecallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body", false)
+		return
+	}
+	req.Query = strings.TrimSpace(req.Query)
+	if req.Query == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query is required", false)
+		return
+	}
+	if req.Limit < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "limit must be non-negative", false)
+		return
+	}
+	hits, err := host.RecallSearch(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	if hits.Hits == nil {
+		hits.Hits = []RecallHit{}
+	}
+	writeJSON(w, http.StatusOK, RecallResponse{Hits: hits.Hits})
 }
 
 func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {

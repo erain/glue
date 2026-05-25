@@ -15,7 +15,7 @@ A long-running personal-assistant agent built on the
 - **token-aware summarizing compaction** so long sessions don't blow
   the context window
 - **FTS5 session search** under the hood, exposed via
-  `Agent.SearchSessions`
+  `Agent.SearchSessions`, `peggy recall`, and daemon `glue connect --recall`
 - opt-in local **coding tools** for reading files, writing files,
   running allowlisted commands, and inspecting git branch context
 - per-call permission prompts for side-effecting coding tools in the
@@ -303,6 +303,7 @@ glue connect --mcp-resources
 glue connect --mcp-prompts
 glue connect --mcp-read --server filesystem --uri file:///workspace/README.md
 glue connect --mcp-prompt --server linear --name summarize_issue --arg issue=GLUE-123
+glue connect --recall "Australian Shepherd"
 glue connect --prompt "summarize today's plan" --id cli:daily --usage
 ```
 
@@ -325,9 +326,9 @@ bearer token. `glue connect --inspect` includes status, tools,
 daemon-advertised skills, daemon-advertised roles, and any
 daemon-advertised MCP resource/prompt catalogs. Use `--skills-json`,
 `--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
-`--mcp-read-json`, or `--mcp-prompt-json` when another client needs the
-payload as data. Add `--usage` to prompt or skill-mode `glue connect`
-when you want provider-reported token usage on stderr. Add
+`--mcp-read-json`, `--mcp-prompt-json`, or `--recall-json` when another
+client needs the payload as data. Add `--usage` to prompt or skill-mode
+`glue connect` when you want provider-reported token usage on stderr. Add
 `--usage-input-price`, `--usage-output-price`, and optional cache price
 flags to estimate USD cost from prices you supply. Stop the daemon with
 SIGINT/SIGTERM.
@@ -617,9 +618,18 @@ peggy recall --config ~/.config/peggy/settings.json --memories "preference"
 peggy recall --config ~/.config/peggy/settings.json --json "project"
 ```
 
-`peggy recall` uses the configured store only; it does not start a
-provider. File-backed stores do not support search, so use the default
-SQLite store for recall.
+When Peggy is already running as a daemon, connected clients can search
+the same live store without starting a run:
+
+```sh
+glue connect --recall "Australian Shepherd"
+glue connect --recall "preference" --recall-memories
+glue connect --recall "project" --recall-json
+```
+
+`peggy recall` and daemon `glue connect --recall` use the configured
+store only; neither starts a provider. File-backed stores do not
+support search, so use the default SQLite store for recall.
 
 ## What Peggy supports today
 
@@ -631,7 +641,7 @@ SQLite store for recall.
 - **Model-callable `remember` / `recall` tools** for durable
   cross-session memory.
 - **Cross-session FTS5 search** via `Agent.SearchSessions` library
-  API (a `peggy recall` subcommand is a near-term follow-up).
+  API, `peggy recall`, and daemon `glue connect --recall`.
 - **Token-aware summarizing compaction** via the configured provider.
 - Identity injected from `SOUL.md` into the system prompt.
 - Opt-in **local coding mode** for CLI and Telegram: read files, write
