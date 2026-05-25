@@ -61,6 +61,14 @@ type daemonRoleCatalog struct {
 	Roles []daemon.RoleCatalogEntry `json:"roles"`
 }
 
+type daemonStatus struct {
+	OK           bool     `json:"ok"`
+	Version      int      `json:"version"`
+	ActiveRuns   int      `json:"active_runs"`
+	ToolsCount   int      `json:"tools_count"`
+	Capabilities []string `json:"capabilities"`
+}
+
 type daemonPermissionPayload struct {
 	PermissionID string                 `json:"permission_id"`
 	Request      glue.PermissionRequest `json:"request"`
@@ -162,6 +170,15 @@ func (d *DaemonClient) Command(ctx context.Context, sessionID, text string, api 
 	token := fields[0]
 	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, token))
 	switch telegramCommandName(token) {
+	case "status":
+		if rest != "" {
+			return "", true, errors.New("usage: /status")
+		}
+		status, err := d.status(ctx)
+		if err != nil {
+			return "", true, err
+		}
+		return formatTelegramStatus(status), true, nil
 	case "roles":
 		if rest != "" {
 			return "", true, errors.New("usage: /roles")
@@ -285,6 +302,30 @@ func (d *DaemonClient) HandleCallback(ctx context.Context, cb CallbackQuery, api
 		answerDaemonCallback(ctx, api, cb.ID, "Denied.")
 	}
 	return true
+}
+
+func (d *DaemonClient) status(ctx context.Context) (daemonStatus, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.baseURL+"/v1/status", nil)
+	if err != nil {
+		return daemonStatus{}, err
+	}
+	d.authorize(req)
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return daemonStatus{}, redactDaemonErr(err, d.token)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemonStatus{}, fmt.Errorf("telegram daemon: status: %s", httpStatusText(resp))
+	}
+	var out daemonStatus
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return daemonStatus{}, err
+	}
+	if out.Capabilities == nil {
+		out.Capabilities = []string{}
+	}
+	return out, nil
 }
 
 func (d *DaemonClient) roleCatalog(ctx context.Context) (daemonRoleCatalog, error) {
@@ -630,6 +671,22 @@ func parseTelegramRoleRun(rest string) (string, string, error) {
 		return "", "", errors.New("/role prompt is required")
 	}
 	return role, prompt, nil
+}
+
+func formatTelegramStatus(status daemonStatus) string {
+	state := "not ok"
+	if status.OK {
+		state = "ok"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Daemon status: %s\n", state)
+	fmt.Fprintf(&b, "version: %d\n", status.Version)
+	fmt.Fprintf(&b, "active_runs: %d\n", status.ActiveRuns)
+	fmt.Fprintf(&b, "tools: %d", status.ToolsCount)
+	if len(status.Capabilities) > 0 {
+		fmt.Fprintf(&b, "\ncapabilities: %s", strings.Join(status.Capabilities, ", "))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func formatTelegramRoles(roles []daemon.RoleCatalogEntry) string {
