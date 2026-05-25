@@ -145,7 +145,7 @@ Response:
   "version": 1,
   "active_runs": 0,
   "tools_count": 4,
-  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "status"]
+  "capabilities": ["runs", "events", "permissions", "tools", "skills", "roles", "recall", "status"]
 }
 ```
 
@@ -226,6 +226,40 @@ Hosts that do not expose a role catalog return an empty `roles` array.
 A host that exposes a catalog advertises the `roles` capability in
 `/v1/status`. Runs apply roles through the existing `role` field on
 the run-start request.
+
+Daemon clients can ask recall-capable hosts to search stored session
+history without starting a run:
+
+```http
+POST /v1/recall
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "query": "Australian Shepherd",
+  "limit": 5,
+  "memories_only": false
+}
+```
+
+Response:
+
+```json
+{
+  "hits": [
+    {
+      "session_id": "__memories__",
+      "index": 0,
+      "snippet": "The user's Australian Shepherd is named Inkblot.",
+      "score": 1.23,
+      "timestamp": "2026-05-24T12:00:00Z"
+    }
+  ]
+}
+```
+
+Hosts that do not expose recall return `404`. A host that exposes
+recall advertises the `recall` capability in `/v1/status`.
 
 ### 5. Runs and sessions
 

@@ -53,6 +53,10 @@ not formally follow SemVer until v1.0.
 - **Recall search command.** `peggy recall <query>` searches the
   configured SQLite store without starting a provider, with
   memories-only, limit, and JSON modes.
+- **Daemon recall.** `peggy serve` now exposes authenticated recall
+  search through the daemon host, and `glue connect --recall <query>`
+  can search the live Peggy store with JSON, memories-only, and limit
+  modes without starting a model run.
 
 ## v0.4.0 — 2026-05-24
 

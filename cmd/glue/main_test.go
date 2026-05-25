@@ -1503,6 +1503,146 @@ func TestRunCLIConnectRendersMCPPromptJSON(t *testing.T) {
 	}
 }
 
+func TestRunCLIConnectRecall(t *testing.T) {
+	var sawRecall bool
+	var sawRun bool
+	var request daemon.RecallRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/recall":
+			sawRecall = true
+			if r.Method != http.MethodPost {
+				t.Fatalf("recall method = %s", r.Method)
+			}
+			if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
+				t.Fatalf("recall auth = %q", auth)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.RecallResponse{Hits: []daemon.RecallHit{{
+				SessionID: "__memories__",
+				Index:     7,
+				Role:      glue.MessageRoleAssistant,
+				Snippet:   "User prefers terse responses.",
+				Score:     1.25,
+				Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			}}})
+		case "/v1/sessions/default/runs":
+			sawRun = true
+			http.Error(w, "unexpected run", http.StatusTeapot)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--recall", "terse",
+		"--recall-memories",
+		"--recall-limit", "1",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if !sawRecall || sawRun {
+		t.Fatalf("sawRecall=%v sawRun=%v", sawRecall, sawRun)
+	}
+	if request.Query != "terse" || request.Limit != 1 || !request.MemoriesOnly {
+		t.Fatalf("request = %+v", request)
+	}
+	for _, want := range []string{
+		"__memories__#7",
+		"timestamp: 2026-05-24T12:00:00Z",
+		"score: 1.25",
+		"snippet: User prefers terse responses.",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, missing %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCLIConnectRecallJSON(t *testing.T) {
+	var request daemon.RecallRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/recall" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		writeJSONResponse(t, w, http.StatusOK, daemon.RecallResponse{Hits: []daemon.RecallHit{{
+			SessionID: "default",
+			Index:     1,
+			Snippet:   "project note",
+		}}})
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--base-url", ts.URL,
+		"--token", "tok",
+		"--metadata", "",
+		"--recall-json", "project",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if request.Query != "project" {
+		t.Fatalf("request = %+v", request)
+	}
+	var recall daemon.RecallResponse
+	if err := json.Unmarshal(stdout.Bytes(), &recall); err != nil {
+		t.Fatalf("decode stdout: %v\n%s", err, stdout.String())
+	}
+	if len(recall.Hits) != 1 || recall.Hits[0].SessionID != "default" {
+		t.Fatalf("recall = %+v", recall)
+	}
+}
+
+func TestRunCLIConnectRecallValidation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--recall-json",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want recall query validation failure")
+	}
+	if !strings.Contains(stderr.String(), "--recall query is required") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = runCLIWithDeps(context.Background(), []string{
+		"connect",
+		"--recall", "project",
+		"--recall-limit", "-1",
+		"--base-url", "http://daemon",
+		"--token", "tok",
+		"--metadata", "",
+	}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), nil, http.DefaultClient)
+	if code == 0 {
+		t.Fatal("code = 0, want recall limit validation failure")
+	}
+	if !strings.Contains(stderr.String(), "--recall-limit must be non-negative") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunCLIConnectShowsStatus(t *testing.T) {
 	var sawStatus bool
 	var sawRun bool
