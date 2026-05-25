@@ -6,6 +6,17 @@ not formally follow SemVer until v1.0.
 
 ## Unreleased
 
+_No unreleased changes yet._
+
+## v0.5.0 — 2026-05-25
+
+Peggy now has a workflow/runtime surface for reusable personal-assistant
+operations. The release completes the first M5 lane from tracker
+[#110](https://github.com/erain/glue/issues/110): workspace roles,
+file-backed skills, starter workspace scaffolding, priced usage
+summaries, local and daemon memory controls, recall, and Telegram
+daemon commands for roles, skills, and memory.
+
 ### Added
 
 - **Daemon MCP catalogs.** `peggy serve` now exposes authenticated MCP
@@ -77,6 +88,12 @@ not formally follow SemVer until v1.0.
 - **Telegram daemon role commands.** In daemon-client mode,
   allowlisted Telegram chats can use `/roles` to inspect workspace
   roles and `/role <name> <prompt>` to start a role-shaped daemon run.
+
+### Changed
+
+- `peggy.Version` is now `0.5.0`.
+- Peggy README now frames v0.5 as the workflow/runtime release across
+  local CLI, terminal daemon clients, and Telegram daemon clients.
 
 ## v0.4.0 — 2026-05-24
 
