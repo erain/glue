@@ -2028,13 +2028,21 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
 				OK:           true,
 				Version:      1,
-				Capabilities: []string{"status", "tools"},
+				Capabilities: []string{"status", "tools", "memories"},
 			})
 		case "/v1/tools":
 			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{Tools: []daemonToolCatalogEntry{{
 				Name:               "shell_exec",
 				RequiresPermission: true,
 				PermissionAction:   "exec",
+			}}})
+		case "/v1/memories":
+			if got := r.URL.Query().Get("limit"); got != "1" {
+				t.Fatalf("limit query = %q, want 1", got)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.MemoryCatalogResponse{Memories: []daemon.MemoryEntry{{
+				ID:      "mem_1",
+				Content: "User prefers terse responses.",
 			}}})
 		default:
 			http.NotFound(w, r)
@@ -2046,6 +2054,7 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 	code := runCLIWithDeps(context.Background(), []string{
 		"connect",
 		"--inspect-json",
+		"--memory-limit", "1",
 		"--base-url", ts.URL,
 		"--token", "tok",
 		"--metadata", "",
@@ -2063,11 +2072,15 @@ func TestRunCLIConnectInspectsDaemonJSON(t *testing.T) {
 	if len(inspect.Tools) != 1 || inspect.Tools[0].Name != "shell_exec" || inspect.Tools[0].PermissionAction != "exec" {
 		t.Fatalf("tools = %+v", inspect.Tools)
 	}
+	if len(inspect.Memories) != 1 || inspect.Memories[0].ID != "mem_1" {
+		t.Fatalf("memories = %+v", inspect.Memories)
+	}
 }
 
 func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 	var sawSkills bool
 	var sawRoles bool
+	var sawMemories bool
 	var sawResources bool
 	var sawPrompts bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2076,7 +2089,7 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemonStatus{
 				OK:           true,
 				Version:      1,
-				Capabilities: []string{"status", "tools", "skills", "roles", "mcp_resources", "mcp_prompts"},
+				Capabilities: []string{"status", "tools", "skills", "roles", "memories", "mcp_resources", "mcp_prompts"},
 			})
 		case "/v1/tools":
 			writeJSONResponse(t, w, http.StatusOK, daemonToolCatalog{})
@@ -2091,6 +2104,15 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 			writeJSONResponse(t, w, http.StatusOK, daemonRoleCatalog{Roles: []daemon.RoleCatalogEntry{{
 				Name:  "reviewer",
 				Model: "fast-model",
+			}}})
+		case "/v1/memories":
+			sawMemories = true
+			if got := r.URL.Query().Get("limit"); got != "1" {
+				t.Fatalf("limit query = %q, want 1", got)
+			}
+			writeJSONResponse(t, w, http.StatusOK, daemon.MemoryCatalogResponse{Memories: []daemon.MemoryEntry{{
+				ID:      "mem_1",
+				Content: "User prefers terse responses.",
 			}}})
 		case "/v1/mcp/resources":
 			sawResources = true
@@ -2115,6 +2137,7 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 	code := runCLIWithDeps(context.Background(), []string{
 		"connect",
 		"--inspect",
+		"--memory-limit", "1",
 		"--base-url", ts.URL,
 		"--token", "tok",
 		"--metadata", "",
@@ -2122,8 +2145,8 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d stderr=%q", code, stderr.String())
 	}
-	if !sawSkills || !sawRoles || !sawResources || !sawPrompts {
-		t.Fatalf("sawSkills=%v sawRoles=%v sawResources=%v sawPrompts=%v", sawSkills, sawRoles, sawResources, sawPrompts)
+	if !sawSkills || !sawRoles || !sawMemories || !sawResources || !sawPrompts {
+		t.Fatalf("sawSkills=%v sawRoles=%v sawMemories=%v sawResources=%v sawPrompts=%v", sawSkills, sawRoles, sawMemories, sawResources, sawPrompts)
 	}
 	for _, want := range []string{
 		"skills:",
@@ -2131,6 +2154,9 @@ func TestRunCLIConnectInspectIncludesMCPCatalogs(t *testing.T) {
 		"roles:",
 		"reviewer",
 		"model: fast-model",
+		"memories:",
+		"mem_1",
+		"content: User prefers terse responses.",
 		"mcp_resources:",
 		"file:///workspace/README.md",
 		"mcp_prompts:",

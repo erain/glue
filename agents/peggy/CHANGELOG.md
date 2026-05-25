@@ -64,6 +64,8 @@ not formally follow SemVer until v1.0.
 - **Daemon memory deletion.** `glue connect --forget-memory <id>` now
   removes one curated memory from a Peggy daemon and can return the
   removed record as JSON.
+- **Inspect memory panel.** `glue connect --inspect` now includes
+  daemon-advertised memories, with `--memory-limit` to cap the section.
 
 ## v0.4.0 — 2026-05-24
 

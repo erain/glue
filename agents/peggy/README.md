@@ -326,8 +326,9 @@ Useful `serve` flags:
 
 Startup output prints the `base_url` and metadata path, never the
 bearer token. `glue connect --inspect` includes status, tools,
-daemon-advertised skills, daemon-advertised roles, and any
-daemon-advertised MCP resource/prompt catalogs. Use `--skills-json`,
+daemon-advertised skills, daemon-advertised roles, daemon-advertised
+memories, and any daemon-advertised MCP resource/prompt catalogs. Use
+`--memory-limit` to cap the memory section. Use `--skills-json`,
 `--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
 `--mcp-read-json`, `--mcp-prompt-json`, `--recall-json`, or
 `--memories-json` when another client needs catalog/search payloads as
