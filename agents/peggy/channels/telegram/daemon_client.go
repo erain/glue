@@ -84,6 +84,7 @@ type daemonPermissionDecision struct {
 const (
 	defaultTelegramMemoryLimit = 10
 	defaultTelegramRecallLimit = 5
+	daemonRunProgressMessage   = "Working on it..."
 )
 
 // ResolveDaemonClientConfig applies metadata and environment fallback rules.
@@ -150,6 +151,7 @@ func (d *DaemonClient) Prompt(ctx context.Context, sessionID, text string, api *
 		return "", errors.New("telegram daemon: client is not configured")
 	}
 	clientID := daemonTelegramClientID(chatID)
+	d.sendProgress(ctx, api, chatID)
 	start, err := d.startRun(ctx, sessionID, daemonStartRunPayload{Text: text, ClientID: clientID})
 	if err != nil {
 		return "", err
@@ -170,6 +172,11 @@ func (d *DaemonClient) Command(ctx context.Context, sessionID, text string, api 
 	token := fields[0]
 	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, token))
 	switch telegramCommandName(token) {
+	case "help", "start":
+		if rest != "" {
+			return "", true, errors.New("usage: /help")
+		}
+		return formatTelegramHelp(), true, nil
 	case "status":
 		if rest != "" {
 			return "", true, errors.New("usage: /status")
@@ -194,6 +201,7 @@ func (d *DaemonClient) Command(ctx context.Context, sessionID, text string, api 
 			return "", true, err
 		}
 		clientID := daemonTelegramClientID(chatID)
+		d.sendProgress(ctx, api, chatID)
 		start, err := d.startRun(ctx, sessionID, daemonStartRunPayload{Text: prompt, Role: role, ClientID: clientID})
 		if err != nil {
 			return "", true, err
@@ -215,6 +223,7 @@ func (d *DaemonClient) Command(ctx context.Context, sessionID, text string, api 
 			return "", true, err
 		}
 		clientID := daemonTelegramClientID(chatID)
+		d.sendProgress(ctx, api, chatID)
 		start, err := d.startRun(ctx, sessionID, daemonStartRunPayload{Skill: name, Arguments: args, ClientID: clientID})
 		if err != nil {
 			return "", true, err
@@ -302,6 +311,15 @@ func (d *DaemonClient) HandleCallback(ctx context.Context, cb CallbackQuery, api
 		answerDaemonCallback(ctx, api, cb.ID, "Denied.")
 	}
 	return true
+}
+
+func (d *DaemonClient) sendProgress(ctx context.Context, api *API, chatID int64) {
+	if api == nil {
+		return
+	}
+	if err := api.SendMessage(ctx, chatID, daemonRunProgressMessage); err != nil {
+		d.print("telegram daemon: progress message failed for chat %d: %v\n", chatID, err)
+	}
 }
 
 func (d *DaemonClient) status(ctx context.Context) (daemonStatus, error) {
@@ -671,6 +689,23 @@ func parseTelegramRoleRun(rest string) (string, string, error) {
 		return "", "", errors.New("/role prompt is required")
 	}
 	return role, prompt, nil
+}
+
+func formatTelegramHelp() string {
+	return strings.Join([]string{
+		"Peggy daemon commands:",
+		"/help - show this help",
+		"/status - show daemon health",
+		"/roles - list workspace roles",
+		"/role <name> <prompt> - run with a role",
+		"/skills - list workspace skills",
+		"/skill <name> [key=value ...] - run a skill",
+		"/memories [limit] - list curated memories",
+		"/recall <query> - search session history",
+		"/recall_memories <query> - search curated memories",
+		"/forget_memory <id> - delete one curated memory",
+		"Send any other message to start a daemon run.",
+	}, "\n")
 }
 
 func formatTelegramStatus(status daemonStatus) string {

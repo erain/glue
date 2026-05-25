@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/erain/glue/agents/peggy"
 )
@@ -231,7 +232,7 @@ func (c *Channel) handleUpdate(ctx context.Context, u Update) {
 				reply = "Command error: " + commandErr.Error()
 			}
 			if strings.TrimSpace(reply) != "" {
-				if err := c.api.SendMessage(ctx, chatID, strings.TrimSpace(reply)); err != nil {
+				if err := sendTelegramText(ctx, c.api, chatID, strings.TrimSpace(reply)); err != nil {
 					fmt.Fprintf(c.stderr, "telegram: send to chat %d: %v\n", chatID, err)
 				}
 			}
@@ -245,7 +246,7 @@ func (c *Channel) handleUpdate(ctx context.Context, u Update) {
 		fmt.Fprintf(c.stderr, "telegram: prompt failed for chat %d: %v\n", chatID, err)
 		// Reply with a short error rather than going silent — the user
 		// sent something and deserves an acknowledgment.
-		_ = c.api.SendMessage(ctx, chatID, "(I hit an error responding. Check the agent logs.)")
+		_ = sendTelegramText(ctx, c.api, chatID, "(I hit an error responding. Check the agent logs.)")
 		return
 	}
 	reply := strings.TrimSpace(text)
@@ -256,9 +257,61 @@ func (c *Channel) handleUpdate(ctx context.Context, u Update) {
 		fmt.Fprintf(c.stderr, "telegram: prompt for chat %d produced no text\n", chatID)
 		return
 	}
-	if err := c.api.SendMessage(ctx, chatID, reply); err != nil {
+	if err := sendTelegramText(ctx, c.api, chatID, reply); err != nil {
 		fmt.Fprintf(c.stderr, "telegram: send to chat %d: %v\n", chatID, err)
 	}
+}
+
+func sendTelegramText(ctx context.Context, api *API, chatID int64, text string) error {
+	for _, chunk := range telegramTextChunks(text) {
+		if err := api.SendMessage(ctx, chatID, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func telegramTextChunks(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	chunks := []string{}
+	for len(text) > telegramMessageLimit {
+		cut := telegramTextChunkCut(text, telegramMessageLimit)
+		if cut <= 0 || cut > len(text) {
+			cut = telegramMessageLimit
+		}
+		chunks = append(chunks, text[:cut])
+		text = text[cut:]
+	}
+	if text != "" {
+		chunks = append(chunks, text)
+	}
+	return chunks
+}
+
+func telegramTextChunkCut(text string, limit int) int {
+	if len(text) <= limit {
+		return len(text)
+	}
+	cut := limit
+	for cut > 0 && !utf8.ValidString(text[:cut]) {
+		cut--
+	}
+	if cut == 0 {
+		_, size := utf8.DecodeRuneInString(text)
+		return size
+	}
+	window := text[:cut]
+	floor := cut / 2
+	if idx := strings.LastIndex(window[floor:], "\n"); idx >= 0 {
+		return floor + idx + 1
+	}
+	if idx := strings.LastIndex(window[floor:], " "); idx >= 0 {
+		return floor + idx + 1
+	}
+	return cut
 }
 
 // Compile-time assertion that *Channel satisfies peggy.Channel.

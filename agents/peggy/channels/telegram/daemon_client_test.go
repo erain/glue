@@ -105,8 +105,118 @@ func TestDaemonClientMessageStartsRunAndSendsText(t *testing.T) {
 	if start.Text != "hello" || start.ClientID != "telegram:123" {
 		t.Fatalf("start payload = %+v", start)
 	}
+	if got := tg.sendText(0); got != daemonRunProgressMessage {
+		t.Fatalf("progress reply = %q", got)
+	}
 	if got := tg.lastSendText(); got != "hello from daemon" {
 		t.Fatalf("telegram reply = %q", got)
+	}
+}
+
+func TestDaemonClientMessageSendsProgressBeforeRunCompletes(t *testing.T) {
+	eventsStarted := make(chan struct{})
+	releaseEvents := make(chan struct{})
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/telegram:123/runs":
+			writeJSON(t, w, http.StatusCreated, daemonStartRunResponse{RunID: "run_1", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			close(eventsStarted)
+			select {
+			case <-releaseEvents:
+			case <-r.Context().Done():
+				return
+			}
+			writeSSE(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": "done"}})
+			writeSSE(t, w, daemon.EventEnvelope{Type: "run_done"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		ch.handleUpdate(context.Background(), messageUpdate(1, 123, "hello"))
+		close(done)
+	}()
+	select {
+	case <-eventsStarted:
+	case <-time.After(time.Second):
+		t.Fatal("daemon event stream was not opened")
+	}
+	waitForSendCount(t, tg, 1)
+	if got := tg.sendText(0); got != daemonRunProgressMessage {
+		t.Fatalf("progress reply = %q", got)
+	}
+	close(releaseEvents)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleUpdate did not finish")
+	}
+	if got := tg.lastSendText(); got != "done" {
+		t.Fatalf("final reply = %q", got)
+	}
+}
+
+func TestDaemonClientLongReplySplitsMessages(t *testing.T) {
+	long := strings.Repeat("0123456789", 500)
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sessions/telegram:123/runs":
+			writeJSON(t, w, http.StatusCreated, daemonStartRunResponse{RunID: "run_1", EventsURL: "/v1/runs/run_1/events"})
+		case "/v1/runs/run_1/events":
+			writeSSE(t, w, daemon.EventEnvelope{Type: "text_delta", Payload: map[string]any{"delta": long}})
+			writeSSE(t, w, daemon.EventEnvelope{Type: "run_done"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "long please"))
+	if tg.sendCount() != 3 {
+		t.Fatalf("send count = %d, want progress plus two reply chunks", tg.sendCount())
+	}
+	if got := tg.sendText(0); got != daemonRunProgressMessage {
+		t.Fatalf("progress reply = %q", got)
+	}
+	first := tg.sendText(1)
+	second := tg.sendText(2)
+	if len(first) > telegramMessageLimit || len(second) > telegramMessageLimit {
+		t.Fatalf("chunk sizes = %d, %d", len(first), len(second))
+	}
+	if got := first + second; got != long {
+		t.Fatalf("reconstructed reply length = %d, want %d", len(got), len(long))
 	}
 }
 
@@ -166,6 +276,39 @@ func TestDaemonClientStatusCommandUsesDaemonWithoutRun(t *testing.T) {
 	for _, want := range []string{"Daemon status: ok", "version: 1", "active_runs: 2", "tools: 7", "roles", "skills"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("status reply = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestDaemonClientHelpCommandDoesNotCallDaemon(t *testing.T) {
+	var requests int
+	daemonServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer daemonServer.Close()
+
+	tg := newTelegramFixture(t, nil)
+	dc, err := NewDaemonClient(DaemonClientConfig{BaseURL: daemonServer.URL, Token: "tok"}, daemonServer.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := New(Options{
+		Daemon: dc,
+		Config: Config{APIBaseURL: tg.server.URL, AllowChats: []int64{123}},
+		Token:  "telegram-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch.handleUpdate(context.Background(), messageUpdate(1, 123, "/help@PeggyBot"))
+	if requests != 0 {
+		t.Fatalf("daemon requests = %d, want 0", requests)
+	}
+	got := tg.lastSendText()
+	for _, want := range []string{"/status", "/role <name> <prompt>", "/skill <name>", "/recall <query>", "Send any other message"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help reply = %q, missing %q", got, want)
 		}
 	}
 }
@@ -667,7 +810,7 @@ func TestDaemonClientPermissionCallbackPostsDecision(t *testing.T) {
 		ch.handleUpdate(context.Background(), messageUpdate(1, 123, "write file"))
 		close(done)
 	}()
-	waitForSendCount(t, tg, 1)
+	waitForSendCount(t, tg, 2)
 	ch.handleCallback(context.Background(), CallbackQuery{
 		ID:      "cb_1",
 		Message: &Message{Chat: Chat{ID: 123, Type: "private"}},

@@ -145,13 +145,17 @@ func (f *telegramFixture) sendCount() int {
 }
 
 func (f *telegramFixture) lastSendText() string {
+	return f.sendText(f.sendCount() - 1)
+}
+
+func (f *telegramFixture) sendText(index int) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.sendBodies) == 0 {
+	if index < 0 || index >= len(f.sendBodies) {
 		return ""
 	}
 	var body map[string]any
-	_ = json.Unmarshal(f.sendBodies[len(f.sendBodies)-1], &body)
+	_ = json.Unmarshal(f.sendBodies[index], &body)
 	if s, ok := body["text"].(string); ok {
 		return s
 	}
