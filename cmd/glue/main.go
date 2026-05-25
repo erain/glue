@@ -410,6 +410,8 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	showMemories := flags.Bool("memories", false, "list daemon memories and exit without starting a run")
 	memoriesJSON := flags.Bool("memories-json", false, "print --memories output as JSON")
 	memoryLimit := flags.Int("memory-limit", 0, "maximum memories to return; 0 means no limit")
+	forgetMemoryID := flags.String("forget-memory", "", "delete one daemon memory by id and exit without starting a run")
+	forgetMemoryJSON := flags.Bool("forget-memory-json", false, "print --forget-memory output as JSON")
 	showStatus := flags.Bool("status", false, "show daemon status and exit without starting a run")
 	statusJSON := flags.Bool("status-json", false, "print --status output as JSON")
 	showInspect := flags.Bool("inspect", false, "show daemon status and tools and exit without starting a run")
@@ -460,14 +462,15 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		*showMemories = true
 	}
 	showRecall := strings.TrimSpace(*recallQuery) != "" || *recallJSON
+	showForgetMemory := strings.TrimSpace(*forgetMemoryID) != "" || *forgetMemoryJSON
 	inspectModes := 0
-	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, *showStatus, *showInspect} {
+	for _, enabled := range []bool{*showTools, *showSkills, *showRoles, *showMCPResources, *showMCPPrompts, *showMCPRead, *showMCPPrompt, showRecall, *showMemories, showForgetMemory, *showStatus, *showInspect} {
 		if enabled {
 			inspectModes++
 		}
 	}
 	if inspectModes > 1 {
-		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --status, or --inspect")
+		return errors.New("choose only one of --tools, --skills, --roles, --mcp-resources, --mcp-prompts, --mcp-read, --mcp-prompt, --recall, --memories, --forget-memory, --status, or --inspect")
 	}
 	if inspectModes == 0 && strings.TrimSpace(*prompt) == "" && strings.TrimSpace(*skillName) == "" {
 		return errors.New("missing required --prompt or --skill")
@@ -524,6 +527,9 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 	if *showMemories {
 		return runConnectMemories(ctx, cfg, *memoryLimit, *memoriesJSON, stdout, client)
+	}
+	if showForgetMemory {
+		return runConnectForgetMemory(ctx, cfg, *forgetMemoryID, *forgetMemoryJSON, stdout, client)
 	}
 	if *showStatus {
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
@@ -754,6 +760,24 @@ func runConnectMemories(ctx context.Context, cfg connectConfig, limit int, jsonO
 	return nil
 }
 
+func runConnectForgetMemory(ctx context.Context, cfg connectConfig, id string, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("--forget-memory is required")
+	}
+	forgotten, err := requestDaemonForgetMemory(ctx, cfg, id, client)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(forgotten)
+	}
+	writeDaemonMemory(stdout, forgotten.Memory)
+	return nil
+}
+
 func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
 	status, err := fetchDaemonStatus(ctx, cfg, client)
 	if err != nil {
@@ -979,6 +1003,27 @@ func fetchDaemonMemories(ctx context.Context, cfg connectConfig, limit int, clie
 	return catalog, nil
 }
 
+func requestDaemonForgetMemory(ctx context.Context, cfg connectConfig, id string, client httpDoer) (daemon.MemoryForgetResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfg.BaseURL+"/v1/memories/"+url.PathEscape(id), nil)
+	if err != nil {
+		return daemon.MemoryForgetResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return daemon.MemoryForgetResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return daemon.MemoryForgetResponse{}, fmt.Errorf("daemon memory delete: %s", httpStatusError(resp))
+	}
+	var forgotten daemon.MemoryForgetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&forgotten); err != nil {
+		return daemon.MemoryForgetResponse{}, err
+	}
+	return forgotten, nil
+}
+
 func fetchDaemonMCPResources(ctx context.Context, cfg connectConfig, client httpDoer) (daemonMCPResourceCatalog, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/v1/mcp/resources", nil)
 	if err != nil {
@@ -1194,18 +1239,23 @@ func writeDaemonMemories(w io.Writer, memories []daemon.MemoryEntry) {
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
-		timestamp := ""
-		if !memory.Timestamp.IsZero() {
-			timestamp = memory.Timestamp.Format(time.RFC3339)
-		}
 		fmt.Fprintf(w, "%d. %s\n", i+1, memory.ID)
-		if timestamp != "" {
-			fmt.Fprintf(w, "  timestamp: %s\n", timestamp)
-		}
-		fmt.Fprintf(w, "  content: %s\n", oneLine(memory.Content))
-		if len(memory.Tags) > 0 {
-			fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
-		}
+		writeDaemonMemoryFields(w, memory)
+	}
+}
+
+func writeDaemonMemory(w io.Writer, memory daemon.MemoryEntry) {
+	fmt.Fprintln(w, memory.ID)
+	writeDaemonMemoryFields(w, memory)
+}
+
+func writeDaemonMemoryFields(w io.Writer, memory daemon.MemoryEntry) {
+	if !memory.Timestamp.IsZero() {
+		fmt.Fprintf(w, "  timestamp: %s\n", memory.Timestamp.Format(time.RFC3339))
+	}
+	fmt.Fprintf(w, "  content: %s\n", oneLine(memory.Content))
+	if len(memory.Tags) > 0 {
+		fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
 	}
 }
 
@@ -1812,6 +1862,7 @@ func printUsage(w io.Writer) {
   glue connect --mcp-prompt --server <name> --name <prompt> [--arg key=value] [--mcp-prompt-json] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --recall <query> [--recall-json] [--recall-memories] [--recall-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --memories [--memories-json] [--memory-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
+  glue connect --forget-memory <id> [--forget-memory-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
   run      Run the local Gemini-backed agent.
@@ -1875,6 +1926,10 @@ Flags:
              Connect --memories mode: print JSON.
   --memory-limit
              Connect --memories mode: maximum memories; 0 means no limit.
+  --forget-memory
+             Connect mode: delete one daemon memory by id and exit without starting a run.
+  --forget-memory-json
+             Connect --forget-memory mode: print JSON.
   --server   MCP server name for --mcp-read or --mcp-prompt.
   --uri      MCP resource URI for --mcp-read.
   --name     MCP prompt name for --mcp-prompt.

@@ -454,6 +454,69 @@ func TestPeggyDaemonListsMemories(t *testing.T) {
 	}
 }
 
+func TestPeggyDaemonForgetsMemory(t *testing.T) {
+	p, err := New(Options{
+		Provider: &fakeProvider{text: "ok"},
+		Store:    filestore.New(filepath.Join(t.TempDir(), "sessions")),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	keep, err := p.AddMemory(context.Background(), "User's Australian Shepherd is named Inkblot.", []string{"pet"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	drop, err := p.AddMemory(context.Background(), "User prefers terse responses.", []string{"preference"})
+	if err != nil {
+		t.Fatalf("AddMemory 2: %v", err)
+	}
+	srv, err := daemon.New(daemon.Options{
+		Host:  p,
+		Token: "tok",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/memories/"+drop.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer tok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var forgotten daemon.MemoryForgetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&forgotten); err != nil {
+		t.Fatal(err)
+	}
+	if forgotten.Memory.ID != drop.ID || !strings.Contains(forgotten.Memory.Content, "terse") {
+		t.Fatalf("forgotten = %+v", forgotten.Memory)
+	}
+
+	var catalog daemon.MemoryCatalogResponse
+	getPeggyDaemonJSON(t, ts.URL+"/v1/memories", &catalog)
+	if len(catalog.Memories) != 1 || catalog.Memories[0].ID != keep.ID {
+		t.Fatalf("memories after forget = %+v", catalog.Memories)
+	}
+
+	var status struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	getPeggyDaemonJSON(t, ts.URL+"/v1/status", &status)
+	if !containsString(status.Capabilities, "memory_forget") {
+		t.Fatalf("capabilities = %v, missing memory_forget", status.Capabilities)
+	}
+}
+
 type startRunResponse struct {
 	RunID     string `json:"run_id"`
 	EventsURL string `json:"events_url"`

@@ -206,6 +206,21 @@ func (h *memoryCatalogHost) MemoryCatalog(_ context.Context, req MemoryCatalogRe
 	return MemoryCatalogResponse{Memories: h.memories}, h.err
 }
 
+type memoryForgetHost struct {
+	req    MemoryForgetRequest
+	memory MemoryEntry
+	err    error
+}
+
+func (memoryForgetHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (h *memoryForgetHost) MemoryForget(_ context.Context, req MemoryForgetRequest) (MemoryForgetResponse, error) {
+	h.req = req
+	return MemoryForgetResponse{Memory: h.memory}, h.err
+}
+
 func TestServerAuthAndHealth(t *testing.T) {
 	srv := newTestServer(t, glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}}))
 	ts := httptest.NewServer(srv)
@@ -732,6 +747,82 @@ func TestServerMemoriesValidationAndUnsupportedHost(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("negative limit status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestServerMemoryForget(t *testing.T) {
+	host := &memoryForgetHost{memory: MemoryEntry{
+		ID:        "mem_1",
+		Content:   "User prefers terse responses.",
+		Tags:      []string{"preference"},
+		Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+	}}
+	srv := newTestServer(t, host)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/memories/mem_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated forget status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	req, err = http.NewRequest(http.MethodDelete, ts.URL+"/v1/memories/mem_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("forget status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var forgotten MemoryForgetResponse
+	if err := json.NewDecoder(resp.Body).Decode(&forgotten); err != nil {
+		t.Fatal(err)
+	}
+	if forgotten.Memory.ID != "mem_1" || host.req.ID != "mem_1" {
+		t.Fatalf("forgotten=%+v request=%+v", forgotten, host.req)
+	}
+
+	statusResp := getJSON(t, ts.URL+"/v1/status", "token")
+	defer statusResp.Body.Close()
+	var status statusResponse
+	if err := json.NewDecoder(statusResp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(status.Capabilities, "memory_forget") {
+		t.Fatalf("capabilities = %v, missing memory_forget", status.Capabilities)
+	}
+}
+
+func TestServerMemoryForgetUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/memories/mem_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unsupported forget status = %d, want %d", resp.StatusCode, http.StatusNotFound)
 	}
 }
 
