@@ -325,8 +325,10 @@ daemon-advertised MCP resource/prompt catalogs. Use `--skills-json`,
 `--roles-json`, `--mcp-resources-json`, `--mcp-prompts-json`,
 `--mcp-read-json`, or `--mcp-prompt-json` when another client needs the
 payload as data. Add `--usage` to prompt or skill-mode `glue connect`
-when you want provider-reported token usage on stderr. Stop the daemon
-with SIGINT/SIGTERM.
+when you want provider-reported token usage on stderr. Add
+`--usage-input-price`, `--usage-output-price`, and optional cache price
+flags to estimate USD cost from prices you supply. Stop the daemon with
+SIGINT/SIGTERM.
 
 Telegram can attach to the same daemon:
 
@@ -652,8 +654,7 @@ priority order:
 - **M5 — file skills and workspace context.** Make Peggy a richer
   operator over glue project context: file-backed skills, role-aware
   runs, and daemon/client discovery for reusable workflows.
-- **Later ecosystem polish.** Cost tracking and
-  `providers/anthropic` when budget allows.
+- **Later ecosystem polish.** `providers/anthropic` when budget allows.
 
 Near-term follow-ups that may ship as patches: a `peggy memories`
 subcommand (list / export / forget), edit-in-place Telegram

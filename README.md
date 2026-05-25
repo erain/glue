@@ -608,6 +608,10 @@ go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
 - `--model` — model id or `gemini/<model>` (default `gemini-2.5-flash`).
 - `--store` — file session store directory (default `.glue/sessions`).
 - `--usage` — print provider-reported token usage to stderr when available.
+- `--usage-input-price`, `--usage-output-price`,
+  `--usage-cache-read-price`, `--usage-cache-write-price` — optional
+  USD-per-1M-token prices used to append `cost_usd=...` to `--usage`
+  output. Glue does not ship provider price tables.
 - `--env` — `.env` file to load before reading `GEMINI_API_KEY`. Repeatable;
   shell environment wins on conflict.
 
@@ -647,7 +651,8 @@ Peggy daemons also support `--mcp-read` and `--mcp-prompt` for direct
 resource reads and prompt rendering. Each inspect/action mode also has a
 `-json` form for scripts. Add `--usage` to `run` or prompt-mode
 `connect` to print provider-reported token usage on stderr without
-changing streamed stdout.
+changing streamed stdout. Add the `--usage-*-price` flags when you
+want a local USD estimate from prices you supply.
 
 Peggy can serve the same daemon protocol with the personal-assistant
 agent, settings, memory store, and coding tools loaded once:

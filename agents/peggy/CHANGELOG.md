@@ -40,6 +40,9 @@ not formally follow SemVer until v1.0.
   creates a safe starter `AGENTS.md`, reviewer/operator roles, and
   triage/daily-plan/implementation-plan skills. Existing files are
   skipped unless `--force` is explicit.
+- **Priced usage estimates.** `glue run --usage` and prompt-mode
+  `glue connect --usage` can append `cost_usd=...` when users supply
+  USD-per-1M-token price flags for input, output, and cache tokens.
 
 ## v0.4.0 — 2026-05-24
 

@@ -123,6 +123,14 @@ type usageSummary struct {
 	TotalTokens      int64
 }
 
+type usagePricing struct {
+	Enabled                 bool
+	InputUSDPerMillion      float64
+	OutputUSDPerMillion     float64
+	CacheReadUSDPerMillion  float64
+	CacheWriteUSDPerMillion float64
+}
+
 type daemonToolCatalog struct {
 	Tools []daemonToolCatalogEntry `json:"tools"`
 }
@@ -243,10 +251,15 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	model := flags.String("model", defaultModel, "model id or gemini/<model>")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
+	usagePricing := registerUsagePricingFlags(flags)
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
 
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	markUsagePricingFlagState(flags, usagePricing)
+	if err := validateUsagePricing(*usagePricing); err != nil {
 		return err
 	}
 
@@ -292,7 +305,7 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		fmt.Fprintln(stdout, response.Text)
 	}
 	if *showUsage {
-		writeUsageSummary(stderr, summarizeUsage(response.NewMessages))
+		writeUsageSummary(stderr, summarizeUsage(response.NewMessages), *usagePricing)
 	}
 	return nil
 }
@@ -372,6 +385,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	role := flags.String("role", "", "per-run role override")
 	maxTurns := flags.Int("max-turns", 0, "per-run loop turn budget")
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
+	usagePricing := registerUsagePricingFlags(flags)
 	showTools := flags.Bool("tools", false, "list daemon tools and exit without starting a run")
 	toolsJSON := flags.Bool("tools-json", false, "print --tools output as JSON")
 	showSkills := flags.Bool("skills", false, "list daemon skills and exit without starting a run")
@@ -399,6 +413,10 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	flags.Var(&runArgs, "arg", "skill or MCP prompt argument key=value; repeatable")
 
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	markUsagePricingFlagState(flags, usagePricing)
+	if err := validateUsagePricing(*usagePricing); err != nil {
 		return err
 	}
 	if *toolsJSON {
@@ -493,7 +511,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if *showInspect {
 		return runConnectInspect(ctx, cfg, *inspectJSON, stdout, client)
 	}
-	return runConnect(ctx, cfg, *showUsage, stdin, stdout, stderr, client)
+	return runConnect(ctx, cfg, *showUsage, *usagePricing, stdin, stdout, stderr, client)
 }
 
 func resolveConnectConfig(cfg connectConfig) (connectConfig, error) {
@@ -543,7 +561,7 @@ func resolveConnectConfig(cfg connectConfig) (connectConfig, error) {
 	return cfg, nil
 }
 
-func runConnect(ctx context.Context, cfg connectConfig, showUsage bool, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+func runConnect(ctx context.Context, cfg connectConfig, showUsage bool, pricing usagePricing, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
 	start, err := startDaemonRun(ctx, cfg, client)
 	if err != nil {
 		return err
@@ -557,7 +575,7 @@ func runConnect(ctx context.Context, cfg connectConfig, showUsage bool, stdin io
 		case <-done:
 		}
 	}()
-	return streamDaemonRun(ctx, cfg, start, showUsage, bufio.NewReader(stdin), stdout, stderr, client)
+	return streamDaemonRun(ctx, cfg, start, showUsage, pricing, bufio.NewReader(stdin), stdout, stderr, client)
 }
 
 func runConnectTools(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
@@ -1267,7 +1285,7 @@ func startDaemonRun(ctx context.Context, cfg connectConfig, client httpDoer) (st
 	return out, nil
 }
 
-func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResult, showUsage bool, input *bufio.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
+func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResult, showUsage bool, pricing usagePricing, input *bufio.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+start.EventsURL, nil)
 	if err != nil {
 		return err
@@ -1340,7 +1358,7 @@ func streamDaemonRun(ctx context.Context, cfg connectConfig, start startRunResul
 				if len(messages) == 0 && done.Message != nil {
 					messages = []glue.Message{*done.Message}
 				}
-				writeUsageSummary(stderr, summarizeUsage(messages))
+				writeUsageSummary(stderr, summarizeUsage(messages), pricing)
 			}
 			return nil
 		case "run_error":
@@ -1380,7 +1398,51 @@ func summarizeUsage(messages []glue.Message) usageSummary {
 	return summary
 }
 
-func writeUsageSummary(w io.Writer, summary usageSummary) {
+func registerUsagePricingFlags(flags *flag.FlagSet) *usagePricing {
+	var pricing usagePricing
+	flags.Float64Var(&pricing.InputUSDPerMillion, "usage-input-price", 0, "USD per 1M input tokens for --usage cost estimates")
+	flags.Float64Var(&pricing.OutputUSDPerMillion, "usage-output-price", 0, "USD per 1M output tokens for --usage cost estimates")
+	flags.Float64Var(&pricing.CacheReadUSDPerMillion, "usage-cache-read-price", 0, "USD per 1M cache-read tokens for --usage cost estimates")
+	flags.Float64Var(&pricing.CacheWriteUSDPerMillion, "usage-cache-write-price", 0, "USD per 1M cache-write tokens for --usage cost estimates")
+	return &pricing
+}
+
+func markUsagePricingFlagState(flags *flag.FlagSet, pricing *usagePricing) {
+	flags.Visit(func(flag *flag.Flag) {
+		switch flag.Name {
+		case "usage-input-price", "usage-output-price", "usage-cache-read-price", "usage-cache-write-price":
+			pricing.Enabled = true
+		}
+	})
+}
+
+func validateUsagePricing(pricing usagePricing) error {
+	for name, value := range map[string]float64{
+		"--usage-input-price":       pricing.InputUSDPerMillion,
+		"--usage-output-price":      pricing.OutputUSDPerMillion,
+		"--usage-cache-read-price":  pricing.CacheReadUSDPerMillion,
+		"--usage-cache-write-price": pricing.CacheWriteUSDPerMillion,
+	} {
+		if value < 0 {
+			return fmt.Errorf("%s must be non-negative", name)
+		}
+	}
+	return nil
+}
+
+func usagePricingEnabled(pricing usagePricing) bool {
+	return pricing.Enabled
+}
+
+func estimateUsageCostUSD(summary usageSummary, pricing usagePricing) float64 {
+	const tokensPerMillion = 1_000_000
+	return (float64(summary.InputTokens)*pricing.InputUSDPerMillion +
+		float64(summary.OutputTokens)*pricing.OutputUSDPerMillion +
+		float64(summary.CacheReadTokens)*pricing.CacheReadUSDPerMillion +
+		float64(summary.CacheWriteTokens)*pricing.CacheWriteUSDPerMillion) / tokensPerMillion
+}
+
+func writeUsageSummary(w io.Writer, summary usageSummary, pricing usagePricing) {
 	if !summary.HasUsage {
 		return
 	}
@@ -1395,6 +1457,9 @@ func writeUsageSummary(w io.Writer, summary usageSummary) {
 		parts = append(parts, fmt.Sprintf("cache_write=%d", summary.CacheWriteTokens))
 	}
 	parts = append(parts, fmt.Sprintf("total=%d", summary.TotalTokens))
+	if usagePricingEnabled(pricing) {
+		parts = append(parts, fmt.Sprintf("cost_usd=%.6f", estimateUsageCostUSD(summary, pricing)))
+	}
 	fmt.Fprintf(w, "usage: %s\n", strings.Join(parts, " "))
 }
 
