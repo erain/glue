@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +119,85 @@ func (s *Store) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+// ListSessions implements glue.SessionLister by scanning JSON session files.
+func (s *Store) ListSessions(ctx context.Context, opts glue.ListSessionsOptions) ([]glue.SessionSummary, error) {
+	if s == nil {
+		return nil, errors.New("file store: nil store")
+	}
+	if strings.TrimSpace(s.dir) == "" {
+		return nil, errors.New("file store: directory is required")
+	}
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []glue.SessionSummary{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	prefix := strings.TrimSpace(opts.Prefix)
+	summaries := make([]glue.SessionSummary, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id, err := url.PathUnescape(strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil {
+			return nil, fmt.Errorf("file store: decode session file %s: %w", entry.Name(), err)
+		}
+		if prefix != "" && !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		state, found, err := s.Load(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		summaries = append(summaries, sessionSummaryFromState(state))
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		if !summaries[i].UpdatedAt.Equal(summaries[j].UpdatedAt) {
+			return summaries[i].UpdatedAt.After(summaries[j].UpdatedAt)
+		}
+		return summaries[i].ID < summaries[j].ID
+	})
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(summaries) {
+		return []glue.SessionSummary{}, nil
+	}
+	summaries = summaries[offset:]
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(summaries) > limit {
+		summaries = summaries[:limit]
+	}
+	return summaries, nil
+}
+
+func sessionSummaryFromState(state glue.SessionState) glue.SessionSummary {
+	summary := glue.SessionSummary{
+		ID:        state.ID,
+		CreatedAt: state.CreatedAt,
+		UpdatedAt: state.UpdatedAt,
+		Messages:  len(state.Messages),
+	}
+	for _, message := range state.Messages {
+		switch message.Role {
+		case glue.MessageRoleUser:
+			summary.UserMessages++
+		case glue.MessageRoleAssistant:
+			summary.AssistantMessages++
+		}
+	}
+	return summary
+}
+
 // Path returns the JSON file path for a session id. It is exposed for tests
 // and debugging; production code should not rely on it.
 func (s *Store) Path(id string) (string, error) {
@@ -136,3 +216,5 @@ func (s *Store) path(id string) (string, error) {
 	}
 	return filepath.Join(s.dir, url.PathEscape(id)+".json"), nil
 }
+
+var _ glue.SessionLister = (*Store)(nil)

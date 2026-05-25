@@ -151,6 +151,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return runRoles(args[1:], stdout, stderr)
 		case "memories":
 			return runMemories(ctx, args[1:], stdout, stderr)
+		case "sessions":
+			return runSessions(ctx, args[1:], stdout, stderr)
 		case "recall":
 			return runRecall(ctx, args[1:], stdout, stderr)
 		case "status":
@@ -184,6 +186,7 @@ Usage:
   peggy skills [flags]
   peggy roles [flags]
   peggy memories [flags]
+  peggy sessions [flags]
   peggy recall [flags] <query>
   peggy status [flags]
   peggy doctor [flags]
@@ -199,6 +202,7 @@ Examples:
   peggy skills --config ~/.config/peggy/settings.json
   peggy roles --config ~/.config/peggy/settings.json
   peggy memories --config ~/.config/peggy/settings.json
+  peggy sessions --config ~/.config/peggy/settings.json --prefix telegram:
   peggy recall --config ~/.config/peggy/settings.json "Australian Shepherd"
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
@@ -898,6 +902,110 @@ func writeMemories(w io.Writer, memories []Memory) {
 		if len(memory.Tags) > 0 {
 			fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
 		}
+	}
+}
+
+func runSessions(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy sessions", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+		prefix     = fs.String("prefix", "", "only list session ids with this prefix, such as telegram:")
+		limit      = fs.Int("limit", 50, "maximum sessions to return; 0 uses the store default")
+		offset     = fs.Int("offset", 0, "number of matching sessions to skip")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy sessions - list recent Peggy sessions without starting a model run.
+
+Usage:
+  peggy sessions [flags]
+
+Examples:
+  peggy sessions --config ~/.config/peggy/settings.json
+  peggy sessions --config ~/.config/peggy/settings.json --prefix telegram:
+  peggy sessions --config ~/.config/peggy/settings.json --json --limit 20
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy sessions: positional args not supported")
+		return 2
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "peggy sessions: --limit must be non-negative")
+		return 2
+	}
+	if *offset < 0 {
+		fmt.Fprintln(stderr, "peggy sessions: --offset must be non-negative")
+		return 2
+	}
+	store, missingSettings, err := openStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy sessions: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy sessions: no settings.json found; using built-in defaults")
+	}
+	if closer, ok := store.(io.Closer); ok {
+		defer closer.Close()
+	}
+	lister, ok := store.(glue.SessionLister)
+	if !ok {
+		fmt.Fprintln(stderr, "peggy sessions: configured store does not support session listing")
+		return 1
+	}
+	sessions, err := lister.ListSessions(ctx, glue.ListSessionsOptions{
+		Prefix: *prefix,
+		Limit:  *limit,
+		Offset: *offset,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy sessions: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(sessions); err != nil {
+			fmt.Fprintf(stderr, "peggy sessions: encode sessions: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	writeSessions(stdout, sessions)
+	return 0
+}
+
+func writeSessions(w io.Writer, sessions []glue.SessionSummary) {
+	if len(sessions) == 0 {
+		fmt.Fprintln(w, "No sessions found.")
+		return
+	}
+	for i, session := range sessions {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		updatedAt := "unknown"
+		if !session.UpdatedAt.IsZero() {
+			updatedAt = session.UpdatedAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "%s %s\n", updatedAt, session.ID)
+		if !session.CreatedAt.IsZero() {
+			fmt.Fprintf(w, "  created_at: %s\n", session.CreatedAt.Format(time.RFC3339))
+		}
+		fmt.Fprintf(w, "  messages: %d\n", session.Messages)
+		fmt.Fprintf(w, "  user_messages: %d\n", session.UserMessages)
+		fmt.Fprintf(w, "  assistant_messages: %d\n", session.AssistantMessages)
 	}
 }
 

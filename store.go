@@ -21,6 +21,35 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// SessionLister is an optional store capability for provider-free session
+// history browsers.
+type SessionLister interface {
+	ListSessions(ctx context.Context, opts ListSessionsOptions) ([]SessionSummary, error)
+}
+
+// ListSessionsOptions filters and pages a session history listing.
+type ListSessionsOptions struct {
+	// Prefix restricts results to session ids beginning with Prefix.
+	Prefix string
+
+	// Limit caps returned rows. Non-positive values use the store default.
+	Limit int
+
+	// Offset skips rows after filtering and ordering. Negative values are
+	// treated as zero.
+	Offset int
+}
+
+// SessionSummary is provider-free metadata about one stored session.
+type SessionSummary struct {
+	ID                string    `json:"id"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	Messages          int       `json:"messages"`
+	UserMessages      int       `json:"user_messages"`
+	AssistantMessages int       `json:"assistant_messages"`
+}
+
 // SessionState is the durable representation of a session.
 type SessionState struct {
 	Version   int            `json:"version"`
