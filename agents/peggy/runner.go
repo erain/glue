@@ -159,6 +159,8 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return runStatus(args[1:], stdout, stderr)
 		case "doctor":
 			return runDoctor(args[1:], stdout, stderr)
+		case "dashboard":
+			return runDashboard(ctx, args[1:], stdout, stderr, http.DefaultClient)
 		case "mcp":
 			return runMCP(ctx, args[1:], stdout, stderr)
 		}
@@ -190,6 +192,7 @@ Usage:
   peggy recall [flags] <query>
   peggy status [flags]
   peggy doctor [flags]
+  peggy dashboard [flags]
   peggy mcp [command]
   peggy serve [flags]
 
@@ -209,6 +212,7 @@ Examples:
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
   peggy doctor --config ~/.config/peggy/settings.json
+  peggy dashboard --config ~/.config/peggy/settings.json
   peggy mcp tools --config ~/.config/peggy/settings.json
   peggy serve --config ~/.config/peggy/settings.json
 

@@ -35,6 +35,10 @@ not formally follow SemVer until v1.0.
   memories to a versioned JSON backup, and `peggy memories import`
   validates, dry-runs, and restores those memories while skipping
   existing duplicates by id or content.
+- **Local dashboard.** `peggy dashboard` runs a localhost web control
+  surface over existing daemon endpoints plus local session listing, so
+  dogfood users can inspect health, tools, skills, roles, memories,
+  recall, and recent sessions without remembering every CLI command.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening
