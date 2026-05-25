@@ -57,6 +57,10 @@ not formally follow SemVer until v1.0.
   search through the daemon host, and `glue connect --recall <query>`
   can search the live Peggy store with JSON, memories-only, and limit
   modes without starting a model run.
+- **Daemon memory catalog.** `peggy serve` now exposes authenticated
+  curated-memory listing through the daemon host, and
+  `glue connect --memories` can render or JSON-export the live memory
+  catalog with an optional limit.
 
 ## v0.4.0 — 2026-05-24
 

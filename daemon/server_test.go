@@ -191,6 +191,21 @@ func (h *recallHost) RecallSearch(_ context.Context, req RecallRequest) (RecallR
 	return RecallResponse{Hits: h.hits}, h.err
 }
 
+type memoryCatalogHost struct {
+	req      MemoryCatalogRequest
+	memories []MemoryEntry
+	err      error
+}
+
+func (memoryCatalogHost) Session(context.Context, string, ...glue.SessionOption) (*glue.Session, error) {
+	return nil, errors.New("unused")
+}
+
+func (h *memoryCatalogHost) MemoryCatalog(_ context.Context, req MemoryCatalogRequest) (MemoryCatalogResponse, error) {
+	h.req = req
+	return MemoryCatalogResponse{Memories: h.memories}, h.err
+}
+
 func TestServerAuthAndHealth(t *testing.T) {
 	srv := newTestServer(t, glue.NewAgent(glue.AgentOptions{Provider: scriptedProvider{}}))
 	ts := httptest.NewServer(srv)
@@ -640,6 +655,80 @@ func TestServerRecallValidationAndUnsupportedHost(t *testing.T) {
 	}
 
 	resp = postJSON(t, ts.URL+"/v1/recall", "token", `{"query":"x","limit":-1}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("negative limit status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestServerMemories(t *testing.T) {
+	host := &memoryCatalogHost{memories: []MemoryEntry{
+		{
+			ID:        "mem_2",
+			Content:   "User prefers terse responses.",
+			Tags:      []string{"preference"},
+			Timestamp: time.Date(2026, 5, 24, 13, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:        "mem_1",
+			Content:   "User's Australian Shepherd is named Inkblot.",
+			Tags:      []string{"pet"},
+			Timestamp: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+		},
+	}}
+	srv := newTestServer(t, host)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/memories", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated memories status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/memories?limit=1", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("memories status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog MemoryCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Memories) != 1 || catalog.Memories[0].ID != "mem_2" || host.req.Limit != 1 {
+		t.Fatalf("catalog=%+v request=%+v", catalog.Memories, host.req)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/status", "token")
+	defer resp.Body.Close()
+	var status statusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(status.Capabilities, "memories") {
+		t.Fatalf("capabilities = %v, missing memories", status.Capabilities)
+	}
+}
+
+func TestServerMemoriesValidationAndUnsupportedHost(t *testing.T) {
+	srv := newTestServer(t, sessionOnlyHost{})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	resp := getJSON(t, ts.URL+"/v1/memories", "token")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unsupported memories status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var catalog MemoryCatalogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Memories) != 0 {
+		t.Fatalf("catalog = %+v, want empty", catalog.Memories)
+	}
+
+	resp = getJSON(t, ts.URL+"/v1/memories?limit=-1", "token")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("negative limit status = %d, want %d", resp.StatusCode, http.StatusBadRequest)

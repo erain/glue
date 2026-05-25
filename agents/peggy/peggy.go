@@ -288,6 +288,27 @@ func (p *Peggy) RecallSearch(ctx context.Context, req daemon.RecallRequest) (dae
 	return daemon.RecallResponse{Hits: out}, nil
 }
 
+// MemoryCatalog implements daemon.MemoryCatalogHost.
+func (p *Peggy) MemoryCatalog(ctx context.Context, req daemon.MemoryCatalogRequest) (daemon.MemoryCatalogResponse, error) {
+	memories, err := p.ListMemories(ctx)
+	if err != nil {
+		return daemon.MemoryCatalogResponse{}, err
+	}
+	if req.Limit > 0 && len(memories) > req.Limit {
+		memories = memories[:req.Limit]
+	}
+	out := make([]daemon.MemoryEntry, 0, len(memories))
+	for _, memory := range memories {
+		out = append(out, daemon.MemoryEntry{
+			ID:        memory.ID,
+			Content:   memory.Content,
+			Tags:      append([]string(nil), memory.Tags...),
+			Timestamp: memory.Timestamp,
+		})
+	}
+	return daemon.MemoryCatalogResponse{Memories: out}, nil
+}
+
 // MCPResourceCatalog implements daemon.MCPResourceCatalogHost.
 func (p *Peggy) MCPResourceCatalog(ctx context.Context) ([]daemon.MCPResourceCatalogEntry, error) {
 	if p == nil || p.mcpManager == nil {
