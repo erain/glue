@@ -173,6 +173,7 @@ type daemonInspect struct {
 	Tools        []daemonToolCatalogEntry         `json:"tools"`
 	Skills       []daemon.SkillCatalogEntry       `json:"skills,omitempty"`
 	Roles        []daemon.RoleCatalogEntry        `json:"roles,omitempty"`
+	Memories     []daemon.MemoryEntry             `json:"memories,omitempty"`
 	MCPResources []daemon.MCPResourceCatalogEntry `json:"mcp_resources,omitempty"`
 	MCPPrompts   []daemon.MCPPromptCatalogEntry   `json:"mcp_prompts,omitempty"`
 }
@@ -535,7 +536,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 		return runConnectStatus(ctx, cfg, *statusJSON, stdout, client)
 	}
 	if *showInspect {
-		return runConnectInspect(ctx, cfg, *inspectJSON, stdout, client)
+		return runConnectInspect(ctx, cfg, *memoryLimit, *inspectJSON, stdout, client)
 	}
 	return runConnect(ctx, cfg, *showUsage, *usagePricing, stdin, stdout, stderr, client)
 }
@@ -792,7 +793,10 @@ func runConnectStatus(ctx context.Context, cfg connectConfig, jsonOutput bool, s
 	return nil
 }
 
-func runConnectInspect(ctx context.Context, cfg connectConfig, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+func runConnectInspect(ctx context.Context, cfg connectConfig, memoryLimit int, jsonOutput bool, stdout io.Writer, client httpDoer) error {
+	if memoryLimit < 0 {
+		return errors.New("--memory-limit must be non-negative")
+	}
 	status, err := fetchDaemonStatus(ctx, cfg, client)
 	if err != nil {
 		return err
@@ -815,6 +819,13 @@ func runConnectInspect(ctx context.Context, cfg connectConfig, jsonOutput bool, 
 			return err
 		}
 		inspect.Roles = roles.Roles
+	}
+	if daemonHasCapability(status, "memories") {
+		memories, err := fetchDaemonMemories(ctx, cfg, memoryLimit, client)
+		if err != nil {
+			return err
+		}
+		inspect.Memories = memories.Memories
 	}
 	if daemonHasCapability(status, "mcp_resources") {
 		resources, err := fetchDaemonMCPResources(ctx, cfg, client)
@@ -888,6 +899,11 @@ func writeDaemonInspect(w io.Writer, inspect daemonInspect) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "roles:")
 		writeDaemonRoleCatalogIndented(w, inspect.Roles, "  ")
+	}
+	if daemonHasCapability(inspect.Status, "memories") {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "memories:")
+		writeDaemonMemoriesIndented(w, inspect.Memories, "  ")
 	}
 	if daemonHasCapability(inspect.Status, "mcp_resources") {
 		fmt.Fprintln(w)
@@ -1231,31 +1247,35 @@ func writeDaemonRoleCatalogIndented(w io.Writer, roles []daemon.RoleCatalogEntry
 }
 
 func writeDaemonMemories(w io.Writer, memories []daemon.MemoryEntry) {
+	writeDaemonMemoriesIndented(w, memories, "")
+}
+
+func writeDaemonMemoriesIndented(w io.Writer, memories []daemon.MemoryEntry, indent string) {
 	if len(memories) == 0 {
-		fmt.Fprintln(w, "No daemon memories reported.")
+		fmt.Fprintf(w, "%sNo daemon memories reported.\n", indent)
 		return
 	}
 	for i, memory := range memories {
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
-		fmt.Fprintf(w, "%d. %s\n", i+1, memory.ID)
-		writeDaemonMemoryFields(w, memory)
+		fmt.Fprintf(w, "%s%d. %s\n", indent, i+1, memory.ID)
+		writeDaemonMemoryFields(w, memory, indent)
 	}
 }
 
 func writeDaemonMemory(w io.Writer, memory daemon.MemoryEntry) {
 	fmt.Fprintln(w, memory.ID)
-	writeDaemonMemoryFields(w, memory)
+	writeDaemonMemoryFields(w, memory, "")
 }
 
-func writeDaemonMemoryFields(w io.Writer, memory daemon.MemoryEntry) {
+func writeDaemonMemoryFields(w io.Writer, memory daemon.MemoryEntry, indent string) {
 	if !memory.Timestamp.IsZero() {
-		fmt.Fprintf(w, "  timestamp: %s\n", memory.Timestamp.Format(time.RFC3339))
+		fmt.Fprintf(w, "%s  timestamp: %s\n", indent, memory.Timestamp.Format(time.RFC3339))
 	}
-	fmt.Fprintf(w, "  content: %s\n", oneLine(memory.Content))
+	fmt.Fprintf(w, "%s  content: %s\n", indent, oneLine(memory.Content))
 	if len(memory.Tags) > 0 {
-		fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
+		fmt.Fprintf(w, "%s  tags: %s\n", indent, strings.Join(memory.Tags, ", "))
 	}
 }
 
@@ -1925,7 +1945,7 @@ Flags:
   --memories-json
              Connect --memories mode: print JSON.
   --memory-limit
-             Connect --memories mode: maximum memories; 0 means no limit.
+             Connect --memories/--inspect mode: maximum memories; 0 means no limit.
   --forget-memory
              Connect mode: delete one daemon memory by id and exit without starting a run.
   --forget-memory-json

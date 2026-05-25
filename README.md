@@ -647,6 +647,8 @@ Use `--base-url`, `--token`, or `--metadata` when connecting to an
 explicit daemon endpoint. Use `--inspect` for a compact authenticated
 status-and-catalog preflight, or `--status`, `--tools`,
 `--mcp-resources`, or `--mcp-prompts` to render each view separately.
+When supported by the daemon, `--inspect` also includes memory entries;
+use `--memory-limit` to cap that section.
 Peggy daemons also support `--mcp-read` and `--mcp-prompt` for direct
 resource reads and prompt rendering, `--memories` for curated memory
 catalogs, `--forget-memory` for memory deletion, plus `--recall` for
