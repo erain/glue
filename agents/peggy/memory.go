@@ -2,6 +2,8 @@ package peggy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +43,7 @@ You have two tools for durable memory:
 
 // Memory is a single curated memory record.
 type Memory struct {
+	ID        string    `json:"id"`
 	Content   string    `json:"content"`
 	Tags      []string  `json:"tags,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
@@ -48,8 +51,8 @@ type Memory struct {
 
 // RecallOptions configures a Recall call.
 type RecallOptions struct {
-	Limit         int
-	OnlyMemories  bool
+	Limit        int
+	OnlyMemories bool
 }
 
 // RecallOption is a functional option for Peggy.Recall.
@@ -104,10 +107,12 @@ func (p *Peggy) AddMemory(ctx context.Context, content string, tags []string) (M
 		state.CreatedAt = now
 	}
 	tagsCopy := append([]string(nil), tags...)
+	id := memoryID(now, content)
 	state.Messages = append(state.Messages, glue.Message{
 		Role:    glue.MessageRoleAssistant,
 		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: content}},
 		Metadata: map[string]any{
+			"id":     id,
 			"memory": true,
 			"tags":   tagsCopy,
 		},
@@ -117,7 +122,7 @@ func (p *Peggy) AddMemory(ctx context.Context, content string, tags []string) (M
 	if err := p.store.Save(ctx, MemoriesSessionID, state); err != nil {
 		return Memory{}, fmt.Errorf("peggy: save memories: %w", err)
 	}
-	return Memory{Content: content, Tags: tagsCopy, Timestamp: now}, nil
+	return Memory{ID: id, Content: content, Tags: tagsCopy, Timestamp: now}, nil
 }
 
 // ListMemories returns the curated memory list, newest first. Useful
@@ -132,29 +137,9 @@ func (p *Peggy) ListMemories(ctx context.Context) ([]Memory, error) {
 	}
 	out := make([]Memory, 0, len(state.Messages))
 	for _, m := range state.Messages {
-		if m.Role != glue.MessageRoleAssistant {
+		mem, ok := memoryFromMessage(m)
+		if !ok {
 			continue
-		}
-		mem := Memory{Timestamp: m.CreatedAt}
-		for _, p := range m.Content {
-			if p.Type == glue.ContentTypeText {
-				if mem.Content != "" {
-					mem.Content += "\n"
-				}
-				mem.Content += p.Text
-			}
-		}
-		if mem.Content == "" {
-			continue
-		}
-		if tags, ok := m.Metadata["tags"].([]string); ok {
-			mem.Tags = append([]string(nil), tags...)
-		} else if anyTags, ok := m.Metadata["tags"].([]any); ok {
-			for _, t := range anyTags {
-				if s, ok := t.(string); ok {
-					mem.Tags = append(mem.Tags, s)
-				}
-			}
 		}
 		out = append(out, mem)
 	}
@@ -162,6 +147,88 @@ func (p *Peggy) ListMemories(ctx context.Context) ([]Memory, error) {
 		return out[i].Timestamp.After(out[j].Timestamp)
 	})
 	return out, nil
+}
+
+// ForgetMemory deletes one curated memory by id from the __memories__
+// session and returns the removed memory.
+func (p *Peggy) ForgetMemory(ctx context.Context, id string) (Memory, error) {
+	if p == nil || p.store == nil {
+		return Memory{}, errors.New("peggy: ForgetMemory: not initialised")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Memory{}, errors.New("peggy: ForgetMemory: id is required")
+	}
+	memoryWriteMu.Lock()
+	defer memoryWriteMu.Unlock()
+
+	state, _, err := p.store.Load(ctx, MemoriesSessionID)
+	if err != nil {
+		return Memory{}, fmt.Errorf("peggy: load memories: %w", err)
+	}
+	var removed Memory
+	found := false
+	kept := state.Messages[:0]
+	for _, m := range state.Messages {
+		mem, ok := memoryFromMessage(m)
+		if ok && mem.ID == id && !found {
+			removed = mem
+			found = true
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if !found {
+		return Memory{}, fmt.Errorf("peggy: memory %q not found", id)
+	}
+	state.Messages = kept
+	state.UpdatedAt = time.Now().UTC()
+	if err := p.store.Save(ctx, MemoriesSessionID, state); err != nil {
+		return Memory{}, fmt.Errorf("peggy: save memories: %w", err)
+	}
+	return removed, nil
+}
+
+func memoryFromMessage(m glue.Message) (Memory, bool) {
+	if m.Role != glue.MessageRoleAssistant {
+		return Memory{}, false
+	}
+	mem := Memory{Timestamp: m.CreatedAt}
+	for _, p := range m.Content {
+		if p.Type == glue.ContentTypeText {
+			if mem.Content != "" {
+				mem.Content += "\n"
+			}
+			mem.Content += p.Text
+		}
+	}
+	mem.Content = strings.TrimSpace(mem.Content)
+	if mem.Content == "" {
+		return Memory{}, false
+	}
+	if id, ok := m.Metadata["id"].(string); ok {
+		mem.ID = strings.TrimSpace(id)
+	}
+	if mem.ID == "" {
+		mem.ID = memoryID(mem.Timestamp, mem.Content)
+	}
+	if tags, ok := m.Metadata["tags"].([]string); ok {
+		mem.Tags = append([]string(nil), tags...)
+	} else if anyTags, ok := m.Metadata["tags"].([]any); ok {
+		for _, t := range anyTags {
+			if s, ok := t.(string); ok {
+				mem.Tags = append(mem.Tags, s)
+			}
+		}
+	}
+	return mem, true
+}
+
+func memoryID(timestamp time.Time, content string) string {
+	content = strings.TrimSpace(content)
+	stamp := timestamp.UTC().Format(time.RFC3339Nano)
+	sum := sha256.Sum256([]byte(stamp + "\n" + content))
+	return fmt.Sprintf("mem_%d_%s", timestamp.UTC().UnixNano(), hex.EncodeToString(sum[:4]))
 }
 
 // Recall searches Peggy's history (everything by default; restrict

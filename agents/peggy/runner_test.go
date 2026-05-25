@@ -395,7 +395,7 @@ func TestRunMemoriesListsWithoutProvider(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
 	}
-	for _, want := range []string{"content: User prefers terse responses.", "tags: preference"} {
+	for _, want := range []string{"id: mem_", "content: User prefers terse responses.", "tags: preference"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("stdout = %q, missing %q", out.String(), want)
 		}
@@ -421,8 +421,57 @@ func TestRunMemoriesJSONAndLimit(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &memories); err != nil {
 		t.Fatalf("decode stdout: %v\n%s", err, out.String())
 	}
-	if len(memories) != 1 {
+	if len(memories) != 1 || memories[0].ID == "" {
 		t.Fatalf("memories = %+v, want one result", memories)
+	}
+}
+
+func TestRunMemoriesForgetDeletesWithoutProvider(t *testing.T) {
+	storePath := seedRunnerMemories(t)
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": storePath,
+		},
+	})
+	memories := readRunnerMemoriesJSON(t, cfgPath)
+	if len(memories) != 2 {
+		t.Fatalf("seeded memories = %+v", memories)
+	}
+	forgetID := memories[0].ID
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "forget", forgetID, "--config", cfgPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "forgot "+forgetID) {
+		t.Fatalf("stdout = %q, want forgot id", out.String())
+	}
+
+	memories = readRunnerMemoriesJSON(t, cfgPath)
+	if len(memories) != 1 || memories[0].ID == forgetID {
+		t.Fatalf("memories after forget = %+v", memories)
+	}
+}
+
+func TestRunMemoriesForgetUnknownID(t *testing.T) {
+	cfgPath := writeRunnerConfig(t, map[string]any{
+		"provider": "bogus-provider",
+		"store": map[string]any{
+			"type": "file",
+			"path": filepath.Join(t.TempDir(), "sessions"),
+		},
+	})
+
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "forget", "--config", cfgPath, "mem_missing"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit = %d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), `memory "mem_missing" not found`) {
+		t.Fatalf("stderr = %q", errOut.String())
 	}
 }
 
@@ -487,6 +536,20 @@ func seedRunnerMemories(t *testing.T) string {
 		t.Fatalf("Close: %v", err)
 	}
 	return storePath
+}
+
+func readRunnerMemoriesJSON(t *testing.T, cfgPath string) []Memory {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"memories", "--config", cfgPath, "--json"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("memories json exit = %d stderr=%q", code, errOut.String())
+	}
+	var memories []Memory
+	if err := json.Unmarshal(out.Bytes(), &memories); err != nil {
+		t.Fatalf("decode memories: %v\n%s", err, out.String())
+	}
+	return memories
 }
 
 func TestRunSkillsListsWorkspaceSkills(t *testing.T) {

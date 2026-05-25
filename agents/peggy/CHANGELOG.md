@@ -46,6 +46,10 @@ not formally follow SemVer until v1.0.
 - **Memory inspection.** `peggy memories` lists curated memories from
   the configured store without starting a provider, and `--json`
   exports the same list for scripts or backups.
+- **Memory forgetting.** Curated memories now have stable IDs, and
+  `peggy memories forget <id>` removes one memory from the dedicated
+  `__memories__` session without touching ordinary conversation
+  history.
 
 ## v0.4.0 — 2026-05-24
 

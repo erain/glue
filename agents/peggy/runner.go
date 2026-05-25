@@ -686,6 +686,9 @@ func writeRoleCatalog(w io.Writer, catalog []roleCatalogEntry) {
 }
 
 func runMemories(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "forget" {
+		return runMemoriesForget(ctx, args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("peggy memories", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -703,6 +706,7 @@ Examples:
   peggy memories --config ~/.config/peggy/settings.json
   peggy memories --config ~/.config/peggy/settings.json --json
   peggy memories --limit 20
+  peggy memories forget <id>
 
 Flags:
 `)
@@ -723,18 +727,13 @@ Flags:
 		return 2
 	}
 
-	settings, settingsPath, err := LoadSettings(*configPath)
+	store, missingSettings, err := openStoreForRunner(*configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy memories: %v\n", err)
 		return 1
 	}
-	if settingsPath == "" {
+	if missingSettings {
 		fmt.Fprintln(stderr, "peggy memories: no settings.json found; using built-in defaults")
-	}
-	store, err := buildStore(settings)
-	if err != nil {
-		fmt.Fprintf(stderr, "peggy memories: store: %v\n", err)
-		return 1
 	}
 	if closer, ok := store.(io.Closer); ok {
 		defer closer.Close()
@@ -762,6 +761,99 @@ Flags:
 	return 0
 }
 
+func runMemoriesForget(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy memories forget", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy memories forget - delete one curated memory by id.
+
+Usage:
+  peggy memories forget [flags] <id>
+
+Examples:
+  peggy memories forget --config ~/.config/peggy/settings.json mem_123
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	id, err := parseMemoriesForgetArgs(fs.Args(), configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories forget: %v\n", err)
+		return 2
+	}
+	store, missingSettings, err := openStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories forget: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy memories forget: no settings.json found; using built-in defaults")
+	}
+	if closer, ok := store.(io.Closer); ok {
+		defer closer.Close()
+	}
+
+	p := &Peggy{store: store}
+	removed, err := p.ForgetMemory(ctx, id)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy memories forget: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "forgot %s\n", removed.ID)
+	fmt.Fprintf(stdout, "  content: %s\n", singleLine(removed.Content))
+	return 0
+}
+
+func parseMemoriesForgetArgs(args []string, configPath *string) (string, error) {
+	var id string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--config" || arg == "-config":
+			if i+1 >= len(args) {
+				return "", errors.New("--config requires a value")
+			}
+			*configPath = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--config="):
+			*configPath = strings.TrimPrefix(arg, "--config=")
+		case strings.HasPrefix(arg, "-config="):
+			*configPath = strings.TrimPrefix(arg, "-config=")
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %s", arg)
+		default:
+			if id != "" {
+				return "", errors.New("exactly one memory id is required")
+			}
+			id = strings.TrimSpace(arg)
+		}
+	}
+	if id == "" {
+		return "", errors.New("exactly one memory id is required")
+	}
+	return id, nil
+}
+
+func openStoreForRunner(configPath string) (glue.Store, bool, error) {
+	settings, settingsPath, err := LoadSettings(configPath)
+	if err != nil {
+		return nil, false, err
+	}
+	store, err := buildStore(settings)
+	if err != nil {
+		return nil, settingsPath == "", fmt.Errorf("store: %w", err)
+	}
+	return store, settingsPath == "", nil
+}
+
 func writeMemories(w io.Writer, memories []Memory) {
 	if len(memories) == 0 {
 		fmt.Fprintln(w, "No memories recorded.")
@@ -776,6 +868,7 @@ func writeMemories(w io.Writer, memories []Memory) {
 			timestamp = memory.Timestamp.Format(time.RFC3339)
 		}
 		fmt.Fprintf(w, "%s\n", timestamp)
+		fmt.Fprintf(w, "  id: %s\n", memory.ID)
 		fmt.Fprintf(w, "  content: %s\n", singleLine(memory.Content))
 		if len(memory.Tags) > 0 {
 			fmt.Fprintf(w, "  tags: %s\n", strings.Join(memory.Tags, ", "))
