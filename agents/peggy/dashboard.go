@@ -1,6 +1,7 @@
 package peggy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -93,9 +94,25 @@ type dashboardPage struct {
 	RecallQuery string
 	RecallHits  []daemon.RecallHit
 	Sessions    []glue.SessionSummary
+	RunForm     dashboardRunForm
+	RunResult   dashboardRunResult
 	Errors      []string
 	Warnings    []string
 	Limits      dashboardLimits
+}
+
+type dashboardRunForm struct {
+	SessionID string
+	Text      string
+}
+
+type dashboardRunResult struct {
+	Submitted bool
+	OK        bool
+	RunID     string
+	SessionID string
+	Text      string
+	Error     string
 }
 
 type dashboardLimits struct {
@@ -190,18 +207,38 @@ Flags:
 
 func newDashboardHandler(opts dashboardOptions) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
+		switch {
+		case r.URL.Path == "/" && r.Method == http.MethodGet:
+			reqOpts := opts
+			if q := strings.TrimSpace(r.URL.Query().Get("recall")); q != "" {
+				reqOpts.RecallQuery = q
+			}
+			page := loadDashboardPage(r.Context(), reqOpts)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := renderDashboardHTML(w, page); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		case r.URL.Path == "/run" && r.Method == http.MethodPost:
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			runForm := dashboardRunForm{
+				SessionID: strings.TrimSpace(r.FormValue("session_id")),
+				Text:      strings.TrimSpace(r.FormValue("prompt")),
+			}
+			result := runDashboardPrompt(r.Context(), opts, runForm)
+			page := loadDashboardPage(r.Context(), opts)
+			page.RunForm = runForm
+			page.RunResult = result
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := renderDashboardHTML(w, page); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		case r.URL.Path == "/run":
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		default:
 			http.NotFound(w, r)
-			return
-		}
-		reqOpts := opts
-		if q := strings.TrimSpace(r.URL.Query().Get("recall")); q != "" {
-			reqOpts.RecallQuery = q
-		}
-		page := loadDashboardPage(r.Context(), reqOpts)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := renderDashboardHTML(w, page); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 }
@@ -215,6 +252,7 @@ func loadDashboardPage(ctx context.Context, opts dashboardOptions) dashboardPage
 			Session: opts.SessionLimit,
 			Recall:  opts.RecallLimit,
 		},
+		RunForm: dashboardRunForm{SessionID: "dashboard"},
 	}
 	daemonCfg, err := resolveDashboardDaemonConfig(opts)
 	if err != nil {
@@ -270,7 +308,7 @@ func resolveDashboardDaemonConfig(opts dashboardOptions) (dashboardDaemonConfig,
 }
 
 func loadDashboardDaemonData(ctx context.Context, opts dashboardOptions, daemonCfg dashboardDaemonConfig, page *dashboardPage) {
-	client := opts.HTTPClient
+	client := dashboardClient(opts.HTTPClient)
 	if err := dashboardGetJSON(ctx, client, daemonCfg, "/v1/status", &page.Status); err != nil {
 		page.Errors = append(page.Errors, "daemon status: "+err.Error())
 		return
@@ -346,6 +384,199 @@ func loadDashboardSessions(ctx context.Context, opts dashboardOptions, page *das
 		return
 	}
 	page.Sessions = sessions
+}
+
+func runDashboardPrompt(ctx context.Context, opts dashboardOptions, form dashboardRunForm) dashboardRunResult {
+	result := dashboardRunResult{
+		Submitted: true,
+		SessionID: strings.TrimSpace(form.SessionID),
+	}
+	text := strings.TrimSpace(form.Text)
+	if result.SessionID == "" {
+		result.SessionID = "dashboard"
+	}
+	if text == "" {
+		result.Error = "prompt is required"
+		return result
+	}
+	daemonCfg, err := resolveDashboardDaemonConfig(opts)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	client := dashboardClient(opts.HTTPClient)
+	start, err := dashboardStartRun(ctx, client, daemonCfg, result.SessionID, text)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	result.RunID = start.RunID
+	result.SessionID = start.SessionID
+	out, err := dashboardStreamRun(ctx, client, daemonCfg, start)
+	if err != nil {
+		_ = dashboardCancelRun(context.Background(), client, daemonCfg, start.RunID)
+		result.Error = err.Error()
+		return result
+	}
+	result.OK = true
+	result.Text = out
+	return result
+}
+
+func dashboardClient(client dashboardHTTPDoer) dashboardHTTPDoer {
+	if client != nil {
+		return client
+	}
+	return http.DefaultClient
+}
+
+type dashboardStartRunRequest struct {
+	Text     string `json:"text"`
+	ClientID string `json:"client_id,omitempty"`
+}
+
+type dashboardStartRunResponse struct {
+	RunID     string `json:"run_id"`
+	SessionID string `json:"session_id"`
+	EventsURL string `json:"events_url"`
+}
+
+func dashboardStartRun(ctx context.Context, client dashboardHTTPDoer, cfg dashboardDaemonConfig, sessionID, text string) (dashboardStartRunResponse, error) {
+	payload := dashboardStartRunRequest{
+		Text:     text,
+		ClientID: fmt.Sprintf("dashboard:%d", os.Getpid()),
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return dashboardStartRunResponse{}, err
+	}
+	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/runs"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BaseURL+path, &body)
+	if err != nil {
+		return dashboardStartRunResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var out dashboardStartRunResponse
+	if err := dashboardDoJSON(client, cfg, req, &out); err != nil {
+		return dashboardStartRunResponse{}, fmt.Errorf("start run: %w", err)
+	}
+	if out.RunID == "" || out.EventsURL == "" {
+		return dashboardStartRunResponse{}, errors.New("start run: missing run id or events URL")
+	}
+	return out, nil
+}
+
+func dashboardStreamRun(ctx context.Context, client dashboardHTTPDoer, cfg dashboardDaemonConfig, start dashboardStartRunResponse) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+start.EventsURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("event stream: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var text strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event daemon.EventEnvelope
+		dec := json.NewDecoder(strings.NewReader(strings.TrimPrefix(line, "data: ")))
+		dec.UseNumber()
+		if err := dec.Decode(&event); err != nil {
+			return "", err
+		}
+		switch event.Type {
+		case string(glue.EventTextDelta):
+			if delta := dashboardPayloadString(event.Payload, "delta"); delta != "" {
+				text.WriteString(delta)
+			}
+		case "permission_request":
+			return "", errors.New("run requested tool permission; use glue connect for permission-gated runs")
+		case "run_done":
+			if text.Len() > 0 {
+				return text.String(), nil
+			}
+			done, err := dashboardDecodePayload[dashboardRunDonePayload](event.Payload)
+			if err != nil {
+				return "", err
+			}
+			return done.Text, nil
+		case "run_error":
+			if msg := dashboardPayloadErrorMessage(event.Payload); msg != "" {
+				return "", errors.New(msg)
+			}
+			return "", errors.New("daemon run failed")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", errors.New("event stream closed before terminal event")
+}
+
+type dashboardRunDonePayload struct {
+	Text string `json:"text"`
+}
+
+func dashboardCancelRun(ctx context.Context, client dashboardHTTPDoer, cfg dashboardDaemonConfig, runID string) error {
+	if strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfg.BaseURL+"/v1/runs/"+url.PathEscape(runID), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func dashboardDecodePayload[T any](payload any) (T, error) {
+	var out T
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(data, &out)
+	return out, err
+}
+
+func dashboardPayloadString(payload any, key string) string {
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := m[key].(string)
+	return value
+}
+
+func dashboardPayloadErrorMessage(payload any) string {
+	m, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	errValue, ok := m["error"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	msg, _ := errValue["message"].(string)
+	return strings.TrimSpace(msg)
 }
 
 func dashboardGetJSON(ctx context.Context, client dashboardHTTPDoer, cfg dashboardDaemonConfig, path string, out any) error {
@@ -644,6 +875,17 @@ input[type="search"] {
   padding: 10px 12px;
   font: inherit;
 }
+textarea, input[type="text"] {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+}
+textarea {
+  min-height: 112px;
+  resize: vertical;
+}
 button {
   border: 1px solid #0b5f59;
   background: var(--accent);
@@ -681,6 +923,7 @@ footer { padding-top: 18px; color: var(--muted); font-size: 13px; }
 </header>
 <nav>
   <a href="#health">Health</a>
+  <a href="#run">Run</a>
   <a href="#recall">Recall</a>
   <a href="#skills">Skills</a>
   <a href="#roles">Roles</a>
@@ -708,6 +951,27 @@ footer { padding-top: 18px; color: var(--muted); font-size: 13px; }
         <div class="item"><div class="item-title">{{ .Error }}</div><div class="item-meta">{{ formatTime .Time }} {{ .SessionID }} {{ .ClientID }}</div></div>
       {{ end }}
       </div>
+    {{ end }}
+  </section>
+
+  <section id="run" class="band">
+    <h2>Run Prompt</h2>
+    <form method="post" action="/run" style="display:block">
+      <label class="item-meta" for="session_id">Session</label>
+      <input type="text" id="session_id" name="session_id" value="{{ .RunForm.SessionID }}" placeholder="dashboard">
+      <label class="item-meta" for="prompt" style="display:block;margin-top:12px">Prompt</label>
+      <textarea id="prompt" name="prompt" placeholder="Ask Peggy to do something">{{ .RunForm.Text }}</textarea>
+      <button type="submit" style="margin-top:10px">Run</button>
+    </form>
+    {{ if .RunResult.Submitted }}
+      {{ if .RunResult.OK }}
+        <div class="item">
+          <div class="item-title">Run {{ .RunResult.RunID }} · {{ .RunResult.SessionID }}</div>
+          <p style="margin-top:8px;white-space:pre-wrap">{{ .RunResult.Text }}</p>
+        </div>
+      {{ else }}
+        <div class="alert">Run failed: {{ .RunResult.Error }}</div>
+      {{ end }}
     {{ end }}
   </section>
 

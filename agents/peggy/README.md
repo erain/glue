@@ -459,10 +459,11 @@ SIGINT/SIGTERM.
 `peggy dashboard` starts a local web control surface over the same
 daemon metadata and bearer-token flow. It binds to `127.0.0.1:0` by
 default, fetches daemon status, diagnostics, tools, skills, roles,
-memories, and recall server-side, and reads recent sessions from the
-configured local store. It does not put the bearer token into the HTML.
-Use `--once` to render a single HTML snapshot, or `--allow-nonlocal`
-only when you deliberately want to bind outside loopback.
+memories, and recall server-side, reads recent sessions from the
+configured local store, and can start a prompt run through the existing
+daemon SSE endpoint. It does not put the bearer token into the HTML. Use
+`--once` to render a single HTML snapshot, or `--allow-nonlocal` only
+when you deliberately want to bind outside loopback.
 
 Restart/recovery is intentionally local-first: stop the current
 `peggy serve` process with SIGINT/SIGTERM, start it again, and let it
