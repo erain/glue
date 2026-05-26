@@ -39,6 +39,9 @@ not formally follow SemVer until v1.0.
   surface over existing daemon endpoints plus local session listing, so
   dogfood users can inspect health, tools, skills, roles, memories,
   recall, and recent sessions without remembering every CLI command.
+- **Dashboard prompt runs.** The local dashboard can now start a prompt
+  run through the existing daemon SSE endpoint and render the final
+  assistant response without exposing the bearer token in the page.
 - **Telegram daemon status command.** In daemon-client mode,
   allowlisted Telegram chats can use `/status` to check daemon health,
   active runs, tool count, and advertised capabilities without opening
