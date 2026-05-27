@@ -134,13 +134,20 @@ jobs:
           # See docs/issue-automation.md "Live OpenRouter model" for
           # the refresh-recipe if the meta-router itself ever breaks.
           OPENROUTER_LIVE_MODEL: openrouter/free
+          # agents/glue-review's TestFixtureReplay replays fixtures against
+          # the non-deterministic free router. It is a prompt-regression
+          # tool, not a per-PR gate, so it is opt-in: only the manual
+          # full-live dispatch sets GLUE_REVIEW_LIVE_FIXTURES. On normal
+          # push/PR it stays unset and the replay skips, so model-quality
+          # variance never flakes an unrelated PR. See issue #283.
+          GLUE_REVIEW_LIVE_FIXTURES: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: |
           if [ -z "$OPENROUTER_API_KEY" ]; then
             echo "OPENROUTER_API_KEY not configured; skipping live tests."
             exit 0
           fi
           go test ./providers/openrouter -run Live -count=1 -timeout 300s
-          # agents/glue-review/fixture_test.go exercises the agent end-to-end
-          # against the same free model. Gated on OPENROUTER_API_KEY too, so
-          # they share a job without burning two CI minutes.
+          # The fixture replay shares this job (and the same free model) but
+          # only runs when GLUE_REVIEW_LIVE_FIXTURES is set (manual full-live
+          # dispatch); otherwise it skips quickly.
           go test ./agents/glue-review -run TestFixtureReplay -count=1 -timeout 600s

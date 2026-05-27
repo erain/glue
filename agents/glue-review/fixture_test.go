@@ -126,6 +126,17 @@ var fixtures = []fixture{
 	},
 }
 
+// envTruthy reports whether an env-var value means "on". Empty, "0",
+// "false", and "no" (any case) are off; anything else is on.
+func envTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
 // TestFixtureReplay drives every fixture through the agent against a
 // real free model and asserts each scenario's structural invariants.
 // Skipped quietly when no provider key is in env (matches the existing
@@ -135,6 +146,16 @@ var fixtures = []fixture{
 // upstream responses) get two retries before the last attempt is judged
 // normally.
 func TestFixtureReplay(t *testing.T) {
+	// Opt-in only. This replays fixtures against a non-deterministic free
+	// model, so it is a prompt-iteration tool, not a per-PR gate — it has
+	// flaked unrelated PRs (the free router occasionally returns a review
+	// that does not name the changed file or omits the fix block). The CI
+	// per-PR live job runs the deterministic provider Live smoke instead
+	// and only sets GLUE_REVIEW_LIVE_FIXTURES on the manual full-live
+	// (workflow_dispatch run_live) path.
+	if !envTruthy(os.Getenv("GLUE_REVIEW_LIVE_FIXTURES")) {
+		t.Skip("set GLUE_REVIEW_LIVE_FIXTURES=1 to run live fixture replay (non-deterministic prompt-regression check)")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
