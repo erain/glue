@@ -29,6 +29,11 @@ This file tracks library-level changes only.
   `replace_all`. It is now part of the `tools/coding` bundle, so
   `glue run --coding` agents can make targeted edits instead of
   rewriting whole files.
+- Added read-only navigation tools `tools/fs.ListDirTool` (`list_dir`),
+  `FindTool` (`find_files`), and `GrepTool` (`grep`), also registered in
+  the `tools/coding` bundle. They are workspace-scoped and escape-safe;
+  `grep` skips secret-shaped (Blocklist) and oversized files, and all
+  three skip `.git`.
 
 ## Initial bootstrap (pre-1.0)
 
