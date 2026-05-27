@@ -242,6 +242,7 @@ and emits a stderr diagnostic.
 | `permissions.default_tier` | `prompt` | Permission tier for side-effecting tools when a channel has no override. One of `prompt`, `read_only`, or `trusted`. |
 | `permissions.remember_path` | `~/.peggy/permissions.json` | JSON file where daemon-mode remembered permission grants are persisted. Set to `off` to keep remembers process-local. |
 | `permissions.channels.<name>` | inherited | Channel override keyed by `cli`, `telegram`, or a future daemon client prefix. |
+| `schedules.path` | `~/.peggy/schedules.json` | JSON file storing proactive/scheduled runs. `~` and `$HOME` expand. Set to `off` to disable scheduling. |
 
 Missing `settings.json` is non-fatal — Peggy uses the built-in
 defaults above and emits a stderr diagnostic.
@@ -256,6 +257,8 @@ peggy skills [flags]
 peggy roles [flags]
 peggy memories [flags]
 peggy sessions [flags]
+peggy schedules [flags]
+peggy schedule add|remove [flags]
 peggy recall [flags] <query>
 peggy doctor [flags]
 peggy mcp prompt [flags]
@@ -716,6 +719,47 @@ container or VM sandbox.
 An explicit `--config` / `--soul` or `$PEGGY_CONFIG` / `$PEGGY_SOUL`
 that points at a missing file is an error. The XDG / HOME fallbacks
 quietly fall through to defaults when missing.
+
+## Scheduled Runs
+
+Peggy can run proactively on a schedule, so she initiates (reminders,
+recurring check-ins, daily summaries) instead of only responding. The
+scheduler runs inside `peggy serve`: while the daemon is up, due
+schedules fire on their own and the result is written to the schedule's
+session (visible via `peggy sessions` and recall).
+
+Schedules persist to `~/.peggy/schedules.json` (override with
+`schedules.path`; set it to `"off"` to disable scheduling) and survive
+daemon restarts. Missed runs during downtime are skipped — Peggy
+fire-forwards to the next future tick rather than firing a backlog.
+
+```sh
+# Recurring: every 24h, summarize open threads (default tier: trusted).
+peggy schedule add --every 24h \
+  --prompt "Summarize my open threads and remind me of deadlines."
+
+# One-shot: run a workspace skill at a specific time, read-only.
+peggy schedule add --at 2026-05-27T09:00:00Z --skill daily_plan --tier read_only
+
+# Inspect and remove.
+peggy schedules
+peggy schedules --json
+peggy schedule remove sch_ab12cd34ef56
+```
+
+Each schedule declares a **permission tier** for its unattended run,
+because there is no client present to answer a prompt:
+
+- `trusted` (default) — side-effecting tools (`write_file`, `edit_file`,
+  `shell_exec`, MCP tools) run without confirmation. Powerful; mind the
+  blast radius of an unattended `shell_exec`.
+- `read_only` — side effects are denied; the run can read, `recall`,
+  `grep`, and summarize only.
+
+`prompt` is not a valid schedule tier — an unattended run has no one to
+ask. A schedule runs either a `--prompt` or a workspace `--skill` (with
+repeatable `--arg key=value`), on either a recurring `--every <duration>`
+(minimum 1m) or a one-shot `--at <RFC3339 time>`.
 
 ## Memory
 
