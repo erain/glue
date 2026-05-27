@@ -1,14 +1,22 @@
 # Glue Project Plan
 
-This plan is bootstrapping material. The pinned tracker issue is
-<https://github.com/erain/glue/issues/1>. After the initial GitHub issues and
-pinned tracker are created, GitHub issues become the source of truth for
-execution order, status, and acceptance criteria.
+This document records the roadmap shape and operating model. GitHub
+issues are the source of truth for execution order, status, and
+acceptance criteria.
+
+- The original `0.x` framework roadmap was tracked in the now-closed
+  pinned issue [#1](https://github.com/erain/glue/issues/1); it remains
+  the historical record for the P0/P1/P2 milestones below.
+- Active execution now runs under the
+  [#110](https://github.com/erain/glue/issues/110) tracker — the Peggy
+  milestone, which has broadened into the **M7 dual-track** effort
+  (Glue's binary as a coding agent + Peggy as a long-running assistant).
 
 ## Operating Model
 
-1. Start each work session by reading the pinned tracker issue.
-2. Pick the next open issue by milestone priority: P0, then P1, then P2.
+1. Start each work session by reading the active tracker issue
+   ([#110](https://github.com/erain/glue/issues/110)).
+2. Pick the next open issue from the tracker's work queue by priority.
 3. Implement exactly one issue per pull request.
 4. Run the issue's verification commands.
 5. Update docs when behavior, architecture, package layout, or status changes —
@@ -21,7 +29,11 @@ execution order, status, and acceptance criteria.
 The detailed contributor protocol — including branching conventions, PR shape,
 closing-comment format, and CI expectations — is in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
-## Milestones
+## Milestones (bootstrap history)
+
+P0–P2 below are the completed `0.x` bootstrap milestones, preserved as
+the historical record. Work since then is summarized in
+[Current Status](#current-status).
 
 ### P0: Foundation And Reusable Loop
 
@@ -86,6 +98,8 @@ session.
 ## Documentation Requirements
 
 - `docs/design.md` is the canonical architecture document.
+- `docs/building-agents.md` is the end-to-end guide for building an
+  agent on Glue (the primary entry point for new framework users).
 - `docs/project-plan.md` tracks the roadmap shape and operating model.
 - `docs/adr/` records durable architectural decisions.
 - `CONTRIBUTING.md` records the per-issue contributor protocol.
@@ -94,49 +108,66 @@ session.
 
 ## Current Status
 
-P0, P1, and P2 are complete. In addition to the P0 foundation (design
-docs, ADR 0001, CI workflow, normalized loop types, public `glue.Agent`
-/ `glue.Session` API, Gemini text streaming, README quickstart), the
-following has shipped:
+The project now pursues two goals together: **Glue as an agent framework
+whose binary is a capable coding agent**, and **Peggy as a long-running,
+multi-channel personal assistant built on Glue**. Both are tracked under
+[#110](https://github.com/erain/glue/issues/110) (the M7 dual-track
+milestone).
 
-- P1 — Gemini function calling, file-backed session store at
-  `stores/file`, structured JSON output (`PromptJSON` /
-  `WithJSONSchema`), Markdown skills and `AGENTS.md` discovery, roles
-  with frontmatter and effective-model precedence, the `cmd/glue` CLI
-  runner, and the `examples/local-agent` tutorial.
-- P2 — opt-in parallel tool execution (`RunRequest.Parallel`), opt-in
-  `Compactor` interface with the `KeepRecentMessages` policy
-  ([ADR 0002](adr/0002-context-compaction.md)), the shell/filesystem
-  tool extension packages `tools/fs` and `tools/git`
-  ([ADR 0003](adr/0003-shell-filesystem-tools.md)), the provider
-  plugin guide at [`provider-guide.md`](provider-guide.md), and the
-  GitHub issue automation workflow at
-  [`issue-automation.md`](issue-automation.md).
-- Beyond the original plan — additional providers (`providers/nvidia`,
-  `providers/openrouter`) sharing the `providers/openaicompat` core, a
-  driver-style provider registry under `providers/` plus
-  `glue.WithFailover`, `StopReasonMaxTurns`, the typed `glue.NewTool[T]`
-  helper, `glue.WithStreamWriter` / `WithToolLogger`, the
-  `glue/prompts` versioned-prompt catalog, the `glue/cli` standard
-  flags helper, live CI smoke jobs gated on API keys, and a real
-  downstream agent at [`agents/glue-review`](../agents/glue-review)
-  (stable at `v1.1.0`).
+### Foundation (shipped)
 
-The next focus is the **Peggy milestone** — a long-running, multi-channel,
-memory-bearing personal-assistant agent built on glue. Tracker:
-[#110](https://github.com/erain/glue/issues/110). The architectural
-pivot from "narrow library for short-lived agents" to "foundation for
-long-running multi-channel agents" is recorded in
-[`adr/0005-foundation-expansion.md`](adr/0005-foundation-expansion.md);
-the framework non-goals listed in [`design.md`](design.md) were updated
-in the same ADR. Tracker [#110](https://github.com/erain/glue/issues/110)
-is the source of truth for the next recommended issue under that
-milestone; the original glue tracker (#1) remains closed and is the
-historical record for the `0.x` roadmap.
+- **Bootstrap (P0–P2).** Normalized loop types and the reusable agent
+  loop; public `glue.Agent` / `glue.Session` API; sequential and opt-in
+  parallel tool execution; `StopReasonMaxTurns`; structured JSON output
+  (`PromptJSON` / `WithJSONSchema`); Markdown skills, roles, and
+  `AGENTS.md` discovery; opt-in `Compactor`
+  ([ADR 0002](adr/0002-context-compaction.md)); the `cmd/glue` CLI; and
+  the `examples/local-agent` tutorial.
+- **Providers & ergonomics.** Four providers — `gemini`, `codex`
+  (ChatGPT subscription, [ADR 0006](adr/0006-codex-provider.md)),
+  `nvidia`, `openrouter` (latter two over the shared
+  `providers/openaicompat` core) — a driver-style registry plus
+  `glue.WithFailover`; the typed `glue.NewTool[T]` helper;
+  `glue.SubagentTool` for delegation; `WithStreamWriter` /
+  `WithToolLogger`; the `prompts` versioned-prompt catalog; and the
+  `cli` standard-flags helper.
+- **Long-running foundation (ADR 0005).** The pivot from "narrow library
+  for short-lived agents" to "foundation for long-running multi-channel
+  agents" is recorded in
+  [`adr/0005-foundation-expansion.md`](adr/0005-foundation-expansion.md)
+  (design.md non-goals updated there): the
+  Executor / Permission / Hook trio
+  ([ADR 0009](adr/0009-executor-permission-hook.md)), the summarizing
+  compactor + FTS5 `stores/sqlite` search
+  ([ADR 0007](adr/0007-memory-layer.md)), the local daemon protocol
+  ([ADR 0010](adr/0010-daemon-protocol.md)), the channel-adapter pattern
+  ([ADR 0008](adr/0008-channel-adapter.md)), and the MCP client in
+  `tools/mcp` ([ADR 0011](adr/0011-mcp-client-integration.md)).
 
-Continuing dogfood of `agents/glue-review`, hand-coded-helper
-migration, and the gaps surfaced in
-[`flue-gap-analysis.md`](flue-gap-analysis.md) (multi-target
-deployment, sandbox connectors, subagent orchestration, MCP tooling)
-proceed under the Peggy milestone — most of those gaps are now in
-scope behind interfaces (see ADR-0005).
+### M7 dual-track (in progress)
+
+- **Track A — Glue coding-agent binary.** `tools/coding` assembles the
+  reusable local coding bundle (`read_file`, `write_file`, `edit_file`,
+  `list_dir`, `find_files`, `grep`, `shell_exec`, git helpers) over
+  `tools/fs` / `tools/git` / `tools/shell` / `glue.Executor`;
+  `cmd/glue run|serve --provider <name> --coding` runs it on any
+  registered provider (codex for a ChatGPT-subscription coding agent).
+  Boundary recorded in
+  [ADR 0012](adr/0012-sdk-coding-agent-peggy-boundary.md). The binary's
+  coding surface is functional; interactive multi-turn session UX and a
+  sandboxed `Executor` backend remain.
+- **Track B — Peggy.** Peggy v0.1–v0.5 plus dogfood hardening (M1–M6)
+  shipped: single-prompt CLI, Telegram channel, durable sqlite+FTS5
+  memory with curated recall, opt-in coding tools, MCP servers, the
+  shared HTTP+SSE daemon (`peggy serve` / `glue connect`), per-channel
+  permission tiers, dashboard, doctor, and **scheduled/proactive runs**.
+  Surfacing schedules over daemon/Telegram/dashboard, richer Telegram
+  UX, and dashboard actions remain. See
+  [`../agents/peggy/README.md`](../agents/peggy/README.md) and the
+  tracker for the live work queue.
+
+The reference agent [`agents/glue-review`](../agents/glue-review)
+continues as a dogfood target. Most gaps once listed in
+[`flue-gap-analysis.md`](flue-gap-analysis.md) — subagent orchestration
+and MCP tooling — have shipped; multi-target deployment and additional
+sandbox connectors remain open behind the ADR-0005 interfaces.
