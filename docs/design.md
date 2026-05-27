@@ -118,12 +118,25 @@ The module path is `github.com/erain/glue`.
   [`adr/0007-memory-layer.md`](adr/0007-memory-layer.md). Pure-Go via
   `modernc.org/sqlite`; `stores/file` stays as the simple option.
 - `tools/fs`: filesystem tool factories — `SafeJoin`, `Truncate`,
-  `Blocklist`, and a ready-to-register `ReadFileTool`. Outside the core
-  package per ADR 0003 so the harness stays free of POSIX coupling.
+  `Blocklist`, plus ready-to-register `ReadFileTool`, `FileWrite`,
+  `FileEdit`, and the read-only navigation tools `ListDirTool`,
+  `FindTool`, `GrepTool`. Outside the core package per ADR 0003 so the
+  harness stays free of POSIX coupling.
 - `tools/git`: git tool factories — `RunGit`, `BuildPathspec`,
   `DiffBranchTool`, `LogBranchTool`. Shells out to the system `git`
   binary; no Git library dependency.
-- `cmd/glue`: local CLI runner built on top of the public library.
+- `tools/shell`: a permission-gated `shell_exec` tool that runs
+  argv-style commands through `glue.Executor` (default local process)
+  with a binary allowlist, timeout, and output caps.
+- `tools/coding`: assembles the reusable local coding-agent bundle
+  (`read_file`, `write_file`, `edit_file`, `list_dir`, `find_files`,
+  `grep`, `shell_exec`, git helpers) over the fs/git/shell/executor
+  primitives. See [`adr/0012-sdk-coding-agent-peggy-boundary.md`](adr/0012-sdk-coding-agent-peggy-boundary.md).
+- `tools/mcp`: a Model Context Protocol client (stdio / Streamable HTTP)
+  that maps MCP server tools to permission-gated `glue.Tool` values. See
+  [`adr/0011-mcp-client-integration.md`](adr/0011-mcp-client-integration.md).
+- `cmd/glue`: local CLI runner and HTTP+SSE daemon (`run` / `serve` /
+  `connect`) built on top of the public library.
 
 The dependency direction is intentionally narrow:
 

@@ -1,8 +1,10 @@
 # Issue Automation
 
 The Glue project uses GitHub issues as its source of truth (see
-[`CONTRIBUTING.md`](../CONTRIBUTING.md) and the pinned tracker
-[`#1`](https://github.com/erain/glue/issues/1)). This document covers
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) and the active tracker
+[`#110`](https://github.com/erain/glue/issues/110); the closed
+[`#1`](https://github.com/erain/glue/issues/1) is the historical
+bootstrap tracker). This document covers
 the small amount of automation we ship to keep that source of truth
 honest, plus the `gh` cheatsheet for the common operations.
 
@@ -67,9 +69,9 @@ gh issue comment 17 --body "$(cat closing-comment.md)"
 # Reopen an issue (e.g., the bootstrap reset).
 gh issue reopen 17
 
-# Edit the body of the pinned tracker after a PR merges. Reads from a
+# Edit the body of the active tracker after a PR merges. Reads from a
 # file so the heredoc-formatted body survives shell quoting.
-gh issue edit 1 --body "$(cat tracker.md)"
+gh issue edit 110 --body "$(cat tracker.md)"
 
 # Confirm linkage on an issue you just closed via Closes #N.
 gh issue view 17 --json closedByPullRequestsReferences

@@ -496,7 +496,7 @@ uses the `cli` tier and `telegram:<chat_id>` uses the `telegram` tier.
 Use this to keep a trusted local terminal fast while making Telegram
 ask every time, or to make Telegram read-only.
 
-Recommended v0.3 daily-driver shape:
+Recommended daily-driver shape:
 
 ```json
 {
@@ -930,12 +930,14 @@ external transports. The pattern is designed in
 
 ## What's coming
 
-Per tracker [#110](https://github.com/erain/glue/issues/110), the next
-dogfood hardening passes are first-run onboarding, persistent
+The M6 dogfood-hardening pass shipped (first-run onboarding, persistent
 permission policy, richer Telegram replies, session/history browsing,
-daemon ops diagnostics, memory backup/export, and a more visual local
-control surface. Later ecosystem polish includes `providers/anthropic`
-when budget allows.
+daemon ops diagnostics, memory backup/restore, the local dashboard), and
+**scheduled/proactive runs** landed on top of it (`peggy schedule` /
+`peggy schedules`). The active queue — surfacing schedules over
+daemon/Telegram/dashboard, richer Telegram streaming, dashboard actions,
+and `providers/anthropic` when budget allows — lives on tracker
+[#110](https://github.com/erain/glue/issues/110).
 
 ## As a library
 

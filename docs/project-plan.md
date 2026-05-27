@@ -24,7 +24,7 @@ acceptance criteria.
 6. Open a PR whose title or body references the issue (`Closes #N`).
 7. After the PR merges, comment on the issue with implementation notes and
    verification output, then close it (or let `Closes #N` close it).
-8. Update the pinned tracker with completed work and the next recommended issue.
+8. Update the active tracker with completed work and the next recommended issue.
 
 The detailed contributor protocol — including branching conventions, PR shape,
 closing-comment format, and CI expectations — is in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
