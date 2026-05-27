@@ -153,6 +153,10 @@ func runWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			return runMemories(ctx, args[1:], stdout, stderr)
 		case "sessions":
 			return runSessions(ctx, args[1:], stdout, stderr)
+		case "schedules":
+			return runSchedules(args[1:], stdout, stderr)
+		case "schedule":
+			return runSchedule(args[1:], stdout, stderr)
 		case "recall":
 			return runRecall(ctx, args[1:], stdout, stderr)
 		case "status":
@@ -189,6 +193,8 @@ Usage:
   peggy roles [flags]
   peggy memories [flags]
   peggy sessions [flags]
+  peggy schedules [flags]
+  peggy schedule add|remove [flags]
   peggy recall [flags] <query>
   peggy status [flags]
   peggy doctor [flags]
@@ -208,6 +214,8 @@ Examples:
   peggy memories export --config ~/.config/peggy/settings.json --output peggy-memories.json
   peggy memories import --config ~/.config/peggy/settings.json --dry-run peggy-memories.json
   peggy sessions --config ~/.config/peggy/settings.json --prefix telegram:
+  peggy schedule add --every 24h --prompt "Summarize my open threads."
+  peggy schedules --config ~/.config/peggy/settings.json
   peggy recall --config ~/.config/peggy/settings.json "Australian Shepherd"
   peggy skill --config ~/.config/peggy/settings.json --arg issue=GLUE-123 triage
   peggy status --config ~/.config/peggy/settings.json
@@ -1199,6 +1207,230 @@ func writeSessions(w io.Writer, sessions []glue.SessionSummary) {
 		fmt.Fprintf(w, "  user_messages: %d\n", session.UserMessages)
 		fmt.Fprintf(w, "  assistant_messages: %d\n", session.AssistantMessages)
 	}
+}
+
+func openScheduleStoreForRunner(configPath string) (*ScheduleStore, bool, error) {
+	settings, settingsPath, err := LoadSettings(configPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if settings.SchedulesDisabled() {
+		return nil, settingsPath == "", fmt.Errorf("scheduling is disabled (schedules.path = off)")
+	}
+	store, err := OpenScheduleStore(settings.Schedules.Path)
+	if err != nil {
+		return nil, settingsPath == "", err
+	}
+	return store, settingsPath == "", nil
+}
+
+func runSchedules(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy schedules", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath = fs.String("config", "", "path to settings.json (overrides $PEGGY_CONFIG / XDG / ~/.config/peggy)")
+		jsonOutput = fs.Bool("json", false, "print machine-readable JSON")
+	)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy schedules — list persisted proactive/scheduled runs.
+
+Usage:
+  peggy schedules [flags]
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy schedules: positional args not supported")
+		return 2
+	}
+	store, missingSettings, err := openScheduleStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy schedules: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy schedules: no settings.json found; using built-in defaults")
+	}
+	schedules := store.List()
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(schedules); err != nil {
+			fmt.Fprintf(stderr, "peggy schedules: encode: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if len(schedules) == 0 {
+		fmt.Fprintln(stdout, "No schedules.")
+		return 0
+	}
+	for _, s := range schedules {
+		fmt.Fprintf(stdout, "%s\n  next: %s", s.describe(), s.NextRun.Format(time.RFC3339))
+		if s.LastRun != nil {
+			fmt.Fprintf(stdout, "  last: %s", s.LastRun.Format(time.RFC3339))
+		}
+		if s.LastError != "" {
+			fmt.Fprintf(stdout, "  last_error: %s", singleLine(s.LastError))
+		}
+		fmt.Fprintln(stdout)
+	}
+	return 0
+}
+
+func runSchedule(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "peggy schedule: expected 'add' or 'remove'")
+		return 2
+	}
+	switch args[0] {
+	case "add":
+		return runScheduleAdd(args[1:], stdout, stderr)
+	case "remove", "rm":
+		return runScheduleRemove(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "peggy schedule: unknown subcommand %q (want add or remove)\n", args[0])
+		return 2
+	}
+}
+
+func runScheduleAdd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy schedule add", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		configPath   = fs.String("config", "", "path to settings.json")
+		prompt       = fs.String("prompt", "", "prompt text to run")
+		skill        = fs.String("skill", "", "workspace skill name to run instead of --prompt")
+		every        = fs.Duration("every", 0, "recurring interval, e.g. 1h or 30m (min 1m)")
+		atStr        = fs.String("at", "", "one-shot RFC3339 time, e.g. 2026-05-27T09:00:00Z")
+		tier         = fs.String("tier", "trusted", "permission tier for the unattended run: trusted or read_only")
+		session      = fs.String("session", "", "session id for the run (default schedule:<id>)")
+		scheduleArgs stringListFlag
+	)
+	fs.Var(&scheduleArgs, "arg", "skill argument as key=value (repeatable; --skill only)")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, `peggy schedule add — add a persisted proactive run.
+
+Usage:
+  peggy schedule add (--prompt <text> | --skill <name>) (--every <dur> | --at <time>) [flags]
+
+Examples:
+  peggy schedule add --every 24h --prompt "Summarize my open threads and remind me of deadlines."
+  peggy schedule add --at 2026-05-27T09:00:00Z --skill daily_plan --tier read_only
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "peggy schedule add: positional args not supported")
+		return 2
+	}
+
+	params := NewScheduleParams{
+		Tier:      PermissionTier(*tier),
+		SessionID: *session,
+		Every:     *every,
+	}
+	switch {
+	case strings.TrimSpace(*skill) != "":
+		params.Kind = ScheduleKindSkill
+		params.Skill = *skill
+		parsed, err := parsePromptArgs(scheduleArgs)
+		if err != nil {
+			fmt.Fprintf(stderr, "peggy schedule add: %v\n", err)
+			return 2
+		}
+		params.Args = parsed
+	case strings.TrimSpace(*prompt) != "":
+		params.Kind = ScheduleKindPrompt
+		params.Prompt = *prompt
+	default:
+		fmt.Fprintln(stderr, "peggy schedule add: one of --prompt or --skill is required")
+		return 2
+	}
+	if strings.TrimSpace(*atStr) != "" {
+		at, err := time.Parse(time.RFC3339, *atStr)
+		if err != nil {
+			fmt.Fprintf(stderr, "peggy schedule add: invalid --at time: %v\n", err)
+			return 2
+		}
+		params.At = &at
+	}
+
+	sched, err := NewSchedule(params, time.Now())
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy schedule add: %v\n", err)
+		return 2
+	}
+	store, missingSettings, err := openScheduleStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy schedule add: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy schedule add: no settings.json found; using built-in defaults")
+	}
+	if err := store.Add(sched); err != nil {
+		fmt.Fprintf(stderr, "peggy schedule add: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "added %s (next run %s)\n", sched.ID, sched.NextRun.Format(time.RFC3339))
+	return 0
+}
+
+func runScheduleRemove(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("peggy schedule remove", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to settings.json")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "peggy schedule remove <id> [--config <path>]\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "peggy schedule remove: exactly one schedule id is required")
+		return 2
+	}
+	id := fs.Arg(0)
+	store, missingSettings, err := openScheduleStoreForRunner(*configPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy schedule remove: %v\n", err)
+		return 1
+	}
+	if missingSettings {
+		fmt.Fprintln(stderr, "peggy schedule remove: no settings.json found; using built-in defaults")
+	}
+	removed, err := store.Remove(id)
+	if err != nil {
+		fmt.Fprintf(stderr, "peggy schedule remove: %v\n", err)
+		return 1
+	}
+	if !removed {
+		fmt.Fprintf(stderr, "peggy schedule remove: no schedule with id %q\n", id)
+		return 1
+	}
+	fmt.Fprintf(stdout, "removed %s\n", id)
+	return 0
 }
 
 func runRecall(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -2681,6 +2913,19 @@ Flags:
 	if err != nil {
 		fmt.Fprintf(stderr, "peggy serve: setup: %v\n", err)
 		return 1
+	}
+
+	if !settings.SchedulesDisabled() {
+		store, err := OpenScheduleStore(settings.Schedules.Path)
+		if err != nil {
+			fmt.Fprintf(stderr, "peggy serve: schedules: %v\n", err)
+			return 1
+		}
+		scheduler := NewScheduler(store, p.ScheduleRunner(), WithSchedulerLogger(func(format string, args ...any) {
+			fmt.Fprintf(stderr, format+"\n", args...)
+		}))
+		fmt.Fprintf(stderr, "peggy serve: scheduler active (%d schedule(s)) at %s\n", len(store.List()), settings.Schedules.Path)
+		go func() { _ = scheduler.Run(ctx) }()
 	}
 
 	if err := serve(ctx, serveConfig{

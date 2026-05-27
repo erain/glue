@@ -54,6 +54,9 @@ type Settings struct {
 	// Defaults to prompt for every channel.
 	Permissions PermissionSettings `json:"permissions"`
 
+	// Schedules configures persisted proactive/scheduled runs.
+	Schedules ScheduleSettings `json:"schedules"`
+
 	// Channels carries per-channel configuration subtrees keyed by
 	// channel name (e.g. "telegram"). Each channel package decodes
 	// its own subtree via a DecodeConfig helper. Empty means "no
@@ -127,6 +130,13 @@ type PermissionSettings struct {
 	DefaultTier  string            `json:"default_tier"`
 	RememberPath string            `json:"remember_path,omitempty"`
 	Channels     map[string]string `json:"channels,omitempty"`
+}
+
+// ScheduleSettings configures persisted proactive/scheduled runs.
+type ScheduleSettings struct {
+	// Path is the JSON file that stores schedules. Empty falls back to
+	// ~/.peggy/schedules.json. Set to "off" to disable scheduling.
+	Path string `json:"path,omitempty"`
 }
 
 // Environment variables consulted when paths aren't given explicitly.
@@ -208,6 +218,13 @@ func LoadSettings(path string) (Settings, string, error) {
 			return Settings{}, resolved, err
 		}
 		s.Permissions.RememberPath = expanded
+	}
+	if !s.SchedulesDisabled() && strings.TrimSpace(s.Schedules.Path) != "" {
+		expanded, err := expandPath(s.Schedules.Path)
+		if err != nil {
+			return Settings{}, resolved, err
+		}
+		s.Schedules.Path = expanded
 	}
 	if len(s.MCP.Servers) > 0 {
 		expanded, err := expandMCPSettings(s.MCP)
@@ -361,7 +378,17 @@ func fillDefaults(s Settings) Settings {
 		home, _ := os.UserHomeDir()
 		s.Permissions.RememberPath = filepath.Join(home, ".peggy", "permissions.json")
 	}
+	if s.Schedules.Path == "" {
+		home, _ := os.UserHomeDir()
+		s.Schedules.Path = filepath.Join(home, ".peggy", "schedules.json")
+	}
 	return s
+}
+
+// SchedulesDisabled reports whether scheduling is turned off via
+// Schedules.Path == "off".
+func (s Settings) SchedulesDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(s.Schedules.Path), "off")
 }
 
 func permissionRememberPathDisabled(path string) bool {

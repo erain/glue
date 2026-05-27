@@ -8,6 +8,17 @@ not formally follow SemVer until v1.0.
 
 ### Added
 
+- **Scheduled / proactive runs.** `peggy serve` now runs a scheduler so
+  Peggy initiates on her own — recurring (`--every`) or one-shot
+  (`--at`) prompt or skill runs, managed with `peggy schedule
+  add|remove` and `peggy schedules`. Schedules persist to
+  `~/.peggy/schedules.json` (override `schedules.path`, `"off"` to
+  disable), survive restarts, and fire-forward past missed ticks. Each
+  schedule carries a permission tier for its unattended run — `trusted`
+  (default) or `read_only`; `prompt` is rejected because there is no
+  client to answer. Output is written to the schedule's session
+  (visible via `peggy sessions`/recall). Daemon/Telegram/dashboard
+  schedule surfacing is a planned follow-up.
 - **Reusable coding execution seam.** Peggy now consumes Glue's
   `tools/coding` SDK bundle and exposes a runtime `CodingExecutor`
   injection point, so future VM or container-backed execution can plug
