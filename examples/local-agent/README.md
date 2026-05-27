@@ -6,8 +6,10 @@ stdout, and persists sessions through `stores/file`.
 
 The implementation lives in [`main.go`](main.go) and is intentionally
 short: it shows the full shape of a Glue application — provider, store,
-tool registration, session management, and event-stream output — in under
-120 lines.
+a typed tool defined with `glue.NewTool[T]`, session management, and
+`WithStreamWriter` output — in around 100 lines. For a guided,
+step-by-step walkthrough of these same pieces, see
+[`docs/building-agents.md`](../../docs/building-agents.md).
 
 ## Run
 
@@ -37,8 +39,11 @@ go test ./examples/local-agent
 ```
 
 Three offline tests cover the `local_time` tool's happy path, missing
-timezone arg, and invalid JSON arg. The live test
-(`TestLiveLocalAgent`) is gated behind `GEMINI_API_KEY` and skipped in CI.
+timezone arg, and invalid JSON arg. Because the tool is built with
+`glue.NewTool[T]`, both failure cases surface as an error `ToolResult`
+(`IsError`) the model can recover from rather than a Go error that
+crashes the loop. The live test (`TestLiveLocalAgent`) is gated behind
+`GEMINI_API_KEY` and skipped in CI.
 
 ## Compare to `cmd/glue`
 

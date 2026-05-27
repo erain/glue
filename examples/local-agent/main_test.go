@@ -42,20 +42,30 @@ func TestLocalTimeToolHappyPath(t *testing.T) {
 func TestLocalTimeToolMissingTimezone(t *testing.T) {
 	t.Parallel()
 
+	// NewTool surfaces tool failures as an error ToolResult (IsError),
+	// not a Go error, so the model can recover instead of crashing the loop.
 	tool := localTimeTool()
-	_, err := tool.Execute(context.Background(), glue.ToolCall{Name: "local_time", Arguments: json.RawMessage(`{}`)})
-	if err == nil || !strings.Contains(err.Error(), "timezone") {
-		t.Fatalf("err = %v, want timezone required", err)
+	result, err := tool.Execute(context.Background(), glue.ToolCall{Name: "local_time", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("Execute: unexpected Go error %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "timezone") {
+		t.Fatalf("result = %#v, want IsError mentioning timezone", result)
 	}
 }
 
 func TestLocalTimeToolInvalidArgs(t *testing.T) {
 	t.Parallel()
 
+	// Malformed JSON arguments are decoded by NewTool and returned as an
+	// error ToolResult, again without a Go error.
 	tool := localTimeTool()
-	_, err := tool.Execute(context.Background(), glue.ToolCall{Name: "local_time", Arguments: json.RawMessage(`not-json`)})
-	if err == nil {
-		t.Fatal("err = nil, want unmarshal error")
+	result, err := tool.Execute(context.Background(), glue.ToolCall{Name: "local_time", Arguments: json.RawMessage(`not-json`)})
+	if err != nil {
+		t.Fatalf("Execute: unexpected Go error %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("result = %#v, want IsError for malformed arguments", result)
 	}
 }
 

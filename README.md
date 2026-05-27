@@ -2,48 +2,29 @@
 
 [![CI](https://github.com/erain/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/erain/glue/actions/workflows/ci.yml)
 
-Glue is a Go agent harness for building local and programmable agents,
-inspired by [Flue](https://github.com/withastro/flue) and
-[pi-mono](https://github.com/badlogic/pi-mono). It is built around a reusable
-provider-agnostic agent loop, a code-first `Agent` / `Session` API, and
-pluggable providers — Gemini, plus OpenAI-compatible NVIDIA build and
-OpenRouter out of the box.
+**Glue is a Go framework for building agents.** It gives you a reusable,
+provider-agnostic agent loop, a small code-first `Agent` / `Session`
+API, typed tools, pluggable model providers, and optional persistence —
+so you can build anything from a one-shot CLI to a long-running,
+multi-channel assistant without rewriting the loop each time.
 
-GitHub issues are the source of truth for the roadmap and implementation
-order:
+Inspired by [Flue](https://github.com/withastro/flue) and
+[pi-mono](https://github.com/badlogic/pi-mono).
 
-- Project tracker: <https://github.com/erain/glue/issues/1>
-- Design doc: [docs/design.md](docs/design.md)
-- Project plan: [docs/project-plan.md](docs/project-plan.md)
-- Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md)
+```go
+agent := glue.NewAgent(glue.AgentOptions{
+	Provider: gemini.New(gemini.Options{}),
+	Model:    "gemini-2.5-flash",
+	Tools:    []glue.Tool{weatherTool},
+})
+session, _ := agent.Session(ctx, "demo")
+result, _ := session.Prompt(ctx, "What's the weather in Toronto?")
+fmt.Println(result.Text)
+```
 
-## Status
-
-The harness is feature-complete for the `0.x` series and is in active
-use behind the [`agents/glue-review`](agents/glue-review/README.md)
-reference agent (single GitHub comment per PR with a fenced
-` ```markdown ` fix block downstream coding agents can paste). The
-library itself remains pre-1.0 — the public `Agent` / `Session`
-surface is stable in practice, but minor versions may still break API.
-Shipped today:
-
-- Normalized loop types and the provider-agnostic agent loop in `loop/`,
-  with deterministic sequential tool execution, opt-in
-  `RunRequest.Parallel`, and `StopReasonMaxTurns` for budget-exhaustion
-  detection.
-- Public `Agent` / `Session` API: per-prompt event streaming with
-  `WithStreamWriter` / `WithToolLogger`, structured JSON output
-  (`PromptJSON`), Markdown-driven skills/roles/`AGENTS.md` discovery,
-  opt-in `Compactor` interface, typed `NewTool[T]` helper.
-- Providers: `gemini` (Google `genai` SDK), `nvidia` and `openrouter`
-  (OpenAI-compatible, sharing the `providers/openaicompat` core), a
-  driver-style registry under `providers/`, and `glue.WithFailover`.
-- Storage: file-backed session store at `stores/file`. Tools: shared
-  `tools/fs`, `tools/git`, `tools/shell`, and `tools/coding` extension
-  packages. CLI: `cmd/glue` runner plus `cli.RegisterStandardFlags` for
-  downstream agents. Versioned prompts via `prompts.NewCatalog`.
-
-See [`CHANGELOG.md`](CHANGELOG.md) for library-level notes.
+- **New here and want to build an agent?** → [docs/building-agents.md](docs/building-agents.md)
+- **Just want to send a prompt?** → [Quickstart](#quickstart)
+- **Want the architecture?** → [Concepts](#concepts) · [docs/design.md](docs/design.md)
 
 ## Install
 
@@ -51,26 +32,25 @@ See [`CHANGELOG.md`](CHANGELOG.md) for library-level notes.
 go get github.com/erain/glue
 ```
 
-The module path is `github.com/erain/glue`. Subpackages:
-`github.com/erain/glue/loop` (reusable agent loop),
-`github.com/erain/glue/providers/{gemini,nvidia,openrouter}` (with the
-shared OpenAI-compatible core in `providers/openaicompat` and the
-driver-style registry in `providers/`),
-`github.com/erain/glue/stores/file` (file-backed session store),
-`github.com/erain/glue/tools/{fs,git,shell,coding}` (extension tool
-packages),
-`github.com/erain/glue/prompts` (versioned-prompt catalog), and
-`github.com/erain/glue/cli` (shared standard flags).
+Module path: `github.com/erain/glue`. Key subpackages:
 
-## Quickstart: Gemini
+| Import | Purpose |
+|--------|---------|
+| `github.com/erain/glue` | Public API: `Agent`, `Session`, `Tool`, options. |
+| `.../loop` | The provider-agnostic agent loop. |
+| `.../providers/{gemini,codex,nvidia,openrouter}` | Model providers (+ shared `openaicompat` core, driver registry in `providers`). |
+| `.../stores/{file,sqlite}` | Session persistence (sqlite adds FTS5 search). |
+| `.../tools/{fs,git,shell,coding,mcp}` | Reusable tool bundles. |
+| `.../prompts` | Versioned-prompt catalog. |
+| `.../cli` | Shared standard flags for agent binaries. |
 
-Set a Gemini API key:
+## Quickstart
+
+Pick a provider and send a prompt. With Gemini:
 
 ```sh
 export GEMINI_API_KEY=...
 ```
-
-Send a prompt:
 
 ```go
 package main
@@ -86,17 +66,14 @@ import (
 
 func main() {
 	ctx := context.Background()
-
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider: gemini.New(gemini.Options{}),
 		Model:    "gemini-2.5-flash",
 	})
-
-	session, err := agent.Session(ctx, "local-dev")
+	session, err := agent.Session(ctx, "demo")
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	result, err := session.Prompt(ctx, "Reply with the single word: glue.")
 	if err != nil {
 		log.Fatal(err)
@@ -105,299 +82,119 @@ func main() {
 }
 ```
 
-The session keeps an in-memory transcript, so a second `session.Prompt(...)`
-continues the conversation. Pass `AgentOptions.Store` (e.g.
-[`stores/file`](stores/file)) to persist transcripts across processes.
+The session keeps an in-memory transcript, so a second `Prompt`
+continues the conversation. Other providers are one import away — see
+[Providers](#providers). To go from here to a real tool-calling,
+persistent agent, follow **[docs/building-agents.md](docs/building-agents.md)**.
 
-## Quickstart: NVIDIA build (Kimi K2 and friends)
+## Concepts
 
-The `providers/nvidia` package speaks the OpenAI-compatible API exposed at
-[`build.nvidia.com`](https://build.nvidia.com), so any model listed there
-(Kimi K2 family, Llama, Qwen, etc.) can be driven through Glue without a
-separate SDK.
+Glue has a small vocabulary. Once these click, the rest is API surface.
 
-```sh
-export NVIDIA_API_KEY=nvapi-...
+| Type | What it is |
+|------|-----------|
+| **`Provider`** | A model backend that streams assistant events. |
+| **`Agent`** | The configured unit: provider, model, tools, store, work dir, roles. Built with `glue.NewAgent`. |
+| **`Session`** | A named conversation with its own transcript, opened from an Agent; driven with `session.Prompt`. |
+| **`Tool`** | A function the model can call. Define with `glue.NewTool[Args]`. |
+| **`Store`** | Where transcripts persist (`stores/file` or `stores/sqlite`). Optional. |
+| **`Skill` / `Role`** | Markdown-driven reusable instructions and named instruction profiles. |
+| **`loop`** | The engine: stream → run tools → append results → repeat until the model stops. |
+
+Every `session.Prompt` runs the same loop:
+
+```text
+prompt ─▶ provider streams events ─▶ text? emit deltas
+                                  └─▶ tool calls? run tools, append results, loop
+                                  └─▶ stop ─▶ return final text
 ```
 
-```go
-import (
-	"github.com/erain/glue"
-	"github.com/erain/glue/providers/nvidia"
-)
+The loop is provider-agnostic, and product concerns (sandboxing,
+channels, scheduling, policy) enter only as interfaces you fill in —
+they are not baked into core glue ([ADR-0005](docs/adr/0005-foundation-expansion.md)).
 
+## Build your own agent
+
+The full walkthrough — typed tools, persistence, streaming, project
+context, subagents, structured output, multi-provider failover,
+packaging as a CLI, and testing — lives in one place:
+
+➡️ **[docs/building-agents.md](docs/building-agents.md)**
+
+The shortest complete example is
+[`examples/local-agent`](examples/local-agent) (~100 lines: provider +
+store + a typed `local_time` tool + streaming). Real agents live under
+[`agents/`](#reference-agents).
+
+The sections below are a feature reference for when you need the
+specifics.
+
+## Providers
+
+Glue ships four providers and a driver-style registry. Construct one
+directly, or select by name via `providers.New`.
+
+| Provider | Import | Auth | Notes |
+|----------|--------|------|-------|
+| **Gemini** | `providers/gemini` | `GEMINI_API_KEY` | Google `genai` SDK. |
+| **Codex** | `providers/codex` | ChatGPT subscription (`codex login`) | No per-token bill; reuses the upstream Codex CLI's `auth.json`. |
+| **NVIDIA build** | `providers/nvidia` | `NVIDIA_API_KEY` | OpenAI-compatible; Kimi K2, Llama, Qwen, etc. by `org/name`. |
+| **OpenRouter** | `providers/openrouter` | `OPENROUTER_API_KEY` | OpenAI-compatible aggregator; `openrouter/free` auto-picks a free model. |
+
+```go
+// Codex — bill against your ChatGPT subscription instead of an API key:
 agent := glue.NewAgent(glue.AgentOptions{
-	Provider: nvidia.New(nvidia.Options{}),
-	Model:    "moonshotai/kimi-k2.6",
+	Provider: codex.New(codex.Options{}),
+	Model:    codex.DefaultModel, // "gpt-5-codex"
 })
 ```
 
-The model id matches the `org/name` path on build.nvidia.com (e.g.
-`moonshotai/kimi-k2.6`, `meta/llama-3.3-70b-instruct`). Cold-start latency
-on Kimi K2 can reach tens of seconds for the first chunk; configure your
-HTTP client and context timeouts accordingly.
+Codex quarantines all subscription-auth fragility (OAuth, token refresh,
+Cloudflare cookies) to its package — run `codex login` once; Glue reads
+`~/.codex/auth.json` (override with `$GLUE_CODEX_AUTH` / `$CODEX_HOME`).
+Subscription-auth via third-party tools is not formally documented by
+OpenAI; the provider is intended for personal use. See
+[ADR-0006](docs/adr/0006-codex-provider.md).
 
-## Quickstart: Codex (ChatGPT subscription)
+NVIDIA and OpenRouter share the `providers/openaicompat` core. Both can
+have multi-second first-byte latency on cold routing. To add your own
+provider, see [docs/provider-guide.md](docs/provider-guide.md) and
+[`examples/echo-provider`](examples/echo-provider).
 
-The `providers/codex` package routes requests through the Codex
-Responses endpoint
-([`chatgpt.com/backend-api/codex/responses`](https://chatgpt.com)),
-authenticated by your existing ChatGPT subscription rather than an
-OpenAI API key. Useful when your daily-driver agent should bill
-against the subscription you already pay for.
+### Failover across providers
 
-v0.1 piggybacks on the upstream Codex CLI's `auth.json`. Install the
-[OpenAI Codex CLI](https://github.com/openai/codex) and log in once:
-
-```sh
-codex login
-```
-
-Glue reads the same token file (`~/.codex/auth.json` by default;
-overridable via `$GLUE_CODEX_AUTH` or `$CODEX_HOME`) and refreshes
-stale tokens automatically.
-
-```go
-import (
-    "github.com/erain/glue"
-    "github.com/erain/glue/providers/codex"
-)
-
-agent := glue.NewAgent(glue.AgentOptions{
-    Provider: codex.New(codex.Options{}),
-    Model:    codex.DefaultModel, // "gpt-5-codex"
-})
-```
-
-The provider quarantines all subscription-auth fragility (OAuth flow,
-Bearer + `ChatGPT-Account-ID` headers, Cloudflare cookie persistence,
-401-refresh-retry) to the package — the rest of glue is unchanged.
-See [`docs/adr/0006-codex-provider.md`](docs/adr/0006-codex-provider.md)
-for the full design. Subscription-auth use via third-party tools is
-not formally documented by OpenAI; the provider is intended for
-personal use.
-
-The interactive PKCE login flow is deferred for v0.1 (full protocol
-in the ADR appendix). If you cannot install the upstream Codex CLI,
-file an issue.
-
-## Quickstart: OpenRouter
-
-The `providers/openrouter` package speaks the OpenAI-compatible API at
-[`openrouter.ai`](https://openrouter.ai), which aggregates many upstream
-model providers behind a single endpoint. The meta-route `openrouter/free`
-auto-picks a free underlying model — handy for tests and examples.
-
-```sh
-export OPENROUTER_API_KEY=sk-or-v1-...
-```
-
-```go
-import (
-	"github.com/erain/glue"
-	"github.com/erain/glue/providers/openrouter"
-)
-
-agent := glue.NewAgent(glue.AgentOptions{
-	Provider: openrouter.New(openrouter.Options{}),
-	Model:    "openrouter/free",
-})
-```
-
-The provider sends `HTTP-Referer` and `X-Title` attribution headers by
-default; override them via `Options.Headers` for your own application.
-OpenRouter emits SSE comment-line keep-alives during cold routing — the
-provider drops them silently — so first-byte latency may be a few seconds
-even when the underlying model is fast.
-
-### Streaming events
-
-`Session.Subscribe` registers a session-scoped handler that fires on every
-loop event for every prompt run on that session. `glue.WithEvents` registers
-a per-prompt handler that fires alongside it.
-
-For the two most common cases — mirror text deltas and log tool starts
-to a writer — use the convenience options:
-
-```go
-_, err := session.Prompt(ctx, "Stream a haiku about glue.",
-	glue.WithStreamWriter(os.Stdout),
-	glue.WithToolLogger(os.Stderr),
-)
-```
-
-`WithStreamWriter` writes `EventTextDelta.Delta` straight to the writer;
-`WithToolLogger` emits `[tool] <name>\n` on `EventToolStart`. Both nil-safe
-and silently drop writer errors. They compose additively with `WithEvents`
-and each other — adding one does not displace any other handler.
-
-For richer formatting, use `WithEvents` directly:
-
-```go
-unsubscribe := session.Subscribe(func(e glue.Event) {
-	if e.Type == glue.EventTextDelta {
-		fmt.Print(e.Delta)
-	}
-})
-defer unsubscribe()
-
-_, err := session.Prompt(ctx, "Stream a haiku about glue.")
-if err != nil {
-	log.Fatal(err)
-}
-```
-
-### Per-prompt overrides
-
-```go
-result, err := session.Prompt(ctx, "Be concise.",
-	glue.WithModel("gemini-2.5-pro"),
-	glue.WithSystemPrompt("Reply in five words or fewer."),
-	glue.WithMaxTurns(4),
-)
-```
-
-### Provider failover
-
-`glue.WithFailover(provs...)` returns a Provider that tries each
-underlying provider in order until one accepts a Stream — useful when
-your CLI agent supports multiple LLM backends and you want it to skip
-providers whose API keys aren't set rather than fail. Pre-filter via
-the small registry under `providers`:
+`glue.WithFailover(provs...)` tries providers in order until one accepts
+the stream — handy when a CLI supports several backends and should skip
+those whose keys aren't set:
 
 ```go
 import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/providers"
-	_ "github.com/erain/glue/providers/gemini"      // registers "gemini"
-	_ "github.com/erain/glue/providers/nvidia"      // registers "nvidia"
-	_ "github.com/erain/glue/providers/openrouter"  // registers "openrouter"
+	_ "github.com/erain/glue/providers/codex"
+	_ "github.com/erain/glue/providers/gemini"
+	_ "github.com/erain/glue/providers/nvidia"
 )
 
 var provs []glue.Provider
-for _, name := range []string{"nvidia", "openrouter", "gemini"} {
-	if !providers.KeyAvailable(name) {
-		continue
-	}
-	p, _, _, err := providers.New(name)
-	if err == nil {
+for _, name := range []string{"codex", "nvidia", "gemini"} {
+	if p, _, _, err := providers.New(name); err == nil {
 		provs = append(provs, p)
 	}
 }
-agent := glue.NewAgent(glue.AgentOptions{
-	Provider: glue.WithFailover(provs...),
-	Model:    "", // let each provider use its DefaultModel
-})
+agent := glue.NewAgent(glue.AgentOptions{Provider: glue.WithFailover(provs...)})
 ```
 
-`WithFailover` only falls through *before* the first event commits to
-the consumer (Stream error, immediate `ProviderEventError`, or empty
-stream). Once any non-error event is observed, it commits to that
-provider for the rest of the turn. All-providers-failed surfaces as a
-typed `*glue.FailoverError` with per-provider attempts.
+Failover only falls through *before* the first event commits to the
+consumer; once a non-error event arrives it stays on that provider for
+the turn. All-providers-failed surfaces as a typed `*glue.FailoverError`.
 
-### Roles
+## Tools
 
-A role is a named instruction profile with an optional model override.
-Pass roles via `AgentOptions.Roles` or load them from
-`<WorkDir>/roles/*.md` with simple `name:` / `description:` / `model:`
-frontmatter.
-
-```go
-agent := glue.NewAgent(glue.AgentOptions{
-	Provider: gemini.New(gemini.Options{}),
-	Model:    "gemini-2.5-flash",
-	Roles: []glue.Role{
-		{Name: "reviewer", Model: "gemini-2.5-pro", Instructions: "Review for SQL safety."},
-		{Name: "writer", Instructions: "Write in plain English."},
-	},
-	Role: "writer", // agent default
-})
-
-session, _ := agent.Session(ctx, "review", glue.WithSessionRole("reviewer"))
-result, _ := session.Prompt(ctx, "Review this PR.", glue.WithRole("reviewer"))
-```
-
-Effective role precedence: `WithRole` (call) > `WithSessionRole` (session)
-> `AgentOptions.Role` (agent). Effective model precedence: `WithModel`
-(call) > effective role's `Model` > `AgentOptions.Model`. Unknown role
-names return a typed error.
-
-### Project context and skills
-
-Set `AgentOptions.WorkDir` to enable Markdown context discovery:
-
-- `<WorkDir>/AGENTS.md` is appended to the system prompt for every prompt
-  on the agent's sessions (missing file is non-fatal).
-- `<WorkDir>/.agents/skills/<name>/SKILL.md` is loaded as a `glue.Skill`
-  with optional `name:` and `description:` frontmatter.
-
-```go
-agent := glue.NewAgent(glue.AgentOptions{
-	Provider: gemini.New(gemini.Options{}),
-	Model:    "gemini-2.5-flash",
-	WorkDir:  ".",
-})
-session, _ := agent.Session(ctx, "skills")
-result, err := session.Skill(ctx, "triage", map[string]int{"issue": 12})
-```
-
-`Session.Skill` renders the skill instructions, appends the args as
-formatted JSON, and runs the result through `Session.Prompt`. Unknown skill
-names return a typed error. Skills supplied via `AgentOptions.Skills` win on
-name collision over disk-discovered skills.
-
-### Versioned prompts
-
-`prompts.NewCatalog(fsys, dir, defaultVersion)` wraps an `embed.FS` of
-`<version>.md` files so agents can A/B-test prompts and roll back without
-rebuilding history. Unknown versions return an error that lists every
-available version verbatim — silent fallback would hide A/B test
-misconfiguration.
-
-```go
-import (
-	"embed"
-
-	"github.com/erain/glue/prompts"
-)
-
-//go:embed prompts/*.md
-var promptFS embed.FS
-
-cat, err := prompts.NewCatalog(promptFS, "prompts", "v2")
-if err != nil { /* default version must exist at construction time */ }
-
-systemPrompt, err := cat.Get("v1") // or cat.Get("") for the default
-```
-
-The catalog is read-only and concurrency-safe. Templating and variable
-substitution are intentionally out of scope; rendering is the caller's
-job.
-
-### Structured JSON results
-
-```go
-var out struct {
-	Name  string `json:"name"`
-	Count int    `json:"count"`
-}
-
-_, err := session.PromptJSON(ctx, "Return a project name and count.", &out)
-```
-
-`PromptJSON` augments the prompt with JSON-only instructions and sets
-`response_mime_type: application/json` on the provider request. Pass
-`glue.WithJSONSchema(schema)` to forward an explicit JSON Schema (Gemini:
-`response_json_schema`). V1 validation is JSON decoding into the caller's Go
-type.
-
-### Tools
-
-`glue.NewTool[Args]` decodes `ToolCall.Arguments` into a typed Go value
-before invoking the executor, so most tools no longer need a manual
-`json.Unmarshal`. Pair it with `glue.TextResult` / `glue.ErrorResult` for
-the result side:
+Define typed tools with `glue.NewTool[Args]`. It decodes
+`ToolCall.Arguments` into your Go type before the executor runs and
+turns malformed arguments into a model-visible error result instead of a
+panic. Pair it with `glue.TextResult` / `glue.ErrorResult`:
 
 ```go
 type weatherArgs struct {
@@ -407,12 +204,8 @@ type weatherArgs struct {
 weather := glue.NewTool[weatherArgs](
 	glue.ToolSpec{
 		Name:        "weather",
-		Description: "Lookup current weather for a city.",
-		Parameters: json.RawMessage(`{
-  "type": "object",
-  "properties": { "city": { "type": "string" } },
-  "required": ["city"]
-}`),
+		Description: "Look up current weather for a city.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
 	},
 	func(ctx context.Context, a weatherArgs) (glue.ToolResult, error) {
 		report, err := lookup(ctx, a.City)
@@ -424,93 +217,186 @@ weather := glue.NewTool[weatherArgs](
 )
 ```
 
-Malformed arguments surface to the model as an error `ToolResult` rather
-than crashing the loop. Schema generation from `Args` is intentionally
-out of scope; supply `Parameters` explicitly.
+Return `ErrorResult` for recoverable failures (the model can retry); a
+Go `error` only for failures that should stop the run. Schema generation
+is out of scope — write `Parameters` by hand.
 
-## Persistent sessions with search
+**Ready-made bundles** under `tools/`: `tools/fs` (read/write/edit, plus
+read-only `list_dir`/`find_files`/`grep`), `tools/git`, `tools/shell`,
+and the assembled `tools/coding` bundle. See [Coding tools](#coding-tools).
 
-`stores/file` writes one JSON file per session — the simple default, no
-new dependencies. For long-running agents that need cross-session recall
-(e.g. "what did I tell you about my dog last week?"), `stores/sqlite`
-implements the same `glue.Store` interface against a pure-Go SQLite
-database with FTS5 over message text:
+**Subagents.** `glue.SubagentTool` wraps a child `*glue.Agent` as a
+tool, so a parent can delegate a focused task to a fresh, isolated
+transcript:
 
 ```go
-import (
-    "github.com/erain/glue"
-    "github.com/erain/glue/stores/sqlite"
-)
-
-store, err := sqlite.Open(sqlite.Options{Path: "peggy.db"})
-if err != nil { /* … */ }
-defer store.Close()
-
-agent := glue.NewAgent(glue.AgentOptions{
-    Provider: /* … */,
-    Store:    store,
+researchTool, _ := glue.SubagentTool(glue.SubagentOptions{
+	Name:        "research",
+	Description: "Delegate a focused research question.",
+	Agent:       researcher, // a *glue.Agent
 })
 ```
 
-The `Searcher` capability that lets callers query the FTS index is
-exposed through `Agent.SearchSessions` and `Session.Search`. The
-file store deliberately does not implement it — picking
-`stores/sqlite` is the signal that you want cross-session search.
+**MCP servers.** `tools/mcp` consumes [Model Context
+Protocol](https://modelcontextprotocol.io) servers (stdio / Streamable
+HTTP), mapping their tools to permission-gated `glue.Tool` values. See
+[ADR-0011](docs/adr/0011-mcp-client-integration.md).
+
+## Persistent sessions with search
+
+`stores/file` writes one JSON file per session — the dependency-free
+default. `stores/sqlite` implements the same `glue.Store` against a
+pure-Go SQLite DB with FTS5 over message text, for cross-session recall:
 
 ```go
-hits, err := agent.SearchSessions(ctx, "Australian Shepherd",
-    glue.WithLimit(5),
-    glue.WithSince(time.Now().AddDate(0, -1, 0)), // last month
-)
+store, err := sqlite.Open(sqlite.Options{Path: "agent.db"})
+defer store.Close()
+agent := glue.NewAgent(glue.AgentOptions{Provider: prov, Store: store})
+
+hits, _ := agent.SearchSessions(ctx, "Australian Shepherd", glue.WithLimit(5))
 for _, h := range hits {
-    fmt.Printf("[%s#%d] %s\n", h.SessionID, h.Index, h.Snippet)
+	fmt.Printf("[%s#%d] %s\n", h.SessionID, h.Index, h.Snippet)
 }
-
-// Scoped to one session:
-hits, _ = session.Search(ctx, "what we decided about deployment")
 ```
 
-Search options are functional: `WithLimit`, `WithOffset`, `WithSessionID`,
-`WithSince`, `WithUntil`. `Session.Search` ignores any `WithSessionID`
-and forces its own id. When the active store does not implement
-`Searcher`, both methods return `glue.ErrSearchNotSupported` — callers
-can fall back gracefully. The query string is forwarded straight to
-FTS5's `MATCH` syntax (bare words, `"quoted phrases"`, `AND` / `OR` /
-`NOT`); hits are returned by BM25 score ascending (lower is better).
+Search options: `WithLimit`, `WithOffset`, `WithSessionID`, `WithSince`,
+`WithUntil`. The query is FTS5 `MATCH` syntax; hits come back by BM25
+score. `stores/file` does not implement search, so both
+`Agent.SearchSessions` and `Session.Search` return
+`glue.ErrSearchNotSupported` there — picking `stores/sqlite` is the
+signal that you want it. Uses
+[`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) (no CGo). Schema
+details in [ADR-0007](docs/adr/0007-memory-layer.md).
 
-The implementation uses [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite)
-(no CGo, cross-compiles freely). Schema and FTS5 trigger details are in
-[`docs/adr/0007-memory-layer.md`](docs/adr/0007-memory-layer.md).
+## Streaming, roles, skills, structured output
 
-## Testing without Gemini
-
-The `glue.Provider` interface is small, so tests can drive sessions with a
-fake provider — no credentials required:
+**Streaming.** Mirror text deltas with the convenience options, or
+subscribe for full control:
 
 ```go
-type fakeProvider struct{}
+session.Prompt(ctx, "Stream a haiku.",
+	glue.WithStreamWriter(os.Stdout),  // EventTextDelta → writer
+	glue.WithToolLogger(os.Stderr),    // "[tool] <name>" on tool start
+)
 
-func (fakeProvider) Stream(_ context.Context, _ glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
-	events := make(chan glue.ProviderEvent, 3)
-	events <- glue.ProviderEvent{Type: glue.ProviderEventStart}
-	events <- glue.ProviderEvent{Type: glue.ProviderEventTextDelta, Delta: "hello"}
-	events <- glue.ProviderEvent{Type: glue.ProviderEventDone}
-	close(events)
-	return events, nil
-}
-
-func ExampleSession_Prompt() {
-	ctx := context.Background()
-	agent := glue.NewAgent(glue.AgentOptions{Provider: fakeProvider{}})
-	session, _ := agent.Session(ctx, "test")
-	result, _ := session.Prompt(ctx, "say hi")
-	fmt.Println(result.Text)
-	// Output: hello
-}
+unsubscribe := session.Subscribe(func(e glue.Event) {
+	if e.Type == glue.EventTextDelta { fmt.Print(e.Delta) }
+})
+defer unsubscribe()
 ```
 
-The repository's own tests (`glue/agent_test.go`, `loop/run_test.go`,
-`loop/tool_exec_test.go`) use this pattern.
+**Per-prompt overrides:** `glue.WithModel`, `glue.WithSystemPrompt`,
+`glue.WithMaxTurns`.
+
+**Roles** are named instruction profiles with optional model overrides,
+from `AgentOptions.Roles` or `<WorkDir>/roles/*.md`. Precedence:
+`WithRole` (call) > `WithSessionRole` (session) > `AgentOptions.Role`.
+
+**Project context & skills.** Set `AgentOptions.WorkDir`:
+`<WorkDir>/AGENTS.md` is appended to the system prompt;
+`<WorkDir>/.agents/skills/<name>/SKILL.md` becomes a runnable skill via
+`session.Skill(ctx, name, args)`.
+
+**Structured output.** `session.PromptJSON(ctx, prompt, &out)` requests
+JSON-only and decodes into your Go type; `glue.WithJSONSchema(schema)`
+forwards an explicit schema.
+
+**Versioned prompts.** `prompts.NewCatalog(embedFS, dir, default)` wraps
+an `embed.FS` of `<version>.md` files so you can A/B-test and roll back
+system prompts; unknown versions error with the available list.
+
+**Long context.** `AgentOptions.Compactor` + `CompactionThreshold`.
+`glue.KeepRecentMessages(n)` is the zero-dependency default;
+`SummarizingCompactor` is token-aware
+([ADR-0002](docs/adr/0002-context-compaction.md),
+[ADR-0007](docs/adr/0007-memory-layer.md)).
+
+## Coding tools
+
+`tools/coding.Tools(...)` assembles a permission-gated local coding
+bundle — `read_file`, `write_file`, `edit_file`, `list_dir`,
+`find_files`, `grep`, `shell_exec`, `git_diff_branch`, `git_log_branch`
+— over `tools/fs`, `tools/git`, `tools/shell`, and `glue.Executor`. The
+`glue` binary exposes it directly:
+
+```sh
+go run ./cmd/glue run --provider codex --coding --work . \
+  --prompt "Run the tests and fix the first failure."
+```
+
+Side-effecting tools (`write_file`, `edit_file`, `shell_exec`) are
+permission-gated; reads and navigation are not. Execution defaults to
+the local process via `glue.Executor` — not a sandbox. Implement your
+own `Executor` to run in a container/VM. See
+[ADR-0012](docs/adr/0012-sdk-coding-agent-peggy-boundary.md).
+
+## The `glue` CLI
+
+A thin CLI over the same library API, for trying things without writing
+a `main.go`:
+
+```sh
+# One-shot run (any registered provider; default gemini):
+go run ./cmd/glue run --prompt "Say hi" --id demo --store .glue/sessions
+go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the failing test."
+
+# Local HTTP+SSE daemon + a client that streams and brokers permissions:
+go run ./cmd/glue serve --store .glue/sessions
+go run ./cmd/glue connect --inspect
+go run ./cmd/glue connect --prompt "Say hi" --id demo
+```
+
+`run` flags include `--provider`, `--model`, `--id`, `--store`,
+`--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
+`--usage`, and repeatable `--env`. `serve` brokers coding-tool
+permission requests to the connected `connect` client; it writes
+connection metadata to the user config dir (never the bearer token).
+The daemon protocol is [ADR-0010](docs/adr/0010-daemon-protocol.md).
+
+**Standard flags for your own binary.** `cli.RegisterStandardFlags`
+wires the same six flags (`--provider`, `--model`, `--id`, `--store`,
+`--work`, `--max-turns`) onto a `flag.FlagSet`:
+
+```go
+fs := flag.NewFlagSet("my-agent", flag.ContinueOnError)
+get := cli.RegisterStandardFlags(fs, nil)
+fs.Parse(os.Args[1:])
+cfg := get() // cfg.Provider, cfg.Model, cfg.ID, cfg.Store, cfg.Work, cfg.MaxTurns
+```
+
+## Reference agents
+
+Real agents built on the framework live under `agents/` (peer of the
+harness), not `examples/` (tutorial demos only).
+
+- **[`agents/glue-review`](agents/glue-review)** — a free, local
+  pre-push branch reviewer. Reads the diff against `main`, deep-reads
+  files when needed, and posts **one** sticky GitHub comment with a
+  fenced ` ```markdown ` fix block downstream coding agents can paste.
+  Runs as a CLI or a GitHub Action. Defaults to `openrouter/free` with
+  automatic provider failover.
+
+- **[`agents/peggy`](agents/peggy)** — a long-running personal-assistant
+  agent: CLI + Telegram + a shared HTTP+SSE daemon, durable
+  sqlite+FTS5 memory with curated recall, opt-in coding tools, MCP
+  servers, scheduled/proactive runs, and per-channel permission tiers.
+  The best reference for a feature-rich agent. Tracker:
+  [#110](https://github.com/erain/glue/issues/110).
+
+  ```sh
+  go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
+  codex login
+  peggy "Hello — what should I be working on today?"
+  ```
+
+## Testing without API keys
+
+The `Provider` interface is tiny, so tests drive sessions with a fake —
+no credentials, no network. Test tools by calling
+`tool.Execute(ctx, glue.ToolCall{...})` and asserting on the
+`ToolResult` (including `IsError`). See the
+[testing step](docs/building-agents.md#step-10--test-without-api-keys)
+of the build guide for a copy-paste fake.
 
 ## Run the tests
 
@@ -520,266 +406,25 @@ go vet ./...
 go test ./...
 ```
 
-CI runs the same commands on every PR. The Gemini provider has a gated live
-smoke test:
+CI runs the same commands on every PR. Live provider tests are gated
+behind their API keys and skipped in CI, e.g.:
 
 ```sh
 GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ```
 
-## Agents
+## Project status & contributing
 
-Real agents built on the harness live under `agents/` (peer of the harness
-itself), not `examples/` (which holds tutorial-grade demos only).
+The harness is feature-complete for the `0.x` series and in active use
+behind the [`agents/glue-review`](agents/glue-review) and
+[`agents/peggy`](agents/peggy) reference agents. The library remains
+pre-1.0: the public `Agent` / `Session` surface is stable in practice,
+but minor versions may still break API. See
+[`CHANGELOG.md`](CHANGELOG.md) for library-level notes.
 
-- [`agents/glue-review`](agents/glue-review) — a free, local
-  pre-push branch reviewer. Reads the diff against `main`, deep-reads
-  files when context demands it, and posts **one** sticky GitHub
-  comment per PR — a short headline, ≤ 5 severity bullets, and a
-  fenced ` ```markdown ` fix-instruction block downstream coding
-  agents (Claude Code, Codex, Cursor, Aider, …) can paste and act on.
-  Defaults to OpenRouter's `openrouter/free` meta-router; flags
-  swap to NVIDIA `build.nvidia.com` or Gemini, with automatic
-  provider failover.
-
-  As a CLI:
-
-  ```sh
-  export OPENROUTER_API_KEY=sk-or-v1-...
-  go run ./agents/glue-review              # review current branch vs main
-  go run ./agents/glue-review --provider nvidia
-  ```
-
-  As a GitHub Action — drop into any repo:
-
-  ```yaml
-  - uses: erain/glue/agents/glue-review@main
-    with:
-      openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
-  ```
-
-  See [`agents/glue-review/README.md`](agents/glue-review/README.md)
-  for the full input/output contract and the eval evidence behind
-  the current prompt.
-
-- [`agents/peggy`](agents/peggy) — a long-running personal-assistant
-  agent. v0.1 is a single-prompt CLI that remembers across sessions
-  via sqlite + FTS5 and a token-aware summarizing compactor.
-  Identity is injected from a Markdown `SOUL.md`; defaults to the
-  `codex` provider (ChatGPT subscription via `codex login`). Tracker:
-  [#110](https://github.com/erain/glue/issues/110).
-
-  ```sh
-  go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
-  codex login
-  peggy "Hello — what should I be working on today?"
-  ```
-
-  Peggy is also reachable on Telegram via the
-  [`peggy-telegram`](agents/peggy/channels/telegram) binary — a
-  chat-allowlisted bot built on the
-  [channel-adapter pattern](docs/adr/0008-channel-adapter.md).
-  See [`agents/peggy/README.md`](agents/peggy/README.md) for the
-  config / identity / CLI surface and channels overview.
-
-## Examples
-
-- [`examples/local-agent`](examples/local-agent) is a small Gemini-backed
-  tutorial CLI that registers a `local_time` tool, streams text to stdout,
-  and persists sessions through `stores/file`. It's the shortest path from
-  zero to "Glue agent that calls a Go function":
-
-  ```sh
-  export GEMINI_API_KEY=...
-  go run ./examples/local-agent --prompt "Use local_time for America/Toronto." --id demo
-  ```
-
-## CLI
-
-A thin local CLI is built on the same library API:
-
-```sh
-go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
-go run ./cmd/glue run --coding --work . --prompt "Run the tests and summarize failures."
-go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the failing test."
-```
-
-`run` flags:
-
-- `--id` — session id (default `"default"`).
-- `--prompt` — prompt text (required).
-- `--provider` — provider name from the registry: `codex`, `gemini`,
-  `nvidia`, or `openrouter` (default `gemini`). Use `--provider codex`
-  for a ChatGPT-subscription coding agent (run `codex login` first; no
-  per-token bill).
-- `--model` — model id (default: the selected provider's default model).
-  `gemini/<model>` is accepted for the gemini provider.
-- `--store` — file session store directory (default `.glue/sessions`).
-- `--work` — workspace for `AGENTS.md`, `.agents/skills`, roles, and
-  optional coding tools (default `.`).
-- `--coding` — register Glue's reusable coding tool bundle:
-  `read_file`, `write_file`, `edit_file`, `list_dir`, `find_files`,
-  `grep`, `shell_exec`, `git_diff_branch`, and `git_log_branch`.
-- `--allow-binary` — allowed `shell_exec` binary basename when `--coding`
-  is enabled. Repeatable; empty uses the conservative default.
-- `--coding-allow-overwrite` — allow `write_file` to overwrite existing
-  files when the model also passes `overwrite=true` and permission allows.
-- `--usage` — print provider-reported token usage to stderr when available.
-- `--usage-input-price`, `--usage-output-price`,
-  `--usage-cache-read-price`, `--usage-cache-write-price` — optional
-  USD-per-1M-token prices used to append `cost_usd=...` to `--usage`
-  output. Glue does not ship provider price tables.
-- `--env` — `.env` file to load before reading the provider's API key
-  (e.g. `GEMINI_API_KEY`). Repeatable; shell environment wins on conflict.
-  Subscription-auth providers like `codex` read `codex login` credentials
-  instead of an env key.
-
-The CLI streams text deltas to stdout, persists sessions through
-`stores/file`, and uses the configured workdir so `AGENTS.md`,
-`.agents/skills`, and `roles/` discovery work from the target workspace.
-When `--coding` is enabled, side-effecting coding tools ask for terminal
-permission before running. The default executor is local process execution,
-not a sandbox; VM/container-backed executors are expected to plug in behind
-`glue.Executor`. Errors return a non-zero exit code; missing `GEMINI_API_KEY`
-produces a clear message.
-
-The same binary can also start the local HTTP+SSE daemon described in
-[ADR-0010](docs/adr/0010-daemon-protocol.md):
-
-```sh
-go run ./cmd/glue serve --store .glue/sessions
-go run ./cmd/glue serve --coding --work . --store .glue/sessions
-```
-
-`serve` binds to `127.0.0.1:0` by default, generates a bearer token when
-`--token` / `GLUE_DAEMON_TOKEN` are not set, and writes connection metadata
-to `glue/daemon.json` under the user config directory with mode `0600`.
-Startup output prints the effective `base_url` and metadata path but not the
-bearer token. Use `--provider`, `--listen`, `--metadata`, `--work`,
-`--coding`, and
-`--permission-timeout` to override daemon behavior. Coding-enabled daemon
-runs broker side-effect permission requests through `glue connect`.
-
-Once `serve` is running, `connect` starts one daemon run, streams text
-events, and brokers permission requests in the terminal:
-
-```sh
-go run ./cmd/glue connect --inspect
-go run ./cmd/glue connect --prompt "Say hi" --id local-dev
-```
-
-By default, `connect` reads the same metadata file written by `serve`.
-Use `--base-url`, `--token`, or `--metadata` when connecting to an
-explicit daemon endpoint. Use `--inspect` for a compact authenticated
-status-and-catalog preflight, or `--status`, `--tools`,
-`--mcp-resources`, or `--mcp-prompts` to render each view separately.
-When supported by the daemon, `--inspect` also includes memory entries;
-use `--memory-limit` to cap that section.
-Peggy daemons also support `--mcp-read` and `--mcp-prompt` for direct
-resource reads and prompt rendering, `--memories` for curated memory
-catalogs, `--forget-memory` for memory deletion, plus `--recall` for
-direct memory/session search. Each inspect/action mode also has a
-`-json` form for scripts. Add `--usage` to `run` or prompt-mode
-`connect` to print provider-reported token usage on stderr without
-changing streamed stdout. Add the `--usage-*-price` flags when you want
-a local USD estimate from prices you supply.
-
-Peggy can serve the same daemon protocol with the personal-assistant
-agent, settings, memory store, and coding tools loaded once:
-
-```sh
-go run ./agents/peggy/cmd/peggy serve --coding --workdir .
-go run ./cmd/glue connect --inspect
-go run ./cmd/glue connect --memories
-go run ./cmd/glue connect --forget-memory mem_123
-go run ./cmd/glue connect --mcp-resources
-go run ./cmd/glue connect --mcp-prompts
-go run ./cmd/glue connect --mcp-read --server filesystem --uri file:///workspace/README.md
-go run ./cmd/glue connect --mcp-prompt --server linear --name summarize_issue --arg issue=GLUE-123
-go run ./cmd/glue connect --recall "Australian Shepherd"
-go run ./cmd/glue connect --prompt "Say hi to Peggy" --id cli:daily
-```
-
-`peggy serve` writes metadata to the same default path as `glue serve`,
-so `glue connect` works without explicit connection flags. Permission
-requests for Peggy coding tools are brokered over the daemon stream and
-answered by the connected client.
-
-Telegram can attach to that same daemon while preserving its chat
-allowlist and inline permission buttons:
-
-```sh
-go run ./agents/peggy/cmd/peggy-telegram --daemon
-```
-
-In daemon-client mode, allowlisted Telegram chats can also use
-`/status`, `/roles`, `/role <name> <prompt>`, `/skills`,
-`/skill <name> key=value`, `/memories`, `/recall <query>`,
-`/recall_memories <query>`, and `/forget_memory <id>` for role-shaped
-runs, reusable workflow runs, status checks, and memory
-inspection/search/correction.
-
-Peggy can assign permission tiers by daemon client/channel in
-`settings.json`. The default remains `prompt`; `read_only` denies
-side-effecting tools before any client prompt, and `trusted` allows
-side-effecting tools without prompting while preserving workspace,
-binary, overwrite, timeout, and output limits:
-
-```json
-{
-  "permissions": {
-    "default_tier": "prompt",
-    "channels": {
-      "cli": "trusted",
-      "telegram": "prompt"
-    }
-  }
-}
-```
-
-### Standard flags for downstream agents
-
-Agents that ship their own CLI binary share the same six flags
-(`--provider`, `--model`, `--id`, `--store`, `--work`, `--max-turns`).
-`cli.RegisterStandardFlags` wires them onto a `flag.FlagSet` and returns
-a getter:
-
-```go
-import "github.com/erain/glue/cli"
-
-fs := flag.NewFlagSet("my-agent", flag.ContinueOnError)
-get := cli.RegisterStandardFlags(fs, nil) // pass &cli.StandardConfig{...} to override defaults
-fs.Parse(os.Args[1:])
-cfg := get() // cfg.Provider, cfg.Model, cfg.ID, cfg.Store, cfg.Work, cfg.MaxTurns
-```
-
-`--provider` accepts a comma-separated list (e.g. `nvidia,openrouter,gemini`)
-which agents are expected to handle by chaining the providers registry
-with `glue.WithFailover`.
-
-## Adding a provider
-
-Glue's `Provider` interface is small. See
-[`docs/provider-guide.md`](docs/provider-guide.md) for the contract and
-common pitfalls, and [`examples/echo-provider`](examples/echo-provider)
-for the shortest possible runnable implementation.
-
-## Roadmap
-
-P0–P2 are shipped: the reusable loop, public `Agent` / `Session` API,
-file-backed sessions, structured JSON, skills, roles, the CLI runner,
-parallel tool execution, opt-in context compaction, the shell/filesystem
-tool extension packages (`tools/fs`, `tools/git`, `tools/shell`, and
-`tools/coding` per
-[`docs/adr/0003-shell-filesystem-tools.md`](docs/adr/0003-shell-filesystem-tools.md)
-and [`docs/adr/0012-sdk-coding-agent-peggy-boundary.md`](docs/adr/0012-sdk-coding-agent-peggy-boundary.md)),
-the provider plugin guide ([`docs/provider-guide.md`](docs/provider-guide.md)),
-and the GitHub issue automation workflow
-([`docs/issue-automation.md`](docs/issue-automation.md)). The current
-focus is hardening through dogfooding `agents/glue-review` and closing
-the agent-ergonomics wishlist (typed tools, provider failover, prompt
-catalog, stream writer, standard flags) plus the broader gaps in
-[`docs/flue-gap-analysis.md`](docs/flue-gap-analysis.md): multi-target
-deployment, sandbox connectors, subagent orchestration, MCP. See
-[`docs/project-plan.md`](docs/project-plan.md) and the project tracker
-(#1) for the next recommended issue.
+Glue is built one GitHub issue at a time. The contributor workflow,
+branch/PR conventions, and the active tracker are documented in
+[`CONTRIBUTING.md`](CONTRIBUTING.md); the roadmap shape lives in
+[`docs/project-plan.md`](docs/project-plan.md), and durable design
+decisions are recorded as ADRs under [`docs/adr/`](docs/adr). The
+canonical architecture reference is [`docs/design.md`](docs/design.md).

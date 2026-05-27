@@ -6,8 +6,9 @@
 // The file is opened in WAL mode for concurrent reads.
 //
 // stores/file remains the simple option. Reach for stores/sqlite when
-// you need cross-session search (the Searcher capability, added in a
-// follow-up issue) or when many sessions live in one process.
+// you need cross-session search (it implements the optional Searcher
+// capability behind Agent.SearchSessions / Session.Search) or when many
+// sessions live in one process.
 //
 // Design: docs/adr/0007-memory-layer.md §2.
 package sqlite
