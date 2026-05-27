@@ -18,6 +18,12 @@ This file tracks library-level changes only.
   `glue serve --coding` now register the SDK coding bundle, with local
   terminal permission prompts for one-shot runs and daemon-brokered
   permissions for served runs.
+- Added `cmd/glue --provider`: `run` and `serve` now select any
+  registered provider (`codex`, `gemini`, `nvidia`, `openrouter`) through
+  the `providers` registry instead of being hardwired to Gemini, so the
+  binary can run as a coding agent on a ChatGPT subscription
+  (`glue run --provider codex --coding`). `--model` now defaults to the
+  selected provider's registry default model.
 
 ## Initial bootstrap (pre-1.0)
 

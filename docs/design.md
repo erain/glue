@@ -293,14 +293,19 @@ applications use.
 Target command shape:
 
 ```sh
-glue run --id <session-id> --prompt "..." --model gemini/<model> --store .glue/sessions --env .env
+glue run --id <session-id> --prompt "..." --provider <name> --model <model> --store .glue/sessions --env .env
 ```
 
-The built-in runner supports the default Gemini-backed agent only. It streams
-text deltas to stdout, persists sessions through `stores/file`, loads repeatable
-`.env` files, and uses `AgentOptions.WorkDir="."` for AGENTS.md, skills, and
-roles. Dynamic Go source loading, HTTP serving, and build/deploy targets remain
-out of scope.
+The built-in runner selects a provider from the `providers` registry via
+`--provider` (`codex`, `gemini`, `nvidia`, `openrouter`; default `gemini`), so
+the binary can run as a coding agent on a ChatGPT subscription (`--provider
+codex`) without code changes. `--model` defaults to the selected provider's
+registry default model. The runner streams text deltas to stdout, persists
+sessions through `stores/file`, loads repeatable `.env` files, and uses
+`AgentOptions.WorkDir="."` for AGENTS.md, skills, and roles. `--coding`
+registers the `tools/coding` bundle behind local terminal permission prompts
+(per [ADR-0012](adr/0012-sdk-coding-agent-peggy-boundary.md)). Dynamic Go
+source loading and build/deploy targets remain out of scope.
 
 ## Context, Skills, And Roles
 

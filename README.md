@@ -601,13 +601,19 @@ A thin local CLI is built on the same library API:
 ```sh
 go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
 go run ./cmd/glue run --coding --work . --prompt "Run the tests and summarize failures."
+go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the failing test."
 ```
 
 `run` flags:
 
 - `--id` — session id (default `"default"`).
 - `--prompt` — prompt text (required).
-- `--model` — model id or `gemini/<model>` (default `gemini-2.5-flash`).
+- `--provider` — provider name from the registry: `codex`, `gemini`,
+  `nvidia`, or `openrouter` (default `gemini`). Use `--provider codex`
+  for a ChatGPT-subscription coding agent (run `codex login` first; no
+  per-token bill).
+- `--model` — model id (default: the selected provider's default model).
+  `gemini/<model>` is accepted for the gemini provider.
 - `--store` — file session store directory (default `.glue/sessions`).
 - `--work` — workspace for `AGENTS.md`, `.agents/skills`, roles, and
   optional coding tools (default `.`).
@@ -623,8 +629,10 @@ go run ./cmd/glue run --coding --work . --prompt "Run the tests and summarize fa
   `--usage-cache-read-price`, `--usage-cache-write-price` — optional
   USD-per-1M-token prices used to append `cost_usd=...` to `--usage`
   output. Glue does not ship provider price tables.
-- `--env` — `.env` file to load before reading `GEMINI_API_KEY`. Repeatable;
-  shell environment wins on conflict.
+- `--env` — `.env` file to load before reading the provider's API key
+  (e.g. `GEMINI_API_KEY`). Repeatable; shell environment wins on conflict.
+  Subscription-auth providers like `codex` read `codex login` credentials
+  instead of an env key.
 
 The CLI streams text deltas to stdout, persists sessions through
 `stores/file`, and uses the configured workdir so `AGENTS.md`,
@@ -647,7 +655,8 @@ go run ./cmd/glue serve --coding --work . --store .glue/sessions
 `--token` / `GLUE_DAEMON_TOKEN` are not set, and writes connection metadata
 to `glue/daemon.json` under the user config directory with mode `0600`.
 Startup output prints the effective `base_url` and metadata path but not the
-bearer token. Use `--listen`, `--metadata`, `--work`, `--coding`, and
+bearer token. Use `--provider`, `--listen`, `--metadata`, `--work`,
+`--coding`, and
 `--permission-timeout` to override daemon behavior. Coding-enabled daemon
 runs broker side-effect permission requests through `glue connect`.
 
