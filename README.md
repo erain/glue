@@ -618,8 +618,8 @@ go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the faili
 - `--work` — workspace for `AGENTS.md`, `.agents/skills`, roles, and
   optional coding tools (default `.`).
 - `--coding` — register Glue's reusable coding tool bundle:
-  `read_file`, `write_file`, `edit_file`, `shell_exec`, `git_diff_branch`,
-  and `git_log_branch`.
+  `read_file`, `write_file`, `edit_file`, `list_dir`, `find_files`,
+  `grep`, `shell_exec`, `git_diff_branch`, and `git_log_branch`.
 - `--allow-binary` — allowed `shell_exec` binary basename when `--coding`
   is enabled. Repeatable; empty uses the conservative default.
 - `--coding-allow-overwrite` — allow `write_file` to overwrite existing

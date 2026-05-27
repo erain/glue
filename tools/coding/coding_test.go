@@ -66,7 +66,7 @@ func TestToolsResolveDefaultsAndRegisterBundle(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"edit_file", "git_diff_branch", "git_log_branch", "read_file", "shell_exec", "write_file"}
+	want := []string{"edit_file", "find_files", "git_diff_branch", "git_log_branch", "grep", "list_dir", "read_file", "shell_exec", "write_file"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("tool names = %#v, want %#v", names, want)
 	}

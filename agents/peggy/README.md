@@ -557,6 +557,10 @@ model-callable tools:
 - `edit_file` — replace an exact string in an existing workspace file.
   Permission required. `old_string` must match exactly once unless
   `replace_all` is set; independent of the overwrite policy.
+- `list_dir` / `find_files` / `grep` — read-only navigation: list a
+  directory, find files by glob, or search file contents by regex. No
+  permission prompt; `grep` skips secret-shaped and oversized files and
+  all three skip `.git`.
 - `shell_exec` — run argv-style commands inside the workspace.
   Permission required. `argv[0]` must be a configured binary basename.
 - `git_diff_branch` / `git_log_branch` — read-only branch context via
