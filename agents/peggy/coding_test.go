@@ -45,6 +45,16 @@ func (p *recordingPermission) Decide(_ context.Context, req glue.PermissionReque
 	return p.decision, nil
 }
 
+type recordingExecutor struct {
+	commands []glue.ExecCommand
+	result   glue.ExecResult
+}
+
+func (e *recordingExecutor) Run(_ context.Context, cmd glue.ExecCommand) (glue.ExecResult, error) {
+	e.commands = append(e.commands, cmd)
+	return e.result, nil
+}
+
 func toolCallTurn(id, name, args string) []glue.ProviderEvent {
 	return []glue.ProviderEvent{
 		{Type: glue.ProviderEventStart},
@@ -154,6 +164,47 @@ func TestPeggyCodingReadOnlyToolDoesNotAskPermission(t *testing.T) {
 	toolResult := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
 	if toolResult.Role != glue.MessageRoleTool || !strings.Contains(toolResult.Content[0].Text, "hello") {
 		t.Fatalf("tool result = %#v, want read_file content", toolResult)
+	}
+}
+
+func TestPeggyCodingUsesInjectedExecutor(t *testing.T) {
+	workDir := t.TempDir()
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("c1", "shell_exec", `{"argv":["go","version"]}`),
+		peggyTextTurn("done"),
+	}}
+	executor := &recordingExecutor{result: glue.ExecResult{Stdout: []byte("from injected executor\n")}}
+	p, err := New(Options{
+		Settings: Settings{Coding: CodingSettings{
+			Enabled:         true,
+			WorkDir:         workDir,
+			AllowedBinaries: []string{"go"},
+		}},
+		Provider:       provider,
+		Store:          filestore.New(filepath.Join(t.TempDir(), "sessions")),
+		Permission:     glue.AllowAll{},
+		CodingExecutor: executor,
+		CodingEnv:      []string{"A=B"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	if _, err := p.Prompt(context.Background(), "s", "run go version", nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if len(executor.commands) != 1 {
+		t.Fatalf("commands = %d, want 1", len(executor.commands))
+	}
+	if got := strings.Join(executor.commands[0].Argv, " "); got != "go version" {
+		t.Fatalf("argv = %q, want go version", got)
+	}
+	if got := strings.Join(executor.commands[0].Env, ","); got != "A=B" {
+		t.Fatalf("env = %q, want A=B", got)
+	}
+	if !strings.Contains(lastToolText(t, provider.requests[1]), "from injected executor") {
+		t.Fatalf("tool result missing injected executor output: %q", lastToolText(t, provider.requests[1]))
 	}
 }
 

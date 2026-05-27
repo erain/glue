@@ -8,6 +8,10 @@ not formally follow SemVer until v1.0.
 
 ### Added
 
+- **Reusable coding execution seam.** Peggy now consumes Glue's
+  `tools/coding` SDK bundle and exposes a runtime `CodingExecutor`
+  injection point, so future VM or container-backed execution can plug
+  in without changing Peggy's personal-assistant layer.
 - **Dogfood doctor command.** `peggy doctor` now checks local Peggy
   dogfood readiness without starting a model run, reports required and
   recommended setup state in text or JSON, and exits non-zero when

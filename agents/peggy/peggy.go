@@ -49,6 +49,15 @@ type Options struct {
 	// are enabled.
 	Permission glue.Permission
 
+	// CodingExecutor, when non-nil, runs Peggy's shell_exec tool.
+	// Nil uses glue.LocalExecutor. This is the runtime seam for VM,
+	// container, or remote execution backends.
+	CodingExecutor glue.Executor
+
+	// CodingEnv is the exact child environment used by shell_exec.
+	// Nil means the child inherits no environment.
+	CodingEnv []string
+
 	// Stderr collects diagnostic warnings (missing SOUL.md etc).
 	// Defaults to os.Stderr.
 	Stderr io.Writer
@@ -151,7 +160,11 @@ func New(opts Options) (*Peggy, error) {
 			}
 		}
 	}
-	codingTools, codingSettings, err := CodingTools(settings.Coding)
+	codingTools, codingSettings, err := CodingTools(
+		settings.Coding,
+		WithCodingExecutor(opts.CodingExecutor),
+		WithCodingEnv(opts.CodingEnv),
+	)
 	if err != nil {
 		return nil, err
 	}

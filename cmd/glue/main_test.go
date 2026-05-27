@@ -54,6 +54,14 @@ func textTurn(text string) []glue.ProviderEvent {
 	}
 }
 
+func toolCallTurn(id, name, args string) []glue.ProviderEvent {
+	return []glue.ProviderEvent{
+		{Type: glue.ProviderEventStart},
+		{Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: id, Name: name, Arguments: json.RawMessage(args)}},
+		{Type: glue.ProviderEventDone},
+	}
+}
+
 func writeJSONResponse(t *testing.T, w http.ResponseWriter, status int, value any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
@@ -344,6 +352,75 @@ func TestRunCLIProviderErrorExit(t *testing.T) {
 	}
 }
 
+func TestRunCLICodingToolsPromptAndWrite(t *testing.T) {
+	workDir := t.TempDir()
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("c1", "write_file", `{"path":"note.txt","content":"hello from glue code"}`),
+		textTurn("done"),
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"run",
+		"--coding",
+		"--work", workDir,
+		"--prompt", "write a note",
+		"--store", filepath.Join(t.TempDir(), "sessions"),
+	}, strings.NewReader("a\n"), &stdout, &stderr, fakeFactory(provider), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if stdout.String() != "done\n" {
+		t.Fatalf("stdout = %q, want done", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "glue run: coding tools enabled") || !strings.Contains(stderr.String(), "Permission requested: write_file") {
+		t.Fatalf("stderr = %q, want coding notice and permission prompt", stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "note.txt"))
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if string(data) != "hello from glue code" {
+		t.Fatalf("note.txt = %q", data)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatal("provider not called")
+	}
+	var toolNames []string
+	for _, tool := range provider.requests[0].Tools {
+		toolNames = append(toolNames, tool.Name)
+	}
+	for _, want := range []string{"read_file", "write_file", "shell_exec", "git_diff_branch", "git_log_branch"} {
+		if !containsString(toolNames, want) {
+			t.Fatalf("tools = %v, missing %s", toolNames, want)
+		}
+	}
+}
+
+func TestRunCLICodingDeniesSideEffectOnDefaultPromptAnswer(t *testing.T) {
+	workDir := t.TempDir()
+	provider := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("c1", "write_file", `{"path":"note.txt","content":"should not write"}`),
+		textTurn("done"),
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{
+		"run",
+		"--coding",
+		"--work", workDir,
+		"--prompt", "try to write",
+		"--store", filepath.Join(t.TempDir(), "sessions"),
+	}, strings.NewReader("\n"), &stdout, &stderr, fakeFactory(provider), nil, http.DefaultClient)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "note.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("note.txt stat err = %v, want not exist", err)
+	}
+	if !strings.Contains(lastToolText(t, provider.requests[1]), "permission denied by user") {
+		t.Fatalf("tool result = %q, want denial", lastToolText(t, provider.requests[1]))
+	}
+}
+
 func TestRunCLIMissingPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -438,6 +515,57 @@ func TestRunCLIServeBuildsDaemon(t *testing.T) {
 	}
 	if got := provider.requests[0].Model; got != "custom" {
 		t.Fatalf("provider model = %q, want custom", got)
+	}
+}
+
+func TestRunCLIServeCodingAdvertisesTools(t *testing.T) {
+	workDir := t.TempDir()
+	var captured serveConfig
+	serve := func(_ context.Context, cfg serveConfig, handler http.Handler, _ io.Writer) error {
+		captured = cfg
+		req := httptest.NewRequest(http.MethodGet, "/v1/tools", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("tools status = %d body=%s", rec.Code, rec.Body.String())
+		}
+		var catalog daemonToolCatalog
+		if err := json.NewDecoder(rec.Body).Decode(&catalog); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tool := range catalog.Tools {
+			names = append(names, tool.Name)
+			if tool.Name == "shell_exec" && (!tool.RequiresPermission || tool.PermissionAction != "exec") {
+				t.Fatalf("shell_exec permission metadata = %+v", tool)
+			}
+		}
+		for _, want := range []string{"read_file", "write_file", "shell_exec", "git_diff_branch", "git_log_branch"} {
+			if !containsString(names, want) {
+				t.Fatalf("tools = %v, missing %s", names, want)
+			}
+		}
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithServe(context.Background(), []string{
+		"serve",
+		"--coding",
+		"--work", workDir,
+		"--allow-binary", "go",
+		"--token", "test-token",
+		"--metadata", filepath.Join(t.TempDir(), "daemon.json"),
+	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}), serve)
+	if code != 0 {
+		t.Fatalf("code = %d stderr=%q", code, stderr.String())
+	}
+	if captured.WorkDir != workDir {
+		t.Fatalf("workdir = %q, want %q", captured.WorkDir, workDir)
+	}
+	if !strings.Contains(stderr.String(), "glue serve: coding tools enabled") {
+		t.Fatalf("stderr = %q, want coding notice", stderr.String())
 	}
 }
 
@@ -2639,4 +2767,25 @@ func TestRunCLIMissingGeminiAPIKey(t *testing.T) {
 	if !strings.Contains(stderr.String(), "GEMINI_API_KEY") {
 		t.Fatalf("stderr = %q, want GEMINI_API_KEY hint", stderr.String())
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func lastToolText(t *testing.T, req glue.ProviderRequest) string {
+	t.Helper()
+	if len(req.Messages) == 0 {
+		t.Fatal("provider request has no messages")
+	}
+	msg := req.Messages[len(req.Messages)-1]
+	if msg.Role != glue.MessageRoleTool || len(msg.Content) == 0 {
+		t.Fatalf("last message = %#v, want tool result", msg)
+	}
+	return msg.Content[0].Text
 }
