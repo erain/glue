@@ -1,8 +1,10 @@
 # Contributing to Glue
 
-Glue is built one GitHub issue at a time. The pinned project tracker
-(<https://github.com/erain/glue/issues/1>) is the source of truth for what to
-work on next and what is done.
+Glue is built one GitHub issue at a time. The active project tracker
+(<https://github.com/erain/glue/issues/110>) is the source of truth for
+what to work on next and what is done. (The original `0.x` bootstrap
+tracker, [#1](https://github.com/erain/glue/issues/1), is closed and kept
+only as the historical record for the P0/P1/P2 milestones.)
 
 This document is the operating contract. The most important rule:
 
@@ -15,9 +17,9 @@ and reopen it.
 
 Every unit of work follows the same shape:
 
-1. **Read the tracker.** Open issue #1 and pick the next unchecked issue in
-   the priority order listed there. Work P0 before P1 before P2 unless the
-   tracker says otherwise.
+1. **Read the tracker.** Open the active tracker
+   ([#110](https://github.com/erain/glue/issues/110)) and pick the next
+   unchecked issue from its work queue in the priority order listed there.
 2. **Read the issue.** Verify it has all seven required sections (Goal, Scope,
    Out of scope, Implementation notes, Docs update required, Verification
    commands, Acceptance criteria). If anything is missing or stale, edit the
@@ -49,7 +51,7 @@ Every unit of work follows the same shape:
     - the PR number,
     - the verification command output (or a faithful summary if it is large),
     - any caveats or follow-ups for the next session.
-11. **Update the tracker.** Edit issue #1's body to:
+11. **Update the tracker.** Edit the active tracker (#110) body to:
     - check off the completed item,
     - update the Current Phase if a milestone advanced,
     - update the Next Recommended Issue,
