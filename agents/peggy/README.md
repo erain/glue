@@ -554,12 +554,15 @@ model-callable tools:
 - `write_file` — write UTF-8 text inside the workspace. Permission
   required. Existing files require both `coding.allow_overwrite` /
   `--coding-allow-overwrite` and model argument `overwrite: true`.
+- `edit_file` — replace an exact string in an existing workspace file.
+  Permission required. `old_string` must match exactly once unless
+  `replace_all` is set; independent of the overwrite policy.
 - `shell_exec` — run argv-style commands inside the workspace.
   Permission required. `argv[0]` must be a configured binary basename.
 - `git_diff_branch` / `git_log_branch` — read-only branch context via
   the local `git` binary.
 
-For `write_file` and `shell_exec`, the CLI asks on stderr/stdin:
+For `write_file`, `edit_file`, and `shell_exec`, the CLI asks on stderr/stdin:
 
 ```text
 Allow? [y] once, [s] session, [t] target, [n] deny:
