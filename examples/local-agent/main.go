@@ -21,6 +21,11 @@ import (
 	filestore "github.com/erain/glue/stores/file"
 )
 
+// timezoneArgs is the decoded argument shape for the local_time tool.
+type timezoneArgs struct {
+	Timezone string `json:"timezone"`
+}
+
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -54,29 +59,26 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return 1
 	}
 
-	wrote := false
-	_, err = session.Prompt(ctx, *prompt, glue.WithEvents(func(event glue.Event) {
-		if event.Type == glue.EventTextDelta && event.Delta != "" {
-			fmt.Fprint(stdout, event.Delta)
-			wrote = true
-		}
-	}))
-	if wrote {
-		fmt.Fprintln(stdout)
-	}
-	if err != nil {
+	// WithStreamWriter mirrors assistant text deltas straight to stdout.
+	if _, err := session.Prompt(ctx, *prompt, glue.WithStreamWriter(stdout)); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	fmt.Fprintln(stdout)
 	return 0
 }
 
 // localTimeTool returns the current wall-clock time for a requested
 // timezone label. The label is forwarded back in the response so the
 // model can verify the tool understood the input.
+//
+// It uses glue.NewTool[T], which decodes ToolCall.Arguments into the
+// typed timezoneArgs before the executor runs and turns malformed
+// arguments into an error ToolResult the model can recover from. Pair it
+// with glue.TextResult / glue.ErrorResult for the result side.
 func localTimeTool() glue.Tool {
-	return glue.Tool{
-		ToolSpec: glue.ToolSpec{
+	return glue.NewTool[timezoneArgs](
+		glue.ToolSpec{
 			Name:        "local_time",
 			Description: "Return the current local time for a requested timezone label.",
 			Parameters: json.RawMessage(`{
@@ -90,27 +92,18 @@ func localTimeTool() glue.Tool {
   "required": ["timezone"]
 }`),
 		},
-		Execute: func(_ context.Context, call glue.ToolCall) (glue.ToolResult, error) {
-			var args struct {
-				Timezone string `json:"timezone"`
-			}
-			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return glue.ToolResult{}, err
-			}
+		func(_ context.Context, args timezoneArgs) (glue.ToolResult, error) {
 			if args.Timezone == "" {
-				return glue.ToolResult{}, errors.New("timezone is required")
+				return glue.ErrorResult(errors.New("timezone is required")), nil
 			}
-			payload := map[string]string{
+			data, err := json.Marshal(map[string]string{
 				"timezone": args.Timezone,
 				"time":     time.Now().Format(time.RFC3339),
-			}
-			data, err := json.Marshal(payload)
+			})
 			if err != nil {
-				return glue.ToolResult{}, err
+				return glue.ErrorResult(err), nil
 			}
-			return glue.ToolResult{
-				Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: string(data)}},
-			}, nil
+			return glue.TextResult(string(data)), nil
 		},
-	}
+	)
 }
