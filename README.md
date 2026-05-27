@@ -39,9 +39,9 @@ Shipped today:
   (OpenAI-compatible, sharing the `providers/openaicompat` core), a
   driver-style registry under `providers/`, and `glue.WithFailover`.
 - Storage: file-backed session store at `stores/file`. Tools: shared
-  `tools/fs` and `tools/git` extension packages. CLI: `cmd/glue` runner
-  plus `cli.RegisterStandardFlags` for downstream agents. Versioned
-  prompts via `prompts.NewCatalog`.
+  `tools/fs`, `tools/git`, `tools/shell`, and `tools/coding` extension
+  packages. CLI: `cmd/glue` runner plus `cli.RegisterStandardFlags` for
+  downstream agents. Versioned prompts via `prompts.NewCatalog`.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for library-level notes.
 
@@ -57,7 +57,8 @@ The module path is `github.com/erain/glue`. Subpackages:
 shared OpenAI-compatible core in `providers/openaicompat` and the
 driver-style registry in `providers/`),
 `github.com/erain/glue/stores/file` (file-backed session store),
-`github.com/erain/glue/tools/{fs,git}` (extension tool packages),
+`github.com/erain/glue/tools/{fs,git,shell,coding}` (extension tool
+packages),
 `github.com/erain/glue/prompts` (versioned-prompt catalog), and
 `github.com/erain/glue/cli` (shared standard flags).
 
@@ -599,6 +600,7 @@ A thin local CLI is built on the same library API:
 
 ```sh
 go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
+go run ./cmd/glue run --coding --work . --prompt "Run the tests and summarize failures."
 ```
 
 `run` flags:
@@ -607,6 +609,15 @@ go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
 - `--prompt` — prompt text (required).
 - `--model` — model id or `gemini/<model>` (default `gemini-2.5-flash`).
 - `--store` — file session store directory (default `.glue/sessions`).
+- `--work` — workspace for `AGENTS.md`, `.agents/skills`, roles, and
+  optional coding tools (default `.`).
+- `--coding` — register Glue's reusable coding tool bundle:
+  `read_file`, `write_file`, `shell_exec`, `git_diff_branch`, and
+  `git_log_branch`.
+- `--allow-binary` — allowed `shell_exec` binary basename when `--coding`
+  is enabled. Repeatable; empty uses the conservative default.
+- `--coding-allow-overwrite` — allow `write_file` to overwrite existing
+  files when the model also passes `overwrite=true` and permission allows.
 - `--usage` — print provider-reported token usage to stderr when available.
 - `--usage-input-price`, `--usage-output-price`,
   `--usage-cache-read-price`, `--usage-cache-write-price` — optional
@@ -616,23 +627,29 @@ go run ./cmd/glue run --prompt "Say hi" --id local-dev --store .glue/sessions
   shell environment wins on conflict.
 
 The CLI streams text deltas to stdout, persists sessions through
-`stores/file`, and uses `WorkDir="."` so `AGENTS.md`, `.agents/skills`, and
-`roles/` discovery work from the invocation directory. Errors return a
-non-zero exit code; missing `GEMINI_API_KEY` produces a clear message.
+`stores/file`, and uses the configured workdir so `AGENTS.md`,
+`.agents/skills`, and `roles/` discovery work from the target workspace.
+When `--coding` is enabled, side-effecting coding tools ask for terminal
+permission before running. The default executor is local process execution,
+not a sandbox; VM/container-backed executors are expected to plug in behind
+`glue.Executor`. Errors return a non-zero exit code; missing `GEMINI_API_KEY`
+produces a clear message.
 
 The same binary can also start the local HTTP+SSE daemon described in
 [ADR-0010](docs/adr/0010-daemon-protocol.md):
 
 ```sh
 go run ./cmd/glue serve --store .glue/sessions
+go run ./cmd/glue serve --coding --work . --store .glue/sessions
 ```
 
 `serve` binds to `127.0.0.1:0` by default, generates a bearer token when
 `--token` / `GLUE_DAEMON_TOKEN` are not set, and writes connection metadata
 to `glue/daemon.json` under the user config directory with mode `0600`.
 Startup output prints the effective `base_url` and metadata path but not the
-bearer token. Use `--listen`, `--metadata`, `--work`, and
-`--permission-timeout` to override daemon behavior.
+bearer token. Use `--listen`, `--metadata`, `--work`, `--coding`, and
+`--permission-timeout` to override daemon behavior. Coding-enabled daemon
+runs broker side-effect permission requests through `glue connect`.
 
 Once `serve` is running, `connect` starts one daemon run, streams text
 events, and brokers permission requests in the terminal:
@@ -743,8 +760,10 @@ for the shortest possible runnable implementation.
 P0–P2 are shipped: the reusable loop, public `Agent` / `Session` API,
 file-backed sessions, structured JSON, skills, roles, the CLI runner,
 parallel tool execution, opt-in context compaction, the shell/filesystem
-tool extension packages (`tools/fs`, `tools/git` per
-[`docs/adr/0003-shell-filesystem-tools.md`](docs/adr/0003-shell-filesystem-tools.md)),
+tool extension packages (`tools/fs`, `tools/git`, `tools/shell`, and
+`tools/coding` per
+[`docs/adr/0003-shell-filesystem-tools.md`](docs/adr/0003-shell-filesystem-tools.md)
+and [`docs/adr/0012-sdk-coding-agent-peggy-boundary.md`](docs/adr/0012-sdk-coding-agent-peggy-boundary.md)),
 the provider plugin guide ([`docs/provider-guide.md`](docs/provider-guide.md)),
 and the GitHub issue automation workflow
 ([`docs/issue-automation.md`](docs/issue-automation.md)). The current

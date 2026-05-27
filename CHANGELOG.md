@@ -10,7 +10,14 @@ This file tracks library-level changes only.
 
 ## Unreleased
 
-- (no library changes since the agent's `v1.0.0` release)
+- Added `tools/coding`, a reusable SDK package that assembles the local
+  coding-agent tool bundle (`read_file`, `write_file`, `shell_exec`,
+  `git_diff_branch`, and `git_log_branch`) over the existing filesystem,
+  shell, git, and `glue.Executor` primitives.
+- Added `cmd/glue` coding-agent mode: `glue run --coding` and
+  `glue serve --coding` now register the SDK coding bundle, with local
+  terminal permission prompts for one-shot runs and daemon-brokered
+  permissions for served runs.
 
 ## Initial bootstrap (pre-1.0)
 

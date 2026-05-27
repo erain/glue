@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	toolscoding "github.com/erain/glue/tools/coding"
 )
 
 // ChannelConfig is the raw JSON for one channel's configuration,
@@ -141,7 +143,7 @@ const DefaultProvider = "codex"
 // DefaultCodingAllowedBinaries is the conservative shell_exec allowlist
 // Peggy uses when coding tools are enabled and no explicit list is
 // configured.
-var DefaultCodingAllowedBinaries = []string{"go", "git", "make", "node", "npm", "python", "python3"}
+var DefaultCodingAllowedBinaries = append([]string(nil), toolscoding.DefaultAllowedBinaries...)
 
 // LoadSettings reads and parses settings.json. When path is empty,
 // the loader walks the resolution chain $PEGGY_CONFIG →

@@ -546,7 +546,8 @@ Persistent config for a single trusted workspace:
 }
 ```
 
-Peggy registers these model-callable tools:
+Peggy consumes Glue's reusable coding-tool bundle and registers these
+model-callable tools:
 
 - `read_file` — read UTF-8 text inside the workspace. Read-only, no
   permission prompt.
@@ -695,9 +696,10 @@ that made them, so a Telegram allow does not silently authorize a
 terminal request.
 
 Coding mode is a trusted-local workflow. The tool layer constrains
-paths, binaries, overwrites, output size, and permissions, but Peggy
-uses the host process via `glue.LocalExecutor`; it is not a container
-or VM sandbox.
+paths, binaries, overwrites, output size, and permissions. By default
+Peggy uses the host process via `glue.LocalExecutor`; library callers
+can inject another `glue.Executor`, but Peggy does not yet ship a
+container or VM sandbox.
 
 ### Config resolution
 

@@ -29,6 +29,7 @@ import (
 	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/providers/gemini"
 	filestore "github.com/erain/glue/stores/file"
+	toolscoding "github.com/erain/glue/tools/coding"
 )
 
 const defaultModel = "gemini-2.5-flash"
@@ -56,6 +57,21 @@ func (r *repeatedStrings) String() string { return strings.Join(*r, ",") }
 func (r *repeatedStrings) Set(value string) error {
 	*r = append(*r, value)
 	return nil
+}
+
+type codingFlagConfig struct {
+	Enabled         bool
+	WorkDir         string
+	AllowedBinaries []string
+	AllowOverwrite  bool
+}
+
+type agentConfig struct {
+	Model      string
+	StoreDir   string
+	WorkDir    string
+	Tools      []glue.Tool
+	Permission glue.Permission
 }
 
 type serveFunc func(context.Context, serveConfig, http.Handler, io.Writer) error
@@ -243,7 +259,7 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 
 	switch args[0] {
 	case "run":
-		if err := runCommand(ctx, args[1:], stdout, stderr, newProvider); err != nil {
+		if err := runCommand(ctx, args[1:], stdin, stdout, stderr, newProvider); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -267,7 +283,7 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 }
 
-func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory) error {
+func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory) error {
 	flags := flag.NewFlagSet("glue run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -275,10 +291,15 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 	prompt := flags.String("prompt", "", "prompt text")
 	model := flags.String("model", defaultModel, "model id or gemini/<model>")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
+	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
+	coding := flags.Bool("coding", false, "enable local coding tools for this run")
+	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
 	usagePricing := registerUsagePricingFlags(flags)
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
+	var allowedBinaries repeatedStrings
+	flags.Var(&allowedBinaries, "allow-binary", "allowed shell_exec binary basename for --coding; repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -302,7 +323,28 @@ func runCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.
 		return err
 	}
 
-	agent, err := newAgent(newProvider, *model, *storeDir, ".")
+	tools, _, err := buildCodingTools(codingFlagConfig{
+		Enabled:         *coding,
+		WorkDir:         *workDir,
+		AllowedBinaries: append([]string(nil), allowedBinaries...),
+		AllowOverwrite:  *codingAllowOverwrite,
+	})
+	if err != nil {
+		return err
+	}
+	var permission glue.Permission
+	if *coding {
+		permission = newLocalPromptPermission(stdin, stderr)
+		fmt.Fprintf(stderr, "glue run: coding tools enabled for %s\n", *workDir)
+	}
+
+	agent, err := newAgent(newProvider, agentConfig{
+		Model:      *model,
+		StoreDir:   *storeDir,
+		WorkDir:    *workDir,
+		Tools:      tools,
+		Permission: permission,
+	})
 	if err != nil {
 		return err
 	}
@@ -342,12 +384,16 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	model := flags.String("model", defaultModel, "model id or gemini/<model>")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
+	coding := flags.Bool("coding", false, "enable local coding tools for daemon runs")
+	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and daemon permission approval")
 	listenAddr := flags.String("listen", defaultListenAddr, "local listen address")
 	tokenFlag := flags.String("token", "", "bearer token; defaults to GLUE_DAEMON_TOKEN or a generated token")
 	metadataPath := flags.String("metadata", defaultMetadataPath(), "connection metadata JSON path; empty disables metadata file")
 	permissionTimeout := flags.Duration("permission-timeout", 0, "permission decision timeout; 0 uses daemon default")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
+	var allowedBinaries repeatedStrings
+	flags.Var(&allowedBinaries, "allow-binary", "allowed shell_exec binary basename for --coding; repeatable")
 
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -370,7 +416,24 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if strings.TrimSpace(*metadataPath) == "" && tokenSource == "generated" {
 		return errors.New("metadata disabled requires --token or GLUE_DAEMON_TOKEN")
 	}
-	agent, err := newAgent(newProvider, *model, *storeDir, *workDir)
+	tools, _, err := buildCodingTools(codingFlagConfig{
+		Enabled:         *coding,
+		WorkDir:         *workDir,
+		AllowedBinaries: append([]string(nil), allowedBinaries...),
+		AllowOverwrite:  *codingAllowOverwrite,
+	})
+	if err != nil {
+		return err
+	}
+	if *coding {
+		fmt.Fprintf(stderr, "glue serve: coding tools enabled for %s\n", *workDir)
+	}
+	agent, err := newAgent(newProvider, agentConfig{
+		Model:    *model,
+		StoreDir: *storeDir,
+		WorkDir:  *workDir,
+		Tools:    tools,
+	})
 	if err != nil {
 		return err
 	}
@@ -2120,6 +2183,89 @@ func writeUsageSummary(w io.Writer, summary usageSummary, pricing usagePricing) 
 	fmt.Fprintf(w, "usage: %s\n", strings.Join(parts, " "))
 }
 
+func buildCodingTools(cfg codingFlagConfig) ([]glue.Tool, toolscoding.Options, error) {
+	return toolscoding.Tools(toolscoding.Options{
+		Enabled:         cfg.Enabled,
+		WorkDir:         cfg.WorkDir,
+		AllowedBinaries: append([]string(nil), cfg.AllowedBinaries...),
+		AllowOverwrite:  cfg.AllowOverwrite,
+	})
+}
+
+type localPromptPermission struct {
+	input         *bufio.Reader
+	stderr        io.Writer
+	sessionAllows map[string]struct{}
+	targetAllows  map[string]struct{}
+	foreverAllows map[string]struct{}
+}
+
+func newLocalPromptPermission(stdin io.Reader, stderr io.Writer) *localPromptPermission {
+	if stdin == nil {
+		stdin = strings.NewReader("")
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	return &localPromptPermission{
+		input:         bufio.NewReader(stdin),
+		stderr:        stderr,
+		sessionAllows: map[string]struct{}{},
+		targetAllows:  map[string]struct{}{},
+		foreverAllows: map[string]struct{}{},
+	}
+}
+
+func (p *localPromptPermission) Decide(ctx context.Context, req glue.PermissionRequest) (glue.PermissionDecision, error) {
+	if p == nil {
+		return glue.PermissionDecision{Allow: false, Reason: "permission denied: no local permission handler"}, nil
+	}
+	if _, ok := p.foreverAllows[localPermissionForeverKey(req)]; ok {
+		return glue.PermissionDecision{Allow: true, RememberFor: glue.RememberForever}, nil
+	}
+	if _, ok := p.sessionAllows[localPermissionSessionKey(req)]; ok {
+		return glue.PermissionDecision{Allow: true, RememberFor: glue.RememberSession}, nil
+	}
+	if _, ok := p.targetAllows[localPermissionTargetKey(req)]; ok {
+		return glue.PermissionDecision{Allow: true, RememberFor: glue.RememberSessionTarget}, nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return glue.PermissionDecision{}, ctx.Err()
+	default:
+	}
+	decision, err := promptPermission(p.input, p.stderr, connectPermissionPayload{Request: req})
+	if err != nil {
+		return glue.PermissionDecision{}, err
+	}
+	out := glue.PermissionDecision{Allow: decision.Allow, Reason: decision.Reason}
+	switch decision.RememberFor {
+	case "session":
+		out.RememberFor = glue.RememberSession
+		p.sessionAllows[localPermissionSessionKey(req)] = struct{}{}
+	case "session_target":
+		out.RememberFor = glue.RememberSessionTarget
+		p.targetAllows[localPermissionTargetKey(req)] = struct{}{}
+	case "forever":
+		out.RememberFor = glue.RememberForever
+		p.foreverAllows[localPermissionForeverKey(req)] = struct{}{}
+	}
+	return out, nil
+}
+
+func localPermissionSessionKey(req glue.PermissionRequest) string {
+	return req.SessionID + "\x00" + req.Tool + "\x00" + req.Action
+}
+
+func localPermissionTargetKey(req glue.PermissionRequest) string {
+	return localPermissionSessionKey(req) + "\x00" + req.Target
+}
+
+func localPermissionForeverKey(req glue.PermissionRequest) string {
+	return req.Tool + "\x00" + req.Action + "\x00" + req.Target
+}
+
 func promptPermission(input *bufio.Reader, stderr io.Writer, perm connectPermissionPayload) (connectPermissionDecision, error) {
 	req := perm.Request
 	fmt.Fprintf(stderr, "\nPermission requested: %s", req.Tool)
@@ -2144,7 +2290,7 @@ func promptPermission(input *bufio.Reader, stderr io.Writer, perm connectPermiss
 	case "f", "forever":
 		return connectPermissionDecision{Allow: true, RememberFor: "forever"}, nil
 	default:
-		return connectPermissionDecision{Allow: false, Reason: "permission denied by glue connect"}, nil
+		return connectPermissionDecision{Allow: false, Reason: "permission denied by user"}, nil
 	}
 }
 
@@ -2188,16 +2334,18 @@ func cancelDaemonRun(ctx context.Context, cfg connectConfig, runID string, clien
 	return nil
 }
 
-func newAgent(newProvider providerFactory, model, storeDir, workDir string) (*glue.Agent, error) {
+func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error) {
 	provider, err := newProvider()
 	if err != nil {
 		return nil, err
 	}
 	return glue.NewAgent(glue.AgentOptions{
-		Provider: provider,
-		Model:    normalizeModel(model),
-		Store:    filestore.New(storeDir),
-		WorkDir:  workDir,
+		Provider:   provider,
+		Model:      normalizeModel(cfg.Model),
+		Tools:      append([]glue.Tool(nil), cfg.Tools...),
+		Store:      filestore.New(cfg.StoreDir),
+		WorkDir:    cfg.WorkDir,
+		Permission: cfg.Permission,
 	}), nil
 }
 
@@ -2287,8 +2435,8 @@ func httpStatusError(resp *http.Response) string {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--env <path>]
-  glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--env <path>]
+  glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
+  glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -2308,8 +2456,8 @@ func printUsage(w io.Writer) {
   glue connect --forget-permission <id> [--forget-permission-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
-  run      Run the local Gemini-backed agent.
-  serve    Start a local HTTP+SSE daemon for Glue sessions.
+  run      Run the local Gemini-backed agent, optionally with coding tools.
+  serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
   connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
 
 Flags:
@@ -2318,7 +2466,13 @@ Flags:
   --skill    Connect mode: run one daemon skill instead of --prompt.
   --model    Gemini model id or gemini/<model>. Defaults to gemini-2.5-flash.
   --store    File session store directory. Defaults to .glue/sessions.
-  --work     Working directory for serve mode. Defaults to ".".
+  --work     Workspace for AGENTS.md, skills, roles, and --coding tools. Defaults to ".".
+  --coding
+             Run/serve mode: register Glue's local coding tool bundle.
+  --allow-binary
+             Run/serve --coding mode: allowed shell_exec binary basename; repeatable.
+  --coding-allow-overwrite
+             Run/serve --coding mode: allow write_file overwrites when the model also sets overwrite=true.
   --listen   Serve listen address. Defaults to 127.0.0.1:0.
   --token    Serve bearer token. Defaults to GLUE_DAEMON_TOKEN or a generated token.
   --metadata Serve connection metadata JSON. Defaults to the user config directory.
