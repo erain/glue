@@ -27,19 +27,28 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
-	"github.com/erain/glue/providers/gemini"
+	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
+
+	// Register the shipped providers so they resolve through the
+	// providers registry by name (--provider). Importing for side
+	// effects only; the binary selects providers at runtime.
+	_ "github.com/erain/glue/providers/codex"
+	_ "github.com/erain/glue/providers/gemini"
+	_ "github.com/erain/glue/providers/nvidia"
+	_ "github.com/erain/glue/providers/openrouter"
 )
 
-const defaultModel = "gemini-2.5-flash"
+const defaultProvider = "gemini"
 const defaultListenAddr = "127.0.0.1:0"
 const defaultShutdownTimeout = 5 * time.Second
 
-// providerFactory returns a [glue.Provider] or an error. The error is the
-// hook the default factory uses to surface "GEMINI_API_KEY missing"
-// before any API call is attempted.
-type providerFactory func() (glue.Provider, error)
+// providerFactory constructs a [glue.Provider] for the named provider, or
+// returns an error. The error is the hook the default factory uses to
+// surface a missing API key before any API call is attempted. Tests inject
+// a factory that returns a canned provider and ignores the name.
+type providerFactory func(name string) (glue.Provider, error)
 
 type envFiles []string
 
@@ -67,6 +76,7 @@ type codingFlagConfig struct {
 }
 
 type agentConfig struct {
+	Provider   string
 	Model      string
 	StoreDir   string
 	WorkDir    string
@@ -233,14 +243,23 @@ type connectPermissionDecision struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	os.Exit(runCLI(ctx, os.Args[1:], os.Stdout, os.Stderr, defaultGeminiFactory))
+	os.Exit(runCLI(ctx, os.Args[1:], os.Stdout, os.Stderr, defaultProviderFactory))
 }
 
-func defaultGeminiFactory() (glue.Provider, error) {
-	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" {
-		return nil, errors.New("GEMINI_API_KEY is required (set in shell or pass --env <file>)")
+// defaultProviderFactory resolves a provider from the registry by name.
+// For providers that authenticate through an environment variable, it
+// surfaces a missing-key error before any API call. Subscription-auth
+// providers (e.g. codex) carry no env key and validate their own auth at
+// request time.
+func defaultProviderFactory(name string) (glue.Provider, error) {
+	provider, _, envKey, err := providers.New(name)
+	if err != nil {
+		return nil, err
 	}
-	return gemini.New(gemini.Options{}), nil
+	if envKey != "" && strings.TrimSpace(os.Getenv(envKey)) == "" {
+		return nil, fmt.Errorf("%s is required for provider %q (set in shell or pass --env <file>)", envKey, name)
+	}
+	return provider, nil
 }
 
 func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory) int {
@@ -289,7 +308,8 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 
 	id := flags.String("id", "default", "session id")
 	prompt := flags.String("prompt", "", "prompt text")
-	model := flags.String("model", defaultModel, "model id or gemini/<model>")
+	provider := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
+	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
 	coding := flags.Bool("coding", false, "enable local coding tools for this run")
@@ -319,6 +339,10 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if strings.TrimSpace(*prompt) == "" {
 		return errors.New("missing required --prompt")
 	}
+	providerName, effectiveModel, err := resolveProvider(*provider, *model)
+	if err != nil {
+		return err
+	}
 	if err := loadEnvFiles(envs); err != nil {
 		return err
 	}
@@ -339,7 +363,8 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 
 	agent, err := newAgent(newProvider, agentConfig{
-		Model:      *model,
+		Provider:   providerName,
+		Model:      effectiveModel,
 		StoreDir:   *storeDir,
 		WorkDir:    *workDir,
 		Tools:      tools,
@@ -381,7 +406,8 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	flags := flag.NewFlagSet("glue serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	model := flags.String("model", defaultModel, "model id or gemini/<model>")
+	provider := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
+	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
 	coding := flags.Bool("coding", false, "enable local coding tools for daemon runs")
@@ -406,6 +432,10 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if agentName != "default" && agentName != "gemini" {
 		return fmt.Errorf("unknown agent %q; only 'default' is available in this runner", agentName)
 	}
+	providerName, effectiveModel, err := resolveProvider(*provider, *model)
+	if err != nil {
+		return err
+	}
 	if err := loadEnvFiles(envs); err != nil {
 		return err
 	}
@@ -429,7 +459,8 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		fmt.Fprintf(stderr, "glue serve: coding tools enabled for %s\n", *workDir)
 	}
 	agent, err := newAgent(newProvider, agentConfig{
-		Model:    *model,
+		Provider: providerName,
+		Model:    effectiveModel,
 		StoreDir: *storeDir,
 		WorkDir:  *workDir,
 		Tools:    tools,
@@ -445,8 +476,8 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 			ListenAddr:   *listenAddr,
 			MetadataPath: *metadataPath,
 			TokenSource:  tokenSource,
-			Provider:     "gemini",
-			Model:        normalizeModel(*model),
+			Provider:     providerName,
+			Model:        normalizeModel(effectiveModel),
 			StoreType:    "file",
 			StorePath:    *storeDir,
 		},
@@ -460,7 +491,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		Token:             token,
 		TokenSource:       tokenSource,
 		MetadataPath:      *metadataPath,
-		Model:             normalizeModel(*model),
+		Model:             normalizeModel(effectiveModel),
 		StoreDir:          *storeDir,
 		WorkDir:           *workDir,
 		PermissionTimeout: *permissionTimeout,
@@ -2334,8 +2365,26 @@ func cancelDaemonRun(ctx context.Context, cfg connectConfig, runID string, clien
 	return nil
 }
 
+// resolveProvider validates the provider name against the registry and
+// resolves the effective model: an explicit --model wins, otherwise the
+// provider's registry default model is used.
+func resolveProvider(name, model string) (string, string, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		name = defaultProvider
+	}
+	factory, ok := providers.Lookup(name)
+	if !ok {
+		return "", "", fmt.Errorf("unknown provider %q (known: %s)", name, strings.Join(providers.Known(), ", "))
+	}
+	if strings.TrimSpace(model) == "" {
+		model = factory.DefaultModel
+	}
+	return name, model, nil
+}
+
 func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error) {
-	provider, err := newProvider()
+	provider, err := newProvider(cfg.Provider)
 	if err != nil {
 		return nil, err
 	}
@@ -2435,8 +2484,8 @@ func httpStatusError(resp *http.Response) string {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  glue run [default|gemini] --prompt <text> [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
-  glue serve [default|gemini] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
+  glue run --prompt <text> [--provider <name>] [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
+  glue serve [--provider <name>] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -2456,7 +2505,7 @@ func printUsage(w io.Writer) {
   glue connect --forget-permission <id> [--forget-permission-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
-  run      Run the local Gemini-backed agent, optionally with coding tools.
+  run      Run a local agent on any registered provider, optionally with coding tools.
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
   connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
 
@@ -2464,7 +2513,9 @@ Flags:
   --id       Session id. Defaults to "default".
   --prompt   Prompt text. Required unless --skill is set or connect is in an inspection mode.
   --skill    Connect mode: run one daemon skill instead of --prompt.
-  --model    Gemini model id or gemini/<model>. Defaults to gemini-2.5-flash.
+  --provider Run/serve provider: codex, gemini, nvidia, or openrouter. Defaults to gemini.
+             Use --provider codex for a ChatGPT-subscription coding agent (run "codex login" first).
+  --model    Model id. Defaults to the selected provider's default model. gemini/<model> accepted.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Workspace for AGENTS.md, skills, roles, and --coding tools. Defaults to ".".
   --coding

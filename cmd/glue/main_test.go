@@ -43,7 +43,7 @@ func (p *scriptedProvider) Stream(_ context.Context, req glue.ProviderRequest) (
 }
 
 func fakeFactory(provider glue.Provider) providerFactory {
-	return func() (glue.Provider, error) { return provider, nil }
+	return func(string) (glue.Provider, error) { return provider, nil }
 }
 
 func textTurn(text string) []glue.ProviderEvent {
@@ -2760,12 +2760,93 @@ func TestRunCLIMissingGeminiAPIKey(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runCLI(context.Background(), []string{
 		"run", "--prompt", "go", "--store", t.TempDir(),
-	}, &stdout, &stderr, defaultGeminiFactory)
+	}, &stdout, &stderr, defaultProviderFactory)
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero for missing GEMINI_API_KEY")
 	}
 	if !strings.Contains(stderr.String(), "GEMINI_API_KEY") {
 		t.Fatalf("stderr = %q, want GEMINI_API_KEY hint", stderr.String())
+	}
+}
+
+func TestResolveProvider(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		provider  string
+		model     string
+		wantName  string
+		wantModel string
+		wantErr   string
+	}{
+		{name: "default empty selects gemini", provider: "", model: "", wantName: "gemini", wantModel: "gemini-2.5-flash"},
+		{name: "codex default model", provider: "codex", model: "", wantName: "codex", wantModel: "gpt-5-codex"},
+		{name: "explicit model overrides default", provider: "gemini", model: "gemini-2.0-pro", wantName: "gemini", wantModel: "gemini-2.0-pro"},
+		{name: "case insensitive name", provider: "CodeX", model: "", wantName: "codex", wantModel: "gpt-5-codex"},
+		{name: "unknown provider errors", provider: "bogus", wantErr: "unknown provider"},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			name, model, err := resolveProvider(tc.provider, tc.model)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), "known:") {
+					t.Fatalf("err = %v, want a known-providers hint", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if name != tc.wantName {
+				t.Fatalf("name = %q, want %q", name, tc.wantName)
+			}
+			if model != tc.wantModel {
+				t.Fatalf("model = %q, want %q", model, tc.wantModel)
+			}
+		})
+	}
+}
+
+func TestDefaultProviderFactory(t *testing.T) {
+	t.Run("missing gemini key errors", func(t *testing.T) {
+		t.Setenv("GEMINI_API_KEY", "")
+		_, err := defaultProviderFactory("gemini")
+		if err == nil || !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+			t.Fatalf("err = %v, want GEMINI_API_KEY hint", err)
+		}
+	})
+	t.Run("codex needs no env key", func(t *testing.T) {
+		provider, err := defaultProviderFactory("codex")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if provider == nil {
+			t.Fatal("provider = nil, want a codex provider")
+		}
+	})
+	t.Run("unknown provider errors", func(t *testing.T) {
+		if _, err := defaultProviderFactory("bogus"); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+			t.Fatalf("err = %v, want unknown provider", err)
+		}
+	})
+}
+
+func TestRunCLIUnknownProvider(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run", "--provider", "bogus", "--prompt", "x", "--store", t.TempDir(),
+	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}))
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero for unknown provider")
+	}
+	if !strings.Contains(stderr.String(), "unknown provider") {
+		t.Fatalf("stderr = %q, want 'unknown provider'", stderr.String())
 	}
 }
 
