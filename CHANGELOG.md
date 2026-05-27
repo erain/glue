@@ -24,6 +24,11 @@ This file tracks library-level changes only.
   binary can run as a coding agent on a ChatGPT subscription
   (`glue run --provider codex --coding`). `--model` now defaults to the
   selected provider's registry default model.
+- Added `tools/fs.FileEdit` (`edit_file`), a permission-gated surgical
+  exact-string replacement tool with a unique-match guard and optional
+  `replace_all`. It is now part of the `tools/coding` bundle, so
+  `glue run --coding` agents can make targeted edits instead of
+  rewriting whole files.
 
 ## Initial bootstrap (pre-1.0)
 

@@ -75,7 +75,8 @@ type Options struct {
 }
 
 // Tools builds the standard local coding tool bundle:
-// read_file, write_file, shell_exec, git_diff_branch, and git_log_branch.
+// read_file, write_file, edit_file, shell_exec, git_diff_branch, and
+// git_log_branch.
 //
 // The returned Options contain the resolved absolute WorkDir, normalized
 // AllowedBinaries, copied Env, and effective Blocklist.
@@ -94,6 +95,14 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 		AllowOverwrite: resolved.AllowOverwrite,
 		MaxBytes:       resolved.WriteMaxBytes,
 		Blocklist:      resolved.Blocklist,
+	})
+	if err != nil {
+		return nil, opts, err
+	}
+	edit, err := toolsfs.FileEdit(toolsfs.EditFileOptions{
+		WorkDir:   resolved.WorkDir,
+		MaxBytes:  resolved.WriteMaxBytes,
+		Blocklist: resolved.Blocklist,
 	})
 	if err != nil {
 		return nil, opts, err
@@ -117,6 +126,7 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 			MaxBytes:  resolved.ReadMaxBytes,
 		}),
 		write,
+		edit,
 		shell,
 		toolsgit.DiffBranchTool(toolsgit.DiffBranchOptions{
 			WorkDir:     resolved.WorkDir,
