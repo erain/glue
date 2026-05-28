@@ -415,12 +415,16 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 
 ## Project status & contributing
 
-The harness is feature-complete for the `0.x` series and in active use
-behind the [`agents/glue-review`](agents/glue-review) and
+The harness is feature-complete for the `0.x` series, tagged at
+**`v0.1.0`**, and in active use behind the
+[`agents/glue-review`](agents/glue-review) and
 [`agents/peggy`](agents/peggy) reference agents. The library remains
 pre-1.0: the public `Agent` / `Session` surface is stable in practice,
-but minor versions may still break API. See
-[`CHANGELOG.md`](CHANGELOG.md) for library-level notes.
+but minor versions may still break API. The full stability stance is
+[ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md); breaking
+changes always land with a `**Breaking:**` entry in
+[`CHANGELOG.md`](CHANGELOG.md), never on a patch release. Security
+reports go through [`SECURITY.md`](SECURITY.md).
 
 Glue is built one GitHub issue at a time. The contributor workflow,
 branch/PR conventions, and the active tracker are documented in
