@@ -1,0 +1,77 @@
+name: 🐛 Bug report
+description: Something in glue, the cmd/glue binary, or a shipped reference agent is broken or behaves wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! Two quick checks first:
+
+        - "How do I…?" questions belong in [Discussions](https://github.com/erain/glue/discussions),
+          not here.
+        - Suspect a security issue? Use a [private security advisory](https://github.com/erain/glue/security/advisories/new)
+          instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: One or two sentences on what went wrong.
+      placeholder: "`session.Prompt` returned …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        The smallest Go program / CLI invocation that triggers it. Inline a fake provider
+        if a model call isn't part of the bug (see `docs/building-agents.md` §10 for a
+        copy-pasteable fake).
+      render: go
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: glue version
+      description: Output of `go list -m github.com/erain/glue` (or the commit you're on).
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      placeholder: "go version go1.23.4 linux/amd64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider (if relevant)
+      multiple: false
+      options:
+        - "Not provider-specific"
+        - codex
+        - gemini
+        - nvidia
+        - openrouter
+        - "Custom (your own Provider impl)"
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Stack traces, logs, related issues, screenshots — whatever helps.

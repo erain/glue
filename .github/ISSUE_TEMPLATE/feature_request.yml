@@ -1,0 +1,44 @@
+name: 💡 Feature request
+description: Propose a new framework primitive, tool, provider, or behavior.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, two quick sanity checks:
+
+        - Could this live in *your* agent package instead of in core glue?
+          The framework rule (ADR-0005) is that product concerns enter only
+          as interfaces the host fills in. Things like sandboxing, channels,
+          and scheduling belong in your agent, not in glue.
+        - Is it already on the [tracker](https://github.com/erain/glue/issues/110)
+          or the [flue gap analysis](https://github.com/erain/glue/blob/main/docs/flue-gap-analysis.md)?
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can&rsquo;t you do today, or what's painful?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: |
+        Rough API sketch is great — `glue.Foo(...)` signature, where it lives
+        (`tools/`? `agents/`? new package?), what's in scope vs out.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including "I built it in my own agent package and it works."
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
