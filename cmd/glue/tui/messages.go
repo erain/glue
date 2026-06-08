@@ -42,5 +42,14 @@ type permRequestMsg struct {
 // commands).
 type systemMsg string
 
+// sessionSwitchedMsg fires after /fork, /clone, or a /tree selection
+// finishes loading the chosen session from the store. The Update loop
+// resets the transcript to the loaded messages and notes the change.
+type sessionSwitchedMsg struct {
+	ID       string
+	Note     string
+	Messages []glue.Message
+}
+
 // fatalErrMsg marks a setup error that should end the session.
 type fatalErrMsg struct{ Err error }

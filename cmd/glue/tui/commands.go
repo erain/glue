@@ -41,6 +41,9 @@ func describeCommands() string {
 		{"/session [id]", "print current session id, or switch to <id>"},
 		{"/compact", "summarize older messages to free context window"},
 		{"/resume", "pick a past session and replay it into the transcript"},
+		{"/fork [N]", "branch from message N (default: last user turn) into a new session"},
+		{"/clone", "duplicate the current session into a fresh id"},
+		{"/tree", "visualize and switch between branches in this session's lineage"},
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 	var b strings.Builder
