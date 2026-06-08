@@ -14,6 +14,7 @@ const (
 	itemAssistant
 	itemTool
 	itemSystem
+	itemBlock // titled multi-line block (e.g. /help, /tools)
 )
 
 // toolPhase tracks where a tool call is in its lifecycle.
@@ -34,6 +35,14 @@ type transcriptItem struct {
 
 	// User / Assistant / System text.
 	Text string
+	// Rendered, if non-empty, replaces Text in the View pass. Used so
+	// the assistant item can show plain text while streaming and switch
+	// to glamour-rendered markdown once the turn completes.
+	Rendered string
+
+	// itemBlock fields.
+	BlockTitle string
+	BlockBody  string // already-formatted multi-line content (rendered via lipgloss before storing)
 
 	// Tool fields.
 	ToolCallID string
@@ -44,36 +53,50 @@ type transcriptItem struct {
 	ToolPhase  toolPhase
 }
 
-// render returns the wrapped, styled string for the item. width is the
-// usable transcript width.
-func (it *transcriptItem) render(width int) string {
+// renderCtx carries dynamic state into a per-item render so the
+// transcript stays a pure projection of model state.
+type renderCtx struct {
+	width   int
+	spinner string // current spinner frame, used for in-flight tools
+}
+
+// render returns the wrapped, styled string for the item.
+func (it *transcriptItem) render(ctx renderCtx) string {
 	switch it.Kind {
 	case itemUser:
-		return userPrefix.Render("user >") + " " + it.Text
+		return userPrefix.Render("user > ") + it.Text
 	case itemAssistant:
 		head := asstPrefix.Render("assistant")
-		body := strings.TrimRight(it.Text, "\n")
+		body := it.Rendered
+		if body == "" {
+			body = strings.TrimRight(it.Text, "\n")
+		}
 		if body == "" {
 			return head
 		}
 		return head + "\n" + body
 	case itemTool:
-		return renderTool(it, width)
+		return renderTool(it, ctx)
 	case itemSystem:
 		return sysLine.Render("· " + it.Text)
+	case itemBlock:
+		return renderBlock(it, ctx.width)
 	}
 	return ""
 }
 
-func renderTool(it *transcriptItem, width int) string {
+func renderTool(it *transcriptItem, ctx renderCtx) string {
 	icon, suffix := "▸", ""
 	switch it.ToolPhase {
 	case tsPending:
 		icon = "▸"
-		suffix = " " + toolWarning.Render("[awaiting permission]")
+		suffix = " " + toolWarning.Render("awaiting permission")
 	case tsRunning:
-		icon = "▸"
-		suffix = " " + toolWarning.Render("[running…]")
+		// Spinner replaces the static dot so the user can see the tool is alive.
+		if ctx.spinner != "" {
+			icon = ctx.spinner
+		}
+		suffix = " " + toolWarning.Render("running")
 	case tsDone:
 		if it.ToolErr {
 			icon = "✗"
@@ -87,25 +110,71 @@ func renderTool(it *transcriptItem, width int) string {
 		suffix = " " + toolErrSty.Render("denied")
 	}
 
-	argLine := truncate(flattenArgs(it.ToolArgs), maxArgLen(width))
+	argLine := truncate(flattenArgs(it.ToolArgs), maxArgLen(ctx.width))
 	header := toolHeader.Render(fmt.Sprintf("%s %s  %s", icon, it.ToolName, argLine)) + suffix
 
+	var parts []string
+	parts = append(parts, header)
+
 	// Pre-execution preview for edit_file: show the proposed change.
-	if it.ToolPhase == tsPending || it.ToolPhase == tsRunning {
-		if it.ToolName == "edit_file" {
-			if preview := editDiffPreview(it.ToolArgs); preview != "" {
-				return header + "\n" + preview
-			}
+	if (it.ToolPhase == tsPending || it.ToolPhase == tsRunning) && it.ToolName == "edit_file" {
+		if preview := editDiffPreview(it.ToolArgs); preview != "" {
+			parts = append(parts, preview)
 		}
-		return header
+	}
+
+	// Inline permission prompt: nudged INTO the tool card so the user's
+	// eye doesn't have to ping-pong between a floating box and the
+	// transcript to know what they're approving.
+	if it.ToolPhase == tsPending {
+		parts = append(parts, renderInlinePermPrompt())
 	}
 
 	// Post-execution body.
-	if it.ToolResult == "" {
-		return header
+	if (it.ToolPhase == tsDone || it.ToolPhase == tsDenied) && it.ToolResult != "" {
+		parts = append(parts, toolBody.Render(indentResult(it.ToolResult, 8)))
 	}
-	body := indentResult(it.ToolResult, 8)
-	return header + "\n" + toolBody.Render(body)
+
+	return strings.Join(parts, "\n")
+}
+
+func renderInlinePermPrompt() string {
+	const indent = "        "
+	choices := []string{
+		permKey.Render("[a]") + " allow once",
+		permKey.Render("[s]") + " session",
+		permKey.Render("[t]") + " target",
+		permKey.Render("[n]") + " no",
+		keyHint.Render("(Esc denies)"),
+	}
+	return indent + strings.Join(choices, "    ")
+}
+
+// renderBlock formats a titled, multi-line block (used for /help, /tools,
+// the welcome card). The body is rendered verbatim with a 2-space indent.
+func renderBlock(it *transcriptItem, width int) string {
+	w := width - 4
+	if w < 30 {
+		w = 30
+	}
+	if w > 100 {
+		w = 100
+	}
+	head := blockTitle.Render(" " + it.BlockTitle + " ")
+	body := strings.TrimRight(it.BlockBody, "\n")
+	body = indentLines(body, "  ")
+	return blockBox.Width(w).Render(head + "\n" + body)
+}
+
+func indentLines(s, prefix string) string {
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		lines[i] = prefix + ln
+	}
+	return strings.Join(lines, "\n")
 }
 
 func maxArgLen(width int) int {

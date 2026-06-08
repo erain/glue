@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,6 +99,8 @@ type Model struct {
 	// Components
 	viewport viewport.Model
 	input    textarea.Model
+	spinner  spinner.Model
+	md       *markdownRenderer
 
 	// Transcript
 	transcript []transcriptItem
@@ -111,6 +114,11 @@ type Model struct {
 	// Input history (in-process; not persisted)
 	history    []string
 	historyPos int // -1 means "not browsing"
+
+	// firstChunkSeen flips true on the first text delta or tool event of
+	// the active turn. Used to gate "thinking…" vs the actual state name
+	// in the status bar.
+	firstChunkSeen bool
 
 	// Cancel-on-second-ctrl-c semantics
 	armedQuit bool
@@ -131,22 +139,48 @@ func newModel(ctx context.Context, cfg Config) *Model {
 
 	vp := viewport.New(80, 20)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(warnCol)
+
 	return &Model{
 		ctx:        ctx,
 		cfg:        cfg,
 		viewport:   vp,
 		input:      ta,
+		spinner:    sp,
 		transcript: nil,
 		historyPos: -1,
 	}
 }
 
 func (m *Model) Init() tea.Cmd {
-	// Seed the transcript with a greeting line.
-	m.appendSystem(fmt.Sprintf("glue · %s · %s/%s · %s",
-		m.cfg.SessionID, providerOrDefault(m.cfg.Provider), modelOrDefault(m.cfg.Model), workOrDot(m.cfg.WorkDir)))
-	m.appendSystem("Type a message and press Enter. /help for commands. Ctrl+C twice to quit.")
+	m.appendWelcome()
 	return tea.Batch(textarea.Blink)
+}
+
+// appendWelcome seeds the transcript with the welcome card. It is used
+// at startup and after /clear so the empty-state is never blank.
+func (m *Model) appendWelcome() {
+	body := strings.Join([]string{
+		"  Try:",
+		welcomeAccent.Render("    › ") + "What does Session.Prompt do?",
+		welcomeAccent.Render("    › ") + "Run the tests and fix the first failure.",
+		welcomeAccent.Render("    › ") + "Summarize the changes in this branch vs main.",
+		"",
+		keyHint.Render("  Enter sends · / for commands · Esc cancels current turn · Ctrl+C exits"),
+		"",
+		keyHint.Render(fmt.Sprintf("  session %s · %s/%s · %s",
+			m.cfg.SessionID,
+			providerOrDefault(m.cfg.Provider),
+			modelOrDefault(m.cfg.Model),
+			workOrDot(m.cfg.WorkDir))),
+	}, "\n")
+	m.transcript = append(m.transcript, transcriptItem{
+		Kind:       itemBlock,
+		BlockTitle: "Welcome to glue",
+		BlockBody:  body,
+	})
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -156,6 +190,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Glamour needs a width; we compute the assistant-render width to
+		// match the transcript body so wrapping aligns with what the user sees.
+		if m.md == nil {
+			m.md = newMarkdownRenderer(msg.Width)
+		} else {
+			m.md.Resize(msg.Width)
+		}
 		m.layout()
 		m.ready = true
 		m.rerender()
@@ -168,12 +209,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.handleInputKey(msg)
 
+	case tea.MouseMsg:
+		var c tea.Cmd
+		m.viewport, c = m.viewport.Update(msg)
+		return m, c
+
+	case spinner.TickMsg:
+		// Spinner only animates during an in-flight turn; once the turn
+		// ends, stop ticking instead of consuming Update cycles forever.
+		if m.turn == nil {
+			return m, nil
+		}
+		var c tea.Cmd
+		m.spinner, c = m.spinner.Update(msg)
+		m.rerender()
+		return m, c
+
 	case textDeltaMsg:
+		m.firstChunkSeen = true
 		m.handleTextDelta(string(msg))
 		m.rerender()
 		return m, nil
 
 	case toolStartMsg:
+		m.firstChunkSeen = true
 		m.handleToolStart(msg)
 		m.rerender()
 		return m, nil
@@ -275,22 +334,57 @@ func (m *Model) permBoxHeight() int {
 }
 
 func (m *Model) rerender() {
-	// Re-flow the transcript into a single string for the viewport.
-	var b strings.Builder
+	// Sticky scroll: only auto-scroll if the user is already at the
+	// bottom. If they scrolled up to read older context, preserve their
+	// view position so the next streaming delta doesn't yank them away.
+	wasAtBottom := m.viewport.AtBottom()
+
 	width := m.viewport.Width
 	if width == 0 {
 		width = 80
 	}
-	for i, it := range m.transcript {
-		if i > 0 {
-			b.WriteByte('\n')
-			b.WriteByte('\n')
-		}
-		b.WriteString(it.render(width))
+	ctx := renderCtx{
+		width:   width,
+		spinner: m.spinner.View(),
 	}
-	m.viewport.SetContent(b.String())
-	m.viewport.GotoBottom()
+
+	var b strings.Builder
+	prevContentful := false
+	for _, it := range m.transcript {
+		// Insert a subtle horizontal rule between distinct turns, defined
+		// as "the previous block ended a turn and a new user message is
+		// starting." This makes the user → assistant → user cadence
+		// scannable even on long sessions.
+		if it.Kind == itemUser && prevContentful {
+			b.WriteString(turnRule(width))
+			b.WriteString("\n\n")
+		}
+		b.WriteString(it.render(ctx))
+		b.WriteString("\n\n")
+		switch it.Kind {
+		case itemAssistant, itemTool:
+			prevContentful = true
+		case itemUser:
+			prevContentful = false
+		}
+	}
+	m.viewport.SetContent(strings.TrimRight(b.String(), "\n"))
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 	m.layout()
+}
+
+// turnRule returns the thin rule rendered between turns.
+func turnRule(width int) string {
+	n := width - 4
+	if n < 20 {
+		n = 20
+	}
+	if n > 80 {
+		n = 80
+	}
+	return turnSeparator(strings.Repeat("─", n))
 }
 
 func (m *Model) headerView() string {
@@ -306,42 +400,65 @@ func (m *Model) headerView() string {
 }
 
 func (m *Model) bottomView() string {
-	box := inputBoxStyle.Width(m.width - 2).Render(m.input.View())
-	if m.pending == nil {
-		return box
-	}
-	perm := m.renderPermPrompt()
-	return lipgloss.JoinVertical(lipgloss.Left, perm, box)
-}
-
-func (m *Model) renderPermPrompt() string {
-	p := m.pending
-	target := p.req.Target
-	if target == "" {
-		target = "(unspecified)"
-	}
-	head := toolWarning.Render(fmt.Sprintf("Permission requested: %s %s", p.req.Tool, target))
-	hint := keyHint.Render("  [a]llow once    [s]ession    [t]target    [n]o    [esc] deny")
-	return permBox.Width(m.width - 2).Render(head + "\n" + hint)
+	// Permission prompts now render inside the relevant tool card in the
+	// transcript, so the input box gets its full width back.
+	return inputBoxStyle.Width(m.width - 2).Render(m.input.View())
 }
 
 func (m *Model) statusView() string {
 	var parts []string
-	parts = append(parts, fmt.Sprintf("turn %d", m.turnNum))
+	if m.turnNum > 0 || m.turn != nil {
+		parts = append(parts, fmt.Sprintf("turn %d", m.turnNum+boolToInt(m.turn != nil)))
+	}
 	if m.lastUsage != nil {
 		parts = append(parts, fmt.Sprintf("%d in / %d out",
 			m.lastUsage.InputTokens, m.lastUsage.OutputTokens))
 	}
 	if m.turn != nil {
-		parts = append(parts, toolWarning.Render("running…"))
+		state := "thinking"
+		if m.firstChunkSeen {
+			state = "streaming"
+		}
+		for _, it := range m.transcript {
+			if it.Kind == itemTool && it.ToolPhase == tsRunning {
+				state = it.ToolName
+				break
+			}
+		}
+		parts = append(parts, m.spinner.View()+" "+toolWarning.Render(state))
 	}
-	parts = append(parts, keyHint.Render("/help · Ctrl+C twice to quit"))
+	if m.pending != nil {
+		parts = append(parts, toolWarning.Render("permission needed"))
+	}
+	if !m.viewport.AtBottom() {
+		parts = append(parts, keyHint.Render("↓ more below"))
+	}
+	parts = append(parts, keyHint.Render("/help · esc cancel · ^C exit"))
 	return statusStyle.Render(strings.Join(parts, "  ·  "))
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // ---------- helpers: input handling ----------
 
 func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Esc cancels the current turn if one is in flight. Otherwise it's a
+	// no-op (no surprises for users who hit it by reflex).
+	if msg.Type == tea.KeyEsc {
+		if m.turn != nil {
+			m.turn.cancel()
+			m.appendSystem("turn cancelled (esc).")
+			m.rerender()
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// Ctrl+C: first press cancels current turn; second exits.
 	if msg.Type == tea.KeyCtrlC {
 		if m.turn != nil {
@@ -430,15 +547,15 @@ func (m *Model) submit() (tea.Model, tea.Cmd) {
 	}
 
 	if m.turn != nil {
-		m.appendSystem("a turn is already running; Ctrl+C to cancel.")
+		m.appendSystem("a turn is already running; Esc to cancel.")
 		m.rerender()
 		return m, nil
 	}
 
 	m.transcript = append(m.transcript, transcriptItem{Kind: itemUser, Text: text})
-	m.startTurn(text)
+	cmd := m.startTurn(text)
 	m.rerender()
-	return m, nil
+	return m, cmd
 }
 
 func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
@@ -446,12 +563,19 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 	case "exit", "quit", "q":
 		return m, tea.Quit
 	case "help":
-		m.appendSystem("commands:\n" + describeCommands())
+		m.appendBlock("Commands", describeCommands())
 		m.rerender()
 		return m, nil
-	case "clear":
+	case "clear", "new":
+		// Nuke the transcript AND start a new session id. The old
+		// behavior (only switching session id) confused users who saw
+		// last turn's content under a fresh session.
+		m.transcript = nil
 		m.cfg.SessionID = "tui:" + shortID()
-		m.appendSystem("new session: " + m.cfg.SessionID)
+		m.appendWelcome()
+		m.appendSystem("transcript cleared. new session: " + m.cfg.SessionID)
+		m.turnNum = 0
+		m.lastUsage = nil
 		m.rerender()
 		return m, nil
 	case "usage":
@@ -472,7 +596,7 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 				names = append(names, t.Name)
 			}
 			sort.Strings(names)
-			m.appendSystem("tools:\n  " + strings.Join(names, "\n  "))
+			m.appendBlock("Registered tools", "  "+strings.Join(names, "\n  "))
 		}
 		m.rerender()
 		return m, nil
@@ -499,6 +623,16 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		m.rerender()
 		return m, nil
 	}
+}
+
+// appendBlock is the structured counterpart to appendSystem: a titled,
+// multi-line panel rendered with a rounded border.
+func (m *Model) appendBlock(title, body string) {
+	m.transcript = append(m.transcript, transcriptItem{
+		Kind:       itemBlock,
+		BlockTitle: title,
+		BlockBody:  body,
+	})
 }
 
 // ---------- helpers: permission keyboard ----------
@@ -660,22 +794,33 @@ func (m *Model) handleTurnDone(msg turnDoneMsg) {
 	if msg.Err != nil {
 		m.appendSystem("error: " + msg.Err.Error())
 	}
+	// Re-render the final assistant item through glamour so code blocks,
+	// lists, headings, and inline code settle into proper formatting after
+	// the stream completes. We deliberately keep streaming as plain text
+	// to avoid partial-markdown flicker.
+	if m.md != nil && m.turn.asstIndex >= 0 && m.turn.asstIndex < len(m.transcript) {
+		it := &m.transcript[m.turn.asstIndex]
+		if strings.TrimSpace(it.Text) != "" {
+			it.Rendered = m.md.Render(it.Text)
+		}
+	}
 	m.turn = nil
 	m.turnNum++
 }
 
 // ---------- agent goroutine ----------
 
-func (m *Model) startTurn(prompt string) {
+func (m *Model) startTurn(prompt string) tea.Cmd {
 	if m.send == nil {
 		// Should not happen — Run installs send before p.Run.
 		m.appendSystem("tui: program send not initialised")
-		return
+		return nil
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	state := newTurnState()
 	state.cancel = cancel
 	m.turn = state
+	m.firstChunkSeen = false
 
 	send := m.send
 	bridge := m.perm
@@ -684,7 +829,7 @@ func (m *Model) startTurn(prompt string) {
 		cancel()
 		m.turn = nil
 		m.appendSystem("session error: " + err.Error())
-		return
+		return nil
 	}
 
 	go func() {
@@ -748,6 +893,11 @@ func (m *Model) startTurn(prompt string) {
 		// (PromptResult exposes it via Usage on some surfaces; if not, leave nil.)
 		send(turnDoneMsg{Err: runErr, Text: finalText})
 	}()
+
+	// Kick the spinner. It re-arms itself in the Update loop until
+	// turnDoneMsg clears m.turn, at which point spinner.TickMsg becomes
+	// a no-op (see Update).
+	return m.spinner.Tick
 }
 
 // ---------- small helpers ----------

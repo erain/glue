@@ -26,6 +26,30 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   one-shot paths (`glue run --prompt ...`, `echo ... | glue run`) are
   preserved exactly. The new charmbracelet dependencies live under
   `cmd/glue/tui/`; the library import graph is unchanged.
+- TUI polish (`cmd/glue/tui` v1.1):
+  - **Markdown rendering** for assistant text via `charmbracelet/glamour`,
+    applied after each turn completes (streaming stays plain to avoid
+    partial-markdown flicker).
+  - **Sticky scroll**: streaming deltas no longer yank you to the bottom
+    if you scrolled up to read older context; the status bar shows
+    `↓ more below` when there's content past the viewport.
+  - **Permission prompts moved inside the relevant tool card** instead
+    of a separate floating box, so the action keys appear next to the
+    diff/args they're about.
+  - **Welcome card** with example prompts replaces the bare-system
+    startup state; rebuilt after `/clear`.
+  - **`/help` and `/tools` render as rounded, titled blocks** instead of
+    cramped one-line system messages.
+  - **Per-tool spinner** for in-flight tool calls; **"thinking…"
+    spinner in the status bar** between turn start and first stream
+    chunk; spinner only animates during a turn (no idle ticking).
+  - **Esc cancels the current turn** in addition to Ctrl+C.
+  - **`/clear` now clears the transcript** and starts a fresh session id
+    + welcome card (was: only changed the session id). `/new` is an alias.
+  - **Mouse wheel scrolls the transcript** via the existing mouse-cell
+    motion handler.
+  - **Visual rule between turns** so user → assistant → user cadence is
+    scannable on long sessions.
 
 ## 0.1.0 — 2026-05-27
 

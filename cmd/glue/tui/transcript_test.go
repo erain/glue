@@ -29,11 +29,11 @@ func stripANSI(s string) string {
 func TestRenderUserAndAssistant(t *testing.T) {
 	t.Parallel()
 	u := transcriptItem{Kind: itemUser, Text: "hello"}
-	if got := stripANSI(u.render(80)); !strings.Contains(got, "user >") || !strings.Contains(got, "hello") {
+	if got := stripANSI(u.render(renderCtx{width: 80})); !strings.Contains(got, "user >") || !strings.Contains(got, "hello") {
 		t.Fatalf("user render = %q", got)
 	}
 	a := transcriptItem{Kind: itemAssistant, Text: "world"}
-	got := stripANSI(a.render(80))
+	got := stripANSI(a.render(renderCtx{width: 80}))
 	if !strings.Contains(got, "assistant") || !strings.Contains(got, "world") {
 		t.Fatalf("assistant render = %q", got)
 	}
@@ -80,7 +80,7 @@ func TestRenderToolPhases(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			got := stripANSI(c.item.render(120))
+			got := stripANSI(c.item.render(renderCtx{width: 120}))
 			for _, w := range c.wants {
 				if !strings.Contains(got, w) {
 					t.Errorf("missing %q in:\n%s", w, got)

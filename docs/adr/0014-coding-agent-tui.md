@@ -138,3 +138,56 @@ existing usage. The TUI is opinionated but small enough that the next
 iteration (glamour markdown, spinners, per-hunk diff approval, file
 tree, @-mention picker) is incremental, not a rewrite. The dependency
 surface expansion is confined to the binary.
+
+## Update — v1.1 polish pass (#293 / 2026-06-08)
+
+Dogfooding the first cut surfaced a set of UX rough edges that the v1
+deliberately deferred. The polish PR addresses them without revisiting
+any v1 decision:
+
+- **Markdown rendering** for assistant text via
+  `charmbracelet/glamour`, the dep deferred in the v1 ADR. The
+  streaming/render trade-off the v1 worried about is resolved by
+  rendering plain during streaming and re-rendering through glamour on
+  `turnDoneMsg`. Code blocks, lists, headings, and inline code "settle"
+  into proper formatting once the response is complete; the live stream
+  stays fast.
+- **Sticky scroll.** `viewport.AtBottom()` is read *before* the
+  re-render; we `GotoBottom()` after `SetContent` only if the user was
+  already at the bottom. A `↓ more below` indicator in the status bar
+  cues the user to scroll if there is content past their view.
+- **In-card permission prompt.** The floating yellow box between
+  transcript and input is gone; the `[a] [s] [t] [n]` choice line
+  renders as part of the relevant tool card when
+  `ToolPhase == tsPending`. The keyboard handler in
+  `handlePermissionKey` is unchanged — only the visual placement moved.
+- **Welcome card.** A titled `itemBlock` seeded by `Init()` (and
+  re-added by `/clear`) replaces the previous two bare system lines.
+  `/help` and `/tools` are also rendered as `itemBlock`s now, which
+  gives them a rounded border and a colored title.
+- **Per-tool + status-bar spinner.** A single
+  `bubbles/spinner.Model` ticks during a turn only (no idle CPU).
+  The current frame is rendered next to any tool in `tsRunning` and in
+  the status bar alongside a `thinking…` / `streaming` / `<toolname>`
+  label, depending on phase.
+- **Esc cancels the current turn** in addition to Ctrl+C-once. Ctrl+C
+  keeps the press-twice-to-quit semantics for users who reach for it.
+- **`/clear` clears the transcript** and starts a new session id
+  + re-seeds the welcome card. `/new` is an alias. The v1 behavior of
+  only switching the session id confused dogfooders (old conversation
+  visible against a fresh session).
+- **Visual turn separator.** A thin rule (`─`) inserted between
+  conversation turns in `rerender` so the user → assistant → user
+  cadence is scannable.
+- **Mouse wheel** routed explicitly to the viewport via a `tea.MouseMsg`
+  case in `Update`, since the v1's catch-all fall-through was
+  unreliable on some terminals.
+
+The dep surface adds `charmbracelet/glamour` (which pulls in Chroma for
+syntax highlighting). Confined to `cmd/glue/tui/` — the library import
+graph is still untouched.
+
+Same loopholes still open from the v1 ADR: per-hunk diff approval,
+keyboard expand/collapse of tool cards, slash-command autocomplete,
+copy-to-clipboard, TUI on `glue connect`. Filed as follow-up issues if
+demand surfaces.

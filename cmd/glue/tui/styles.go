@@ -49,5 +49,22 @@ var (
 		BorderForeground(warnCol).
 		Padding(0, 1)
 
+	// permKey renders a single keyboard key cap inside the in-card
+	// permission prompt: `[a]`, `[s]`, etc.
+	permKey = lipgloss.NewStyle().Foreground(warnCol).Bold(true)
+
 	keyHint = lipgloss.NewStyle().Foreground(inkMuted)
+
+	// blockBox / blockTitle render /help, /tools, and the welcome card.
+	blockBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(border).
+			Padding(0, 1)
+	blockTitle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+
+	// turnSeparator renders the thin rule between turns.
+	turnSeparator = lipgloss.NewStyle().Foreground(border).Render
+
+	// welcomeAccent is the soft purple used for example prompts.
+	welcomeAccent = lipgloss.NewStyle().Foreground(accent).Bold(true)
 )
