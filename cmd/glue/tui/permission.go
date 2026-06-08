@@ -28,3 +28,18 @@ func (p *permissionBridge) Decide(ctx context.Context, req glue.PermissionReques
 		return glue.PermissionDecision{Allow: false, Reason: "cancelled: " + ctx.Err().Error()}, ctx.Err()
 	}
 }
+
+// alwaysAllowPermission is the --yolo bypass: every request is approved
+// immediately without surfacing a prompt to the user. RememberFor:
+// RememberSession lets any downstream daemon protocol that persists
+// remembers record the policy coherently — a yolo run trusts every
+// action for the duration of the session, not forever.
+type alwaysAllowPermission struct{}
+
+func (alwaysAllowPermission) Decide(_ context.Context, _ glue.PermissionRequest) (glue.PermissionDecision, error) {
+	return glue.PermissionDecision{
+		Allow:       true,
+		Reason:      "auto-approved by --yolo",
+		RememberFor: glue.RememberSession,
+	}, nil
+}

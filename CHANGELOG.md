@@ -37,7 +37,20 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   nodes tagged `forked@N`). Designed in
   [ADR-0015](docs/adr/0015-session-tree.md). Additive only — no
   existing API or on-disk format changes.
-- Pi-gap quick wins (`cmd/glue`):
+- **Daily-driver workflow polish (`cmd/glue` + TUI):**
+  - **`--yolo` flag** on `glue run`: auto-allows every side-effecting
+    tool call (`write_file` / `edit_file` / `shell_exec` / MCP) without
+    surfacing a permission prompt. Implies `--coding-allow-overwrite`.
+    Stderr banner at startup and a yellow `⚠ --yolo enabled` row in the
+    TUI welcome card + a `yolo` chip in the status bar so it's never
+    invisible. Use on a feature branch.
+  - **`@` autocomplete file picker** in the TUI input. Type `@` after
+    whitespace to open an inline rounded-purple popup of workspace
+    files (walked once, capped at 5000, `.git` / `node_modules` /
+    secret-shaped paths skipped). Type more chars to fuzzy-filter
+    (case-insensitive, basename-start ranked first); `↑/↓` navigate;
+    `Tab` / `Enter` insert the path (the textarea ends up with the full
+    `@<path> `); `Esc` removes the `@<query>` and closes.
   - **`@file` argument expansion.** In `glue run --prompt`, in piped
     stdin, and in the interactive TUI's submit handler, `@<path>`
     inlines the file contents under a `--- @path ---` header so the

@@ -45,6 +45,11 @@ type Config struct {
 	// (which constructs a SummarizingCompactor on the fly). Nil disables
 	// /compact with the same friendly degradation as a missing Store.
 	ProviderImpl glue.Provider
+
+	// AlwaysAllow turns off the in-card permission prompt entirely: the
+	// permission bridge auto-approves every request without surfacing
+	// it. Wired by cmd/glue's --yolo flag.
+	AlwaysAllow bool
 }
 
 // Run launches the TUI and blocks until the user quits. It returns
@@ -68,9 +73,14 @@ func Run(ctx context.Context, cfg Config) error {
 	// Make Send available to the model (for the permission bridge and the
 	// per-turn goroutine), and install the bridge as the agent's
 	// per-prompt permission via WithPermission. We do not mutate the
-	// agent's options.
+	// agent's options. --yolo bypasses the bridge entirely with an
+	// always-allow implementation.
 	m.send = p.Send
-	m.perm = newPermissionBridge(p.Send)
+	if cfg.AlwaysAllow {
+		m.perm = alwaysAllowPermission{}
+	} else {
+		m.perm = newPermissionBridge(p.Send)
+	}
 
 	if _, err := p.Run(); err != nil {
 		return err
@@ -110,8 +120,10 @@ type Model struct {
 	cfg  Config
 	send func(tea.Msg) // installed after NewProgram
 
-	// Permission bridge — created in Run, applied per-prompt via WithPermission.
-	perm *permissionBridge
+	// Permission handler — created in Run, applied per-prompt via
+	// WithPermission. Normally a *permissionBridge; replaced with an
+	// always-allow implementation when Config.AlwaysAllow is set.
+	perm glue.Permission
 
 	// Layout
 	width, height int
@@ -145,6 +157,14 @@ type Model struct {
 	picker *sessionPicker
 	// tree is the /tree modal state. Nil means closed.
 	tree *treeModal
+	// atPicker is the inline `@file` autocomplete popup. Nil means
+	// closed. Distinct from picker/tree because it's a popup ABOVE the
+	// input box, not a modal that replaces it.
+	atPicker *atPicker
+	// workspaceFiles is the cached file list for the @-autocomplete
+	// walker. Walked lazily on first @ trigger; never refreshed within
+	// a session (a follow-up could re-walk on /clear).
+	workspaceFiles []string
 
 	// Cancel-on-second-ctrl-c semantics
 	armedQuit bool
@@ -210,7 +230,7 @@ func (m *Model) Init() tea.Cmd {
 // appendWelcome seeds the transcript with the welcome card. It is used
 // at startup and after /clear so the empty-state is never blank.
 func (m *Model) appendWelcome() {
-	body := strings.Join([]string{
+	lines := []string{
 		"  Try:",
 		welcomeAccent.Render("    › ") + "What does Session.Prompt do?",
 		welcomeAccent.Render("    › ") + "Run the tests and fix the first failure.",
@@ -223,11 +243,14 @@ func (m *Model) appendWelcome() {
 			providerOrDefault(m.cfg.Provider),
 			modelOrDefault(m.cfg.Model),
 			workOrDot(m.cfg.WorkDir))),
-	}, "\n")
+	}
+	if m.cfg.AlwaysAllow {
+		lines = append(lines, toolWarning.Render("  ⚠  --yolo enabled: permission prompts are off."))
+	}
 	m.transcript = append(m.transcript, transcriptItem{
 		Kind:       itemBlock,
 		BlockTitle: "Welcome to glue",
-		BlockBody:  body,
+		BlockBody:  strings.Join(lines, "\n"),
 	})
 }
 
@@ -373,6 +396,19 @@ func (m *Model) layout() {
 	inputH := m.inputHeight()
 	// Border (1 top + 1 bottom) + padding (0,1) on the input box adds 2 rows.
 	bottomH := inputH + 2
+	// The @-autocomplete popup sits above the input box and eats into the
+	// viewport's vertical space while it's open. Height: title(1) +
+	// matches(<=visible) + hint(1) + borders(2).
+	if m.atPicker != nil {
+		rows := len(m.atPicker.matches)
+		if rows > atPickerVisibleRows {
+			rows = atPickerVisibleRows
+		}
+		if rows == 0 {
+			rows = 1 // "(no matches)" row
+		}
+		bottomH += rows + 4
+	}
 	bodyH := m.height - headerH - statusH - bottomH
 	if bodyH < 3 {
 		bodyH = 3
@@ -482,9 +518,20 @@ func (m *Model) bottomView() string {
 	if m.picker != nil {
 		return renderPicker(m.picker, m.width)
 	}
-	// Permission prompts render inside the relevant tool card now, so the
-	// input box only carries the textarea. Cap the visual width on wide
-	// terminals so it doesn't feel disconnected from the chat above.
+	// @-autocomplete popup sits ABOVE the input box rather than
+	// replacing it. The textarea keeps the cursor; the popup just
+	// suggests files.
+	if m.atPicker != nil {
+		input := m.renderInputBox()
+		pop := renderAtPicker(m.atPicker, m.width)
+		return lipgloss.JoinVertical(lipgloss.Left, pop, input)
+	}
+	return m.renderInputBox()
+}
+
+// renderInputBox lays out just the input box (no overlays). Extracted so
+// the @-autocomplete branch can stack the popup above the same box.
+func (m *Model) renderInputBox() string {
 	boxW := m.width - 4
 	if boxW > inputMaxBoxWidth {
 		boxW = inputMaxBoxWidth
@@ -527,6 +574,9 @@ func (m *Model) statusView() string {
 	if !m.viewport.AtBottom() {
 		parts = append(parts, keyHint.Render("↓ more below"))
 	}
+	if m.cfg.AlwaysAllow {
+		parts = append(parts, toolWarning.Render("yolo"))
+	}
 	parts = append(parts, keyHint.Render("Enter send · ^J newline · /help · esc cancel · ^C exit"))
 	return statusStyle.Render(strings.Join(parts, "  ·  "))
 }
@@ -541,9 +591,19 @@ func boolToInt(b bool) int {
 // ---------- helpers: input handling ----------
 
 func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc cancels the current turn if one is in flight. Otherwise it's a
-	// no-op (no surprises for users who hit it by reflex).
+	// Esc semantics, ordered most-specific first:
+	//   - @-autocomplete open: close it, remove the @-token from input
+	//   - turn in flight: cancel it
+	//   - otherwise: no-op
 	if msg.Type == tea.KeyEsc {
+		if m.atPicker != nil {
+			m.input.SetValue(removeAtToken(m.input.Value()))
+			m.input.CursorEnd()
+			m.atPicker = nil
+			m.layout()
+			m.rerender()
+			return m, nil
+		}
 		if m.turn != nil {
 			m.turn.cancel()
 			m.appendSystem("turn cancelled (esc).")
@@ -572,6 +632,30 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.armedQuit = false
 
+	// @-autocomplete commands intercept their keys BEFORE history scroll
+	// and Enter-submit, so the navigation/select/cancel UX works.
+	if m.atPicker != nil {
+		switch msg.Type {
+		case tea.KeyTab:
+			return m.atPickerAccept()
+		case tea.KeyUp:
+			m.atPicker.up()
+			m.rerender()
+			return m, nil
+		case tea.KeyDown:
+			m.atPicker.down()
+			m.rerender()
+			return m, nil
+		case tea.KeyEnter:
+			// Enter with a real match inserts; Enter with no matches
+			// falls through to submit so a user can still send a
+			// literal "@nonsense" prompt.
+			if len(m.atPicker.matches) > 0 {
+				return m.atPickerAccept()
+			}
+		}
+	}
+
 	switch msg.Type {
 	case tea.KeyUp:
 		if m.input.LineCount() <= 1 && len(m.history) > 0 {
@@ -599,8 +683,54 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var c tea.Cmd
 	m.input, c = m.input.Update(msg)
+	// After the textarea has processed the keystroke, re-evaluate
+	// whether the input now ends in a fresh `@<query>` so we open,
+	// update, or close the autocomplete popup accordingly.
+	m.refreshAtPicker()
 	m.layout()
 	return m, c
+}
+
+// refreshAtPicker is called after every keystroke that flowed through
+// to the textarea. It opens, updates, or closes the @-autocomplete
+// popup based on the new input value.
+func (m *Model) refreshAtPicker() {
+	q, ok := detectAtTrigger(m.input.Value())
+	if !ok {
+		m.atPicker = nil
+		return
+	}
+	if m.workspaceFiles == nil {
+		m.workspaceFiles = walkWorkspace(m.cfg.WorkDir)
+	}
+	if m.atPicker == nil {
+		m.atPicker = &atPicker{files: m.workspaceFiles}
+		m.atPicker.refilter(q)
+		return
+	}
+	if m.atPicker.query != q {
+		m.atPicker.refilter(q)
+	}
+}
+
+// atPickerAccept inserts the currently-selected file into the input,
+// closes the popup, and returns to normal typing.
+func (m *Model) atPickerAccept() (tea.Model, tea.Cmd) {
+	if m.atPicker == nil {
+		return m, nil
+	}
+	sel := m.atPicker.selected()
+	m.atPicker = nil
+	if sel == "" {
+		m.layout()
+		m.rerender()
+		return m, nil
+	}
+	m.input.SetValue(applyAtSelection(m.input.Value(), sel))
+	m.input.CursorEnd()
+	m.layout()
+	m.rerender()
+	return m, nil
 }
 
 func (m *Model) scrollHistory(delta int) {
