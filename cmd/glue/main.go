@@ -21,6 +21,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -279,6 +281,10 @@ func runCLIWithServe(ctx context.Context, args []string, stdout io.Writer, stder
 func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc, client httpDoer) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		printUsage(stdout)
+		return 0
+	}
+	if args[0] == "version" || args[0] == "-v" || args[0] == "--version" {
+		printVersion(stdout)
 		return 0
 	}
 
@@ -2764,6 +2770,42 @@ func httpStatusError(resp *http.Response) string {
 	return resp.Status
 }
 
+// printVersion writes a short version banner sourced from the linker-
+// embedded Go build info: module version, git revision, build time, and
+// Go toolchain version. Identical content to what `go version -m
+// $(which glue)` exposes but reachable as `glue version` / `--version`
+// so users can self-diagnose stale binaries without running a side
+// command.
+func printVersion(w io.Writer) {
+	mod := "(devel)"
+	rev := ""
+	when := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" {
+			mod = v
+		}
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+				if len(rev) > 12 {
+					rev = rev[:12]
+				}
+			case "vcs.time":
+				when = s.Value
+			}
+		}
+	}
+	fmt.Fprintf(w, "glue %s", mod)
+	if rev != "" {
+		fmt.Fprintf(w, " (%s)", rev)
+	}
+	if when != "" {
+		fmt.Fprintf(w, " · built %s", when)
+	}
+	fmt.Fprintf(w, " · %s\n", runtime.Version())
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
   glue run --prompt <text> [--provider <name>] [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
@@ -2790,6 +2832,7 @@ Commands:
   run      Run a local agent on any registered provider, optionally with coding tools.
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
   connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
+  version  Print the binary's version, git revision, and Go toolchain (also: --version, -v).
 
 Flags:
   --id       Session id. Defaults to "default".

@@ -261,12 +261,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Glamour needs a width; we compute the assistant-render width to
-		// match the transcript body so wrapping aligns with what the user sees.
+		// Glamour needs a width; match the transcript body so wrapping
+		// aligns with what the user sees. We cap at bodyMaxWidth for the
+		// same reason layout() does — see the constant's doc.
+		mdW := msg.Width
+		if mdW > bodyMaxWidth {
+			mdW = bodyMaxWidth
+		}
 		if m.md == nil {
-			m.md = newMarkdownRenderer(msg.Width)
+			m.md = newMarkdownRenderer(mdW)
 		} else {
-			m.md.Resize(msg.Width)
+			m.md.Resize(mdW)
 		}
 		m.layout()
 		m.ready = true
@@ -368,6 +373,12 @@ func (m *Model) View() string {
 	}
 	header := m.headerView()
 	body := m.viewport.View()
+	// Center the transcript body inside the full terminal width on wide
+	// terminals — viewport itself is capped at bodyMaxWidth by layout(),
+	// so without this it would sit pinned to the left edge.
+	if m.width > bodyMaxWidth {
+		body = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, body)
+	}
 	bottom := m.bottomView()
 	status := m.statusView()
 
@@ -386,6 +397,13 @@ func (m *Model) View() string {
 // doesn't stretch across a wall and feel disconnected from the
 // conversation centered above it.
 const inputMaxBoxWidth = 100
+
+// bodyMaxWidth caps the transcript viewport on wide terminals. Locked
+// to the input box width so the conversation column and the input box
+// align. Without this cap, assistant text wraps at the right edge of a
+// 200-col terminal and reads as a wall of text. Header and status bar
+// keep full width — they read better edge-to-edge.
+const bodyMaxWidth = inputMaxBoxWidth
 
 func (m *Model) layout() {
 	if m.width <= 0 || m.height <= 0 {
@@ -413,7 +431,13 @@ func (m *Model) layout() {
 	if bodyH < 3 {
 		bodyH = 3
 	}
-	m.viewport.Width = m.width
+	// Cap the viewport at bodyMaxWidth and let View() center it inside
+	// m.width on wide terminals. Keeps the conversation column readable.
+	vpW := m.width
+	if vpW > bodyMaxWidth {
+		vpW = bodyMaxWidth
+	}
+	m.viewport.Width = vpW
 	m.viewport.Height = bodyH
 
 	// Inner textarea width is the box width minus border (2) and
