@@ -26,6 +26,23 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   one-shot paths (`glue run --prompt ...`, `echo ... | glue run`) are
   preserved exactly. The new charmbracelet dependencies live under
   `cmd/glue/tui/`; the library import graph is unchanged.
+- TUI input layer polish (`cmd/glue/tui`):
+  - Dropped the textarea's internal `│ ` prompt — the box border was the
+    only vertical line you should see.
+  - Default to **1-row input that grows to 6** as you type (was a
+    3-row minimum that felt heavy for short prompts).
+  - **Ctrl+J inserts a newline; Enter submits** (Ctrl+J is ASCII LF and
+    works on every terminal — Shift+Enter does not). The old Alt+Enter
+    binding is gone.
+  - **Accent (purple) rounded border** on the input box so "type here"
+    is unambiguous.
+  - **Italic muted placeholder** ("Ask anything · / for commands") and
+    **accent-colored cursor**.
+  - **Input box capped at 100 columns and centered** on wider terminals
+    so it doesn't feel disconnected from the conversation above.
+  - Bracketed paste was already on by default — pasting multi-line text
+    no longer fires multiple submits.
+  - Welcome card + status bar updated with the new key hints.
 - TUI polish (`cmd/glue/tui` v1.1):
   - **Markdown rendering** for assistant text via `charmbracelet/glamour`,
     applied after each turn completes (streaming stays plain to avoid

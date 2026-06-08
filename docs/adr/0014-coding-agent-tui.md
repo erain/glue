@@ -191,3 +191,35 @@ Same loopholes still open from the v1 ADR: per-hunk diff approval,
 keyboard expand/collapse of tool cards, slash-command autocomplete,
 copy-to-clipboard, TUI on `glue connect`. Filed as follow-up issues if
 demand surfaces.
+
+## Update — input-layer polish (#295)
+
+A second round addresses the input box specifically. v1 shipped a
+textarea wrapped in a lipgloss-bordered box; that combination produced
+a doubled `│ │` on the left (textarea's internal `Prompt = "│ "`
+duplicated the box border), enforced a 3-row minimum height even for
+one-line prompts, and bound the unfortunate Alt+Enter for newlines.
+
+Changes:
+
+- `ta.Prompt = ""` — the box border is the only vertical line.
+- 1-row default, grows up to 6 (`inputHeight`'s `minH=1, maxH=6`).
+- `ta.KeyMap.InsertNewline` rebound to `ctrl+j` (ASCII LF, terminal-
+  portable). Enter submits unconditionally; the v1 Alt+Enter path is
+  removed.
+- `inputBoxStyle` border is now `RoundedBorder` in accent (purple)
+  rather than the subtle gray that made the input fade into the chrome.
+- `ta.FocusedStyle.CursorLine` is stripped (no highlighted-line band
+  on a one-line input); `ta.FocusedStyle.Placeholder` is italic +
+  `inkMuted`; `ta.Cursor.Style` is accent.
+- Box width is capped at `inputMaxBoxWidth = 100` and centered
+  horizontally via `lipgloss.PlaceHorizontal` on wider terminals.
+- Bracketed paste was already on by default in bubbletea v1+; no
+  explicit option needed (the deferred multi-line-paste concern from
+  v1 is moot).
+- Welcome card + status-bar hint updated:
+  `Enter sends · Ctrl+J newline · Esc cancels · Ctrl+C exits`.
+
+The dead `permBox` style and the unused `permBoxHeight()` method are
+removed (they were carried as no-ops by the v1.1 in-card permission
+refactor).

@@ -26,9 +26,12 @@ var (
 			Foreground(inkMuted).
 			Padding(0, 1)
 
+	// Accent the input box so "type here" is unambiguous. The textarea
+	// is always focused while the TUI is running so we don't bother with
+	// a blurred variant.
 	inputBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(border).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accent).
 			Padding(0, 1)
 
 	userPrefix = lipgloss.NewStyle().Foreground(accent).Bold(true)
@@ -43,11 +46,6 @@ var (
 
 	diffAddSty = lipgloss.NewStyle().Foreground(okColor)
 	diffDelSty = lipgloss.NewStyle().Foreground(errColor)
-
-	permBox = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(warnCol).
-		Padding(0, 1)
 
 	// permKey renders a single keyboard key cap inside the in-card
 	// permission prompt: `[a]`, `[s]`, etc.

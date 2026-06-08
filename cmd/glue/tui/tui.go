@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -42,7 +43,12 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	m := newModel(ctx, cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Note: bracketed paste is on by default in bubbletea v1+; we don't
+	// need an explicit opt-in.
+	p := tea.NewProgram(m,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
 
 	// Make Send available to the model (for the permission bridge and the
 	// per-turn goroutine), and install the bridge as the agent's
@@ -129,12 +135,34 @@ type Model struct {
 
 func newModel(ctx context.Context, cfg Config) *Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message, or /help"
-	ta.Prompt = "│ "
+	ta.Placeholder = "Ask anything · / for commands"
+	// No internal prompt character: the lipgloss box border around the
+	// textarea already provides one vertical line, and "│ │" looked like
+	// a broken double-border.
+	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.SetWidth(80)
-	ta.SetHeight(3)
+	// Start at 1 row and grow as the user types up to inputMaxRows.
+	// A 3-row minimum made short prompts feel heavy.
+	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
+
+	// Enter submits (intercepted in handleInputKey before the textarea
+	// sees it). Ctrl+J is ASCII LF and works on every terminal, unlike
+	// Shift+Enter which most terminals don't distinguish from Enter.
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("ctrl+j"),
+		key.WithHelp("ctrl+j", "newline"),
+	)
+
+	// Strip the highlighted cursor-line background — looks loud on a
+	// one-line input.
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(inkMuted).Italic(true)
+	ta.BlurredStyle.Placeholder = ta.FocusedStyle.Placeholder
+	ta.Cursor.Style = lipgloss.NewStyle().Foreground(accent)
+
 	ta.Focus()
 
 	vp := viewport.New(80, 20)
@@ -168,7 +196,7 @@ func (m *Model) appendWelcome() {
 		welcomeAccent.Render("    › ") + "Run the tests and fix the first failure.",
 		welcomeAccent.Render("    › ") + "Summarize the changes in this branch vs main.",
 		"",
-		keyHint.Render("  Enter sends · / for commands · Esc cancels current turn · Ctrl+C exits"),
+		keyHint.Render("  Enter sends · Ctrl+J newline · / for commands · Esc cancels · Ctrl+C exits"),
 		"",
 		keyHint.Render(fmt.Sprintf("  session %s · %s/%s · %s",
 			m.cfg.SessionID,
@@ -293,6 +321,11 @@ func (m *Model) View() string {
 
 // ---------- helpers: layout / rendering ----------
 
+// inputMaxBoxWidth caps the visible input box on wide terminals so it
+// doesn't stretch across a wall and feel disconnected from the
+// conversation centered above it.
+const inputMaxBoxWidth = 100
+
 func (m *Model) layout() {
 	if m.width <= 0 || m.height <= 0 {
 		return
@@ -300,38 +333,42 @@ func (m *Model) layout() {
 	headerH := 1
 	statusH := 1
 	inputH := m.inputHeight()
-	// Borders on the input box add 2.
+	// Border (1 top + 1 bottom) + padding (0,1) on the input box adds 2 rows.
 	bottomH := inputH + 2
-	if m.pending != nil {
-		bottomH += m.permBoxHeight()
-	}
 	bodyH := m.height - headerH - statusH - bottomH
 	if bodyH < 3 {
 		bodyH = 3
 	}
 	m.viewport.Width = m.width
 	m.viewport.Height = bodyH
-	m.input.SetWidth(m.width - 2) // textarea adds its own gutter
+
+	// Inner textarea width is the box width minus border (2) and
+	// padding (2). Cap the box at inputMaxBoxWidth on wide terminals.
+	boxW := m.width - 4
+	if boxW > inputMaxBoxWidth {
+		boxW = inputMaxBoxWidth
+	}
+	if boxW < 20 {
+		boxW = 20
+	}
+	m.input.SetWidth(boxW - 4)
 }
 
 func (m *Model) inputHeight() int {
-	// Grow with content up to 8 rows, then scroll inside the textarea.
-	const min, max = 3, 8
+	// Default to a single row and grow as the user types, up to 6.
+	// Past 6 the textarea scrolls internally.
+	const minH, maxH = 1, 6
 	h := m.input.LineCount()
-	if h < min {
-		h = min
+	if h < minH {
+		h = minH
 	}
-	if h > max {
-		h = max
+	if h > maxH {
+		h = maxH
 	}
 	m.input.SetHeight(h)
 	return h
 }
 
-func (m *Model) permBoxHeight() int {
-	// Header line + buttons + ~2 lines of context = ~5 with borders.
-	return 5
-}
 
 func (m *Model) rerender() {
 	// Sticky scroll: only auto-scroll if the user is already at the
@@ -400,9 +437,21 @@ func (m *Model) headerView() string {
 }
 
 func (m *Model) bottomView() string {
-	// Permission prompts now render inside the relevant tool card in the
-	// transcript, so the input box gets its full width back.
-	return inputBoxStyle.Width(m.width - 2).Render(m.input.View())
+	// Permission prompts render inside the relevant tool card now, so the
+	// input box only carries the textarea. Cap the visual width on wide
+	// terminals so it doesn't feel disconnected from the chat above.
+	boxW := m.width - 4
+	if boxW > inputMaxBoxWidth {
+		boxW = inputMaxBoxWidth
+	}
+	if boxW < 20 {
+		boxW = 20
+	}
+	box := inputBoxStyle.Width(boxW).Render(m.input.View())
+	if boxW < m.width {
+		return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, box)
+	}
+	return box
 }
 
 func (m *Model) statusView() string {
@@ -433,7 +482,7 @@ func (m *Model) statusView() string {
 	if !m.viewport.AtBottom() {
 		parts = append(parts, keyHint.Render("↓ more below"))
 	}
-	parts = append(parts, keyHint.Render("/help · esc cancel · ^C exit"))
+	parts = append(parts, keyHint.Render("Enter send · ^J newline · /help · esc cancel · ^C exit"))
 	return statusStyle.Render(strings.Join(parts, "  ·  "))
 }
 
@@ -496,12 +545,10 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.HalfViewDown()
 		return m, nil
 	case tea.KeyEnter:
-		// Shift+Enter is the textarea's "newline"; bare Enter submits.
-		// bubbles/textarea routes both through Enter; we treat Alt+Enter
-		// as the newline because Shift+Enter is not portable across terms.
-		if msg.Alt {
-			break // fall through to textarea
-		}
+		// Enter submits unconditionally. Multi-line input uses Ctrl+J
+		// (ASCII LF), bound on the textarea's KeyMap.InsertNewline in
+		// newModel. Shift+Enter is intentionally NOT supported — most
+		// terminals don't distinguish it from Enter.
 		return m.submit()
 	}
 
