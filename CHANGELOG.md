@@ -15,6 +15,16 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Gemini: synthetic `thoughtSignature` fallback for unsigned replays
+  (`providers/gemini`).** When an active-loop model turn reaches Gemini 3.x
+  without a real signature on its first function call — compacted history, a
+  transcript written before signature round-tripping landed, or a turn that
+  genuinely arrived unsigned — the provider now injects the sentinel
+  `skip_thought_signature_validator` (the same value Google's gemini-cli uses)
+  so the request still validates. Scoped to the active loop (everything after
+  the most recent genuine user turn) and to Gemini 3.x ids; real signatures are
+  never overwritten. Verified live.
+
 - **Fix Gemini 3.x tool calls: round-trip `thoughtSignature` (`providers/gemini`).**
   Gemini 3.x (incl. the default `gemini-3.1-pro-preview`) returns an opaque
   `thoughtSignature` on the parts it produces and **requires** it echoed back

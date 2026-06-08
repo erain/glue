@@ -554,6 +554,123 @@ func TestLiveToolLoopRoundTripsSignature(t *testing.T) {
 	}
 }
 
+func modelTurnWithCall(sig []byte) *genai.Content {
+	call := &genai.Part{FunctionCall: &genai.FunctionCall{Name: "weather", Args: map[string]any{"city": "T"}}}
+	if len(sig) > 0 {
+		call.ThoughtSignature = sig
+	}
+	return genai.NewContentFromParts([]*genai.Part{call}, genai.RoleModel)
+}
+
+func firstCallSignature(content *genai.Content) []byte {
+	for _, part := range content.Parts {
+		if part.FunctionCall != nil {
+			return part.ThoughtSignature
+		}
+	}
+	return nil
+}
+
+func TestEnsureActiveLoopSignaturesInjectsSynthetic(t *testing.T) {
+	t.Parallel()
+
+	contents := []*genai.Content{
+		genai.NewContentFromText("weather in Toronto?", genai.RoleUser),
+		modelTurnWithCall(nil), // unsigned: should get synthetic
+		genai.NewContentFromParts([]*genai.Part{{FunctionResponse: &genai.FunctionResponse{Name: "weather", Response: map[string]any{"output": "sunny"}}}}, genai.RoleUser),
+		modelTurnWithCall(nil), // unsigned: should get synthetic
+	}
+	ensureActiveLoopSignatures(contents, "gemini-3.1-pro-preview")
+
+	if string(firstCallSignature(contents[1])) != string(syntheticThoughtSignature) {
+		t.Fatalf("turn 1 signature = %q, want synthetic", firstCallSignature(contents[1]))
+	}
+	if string(firstCallSignature(contents[3])) != string(syntheticThoughtSignature) {
+		t.Fatalf("turn 3 signature = %q, want synthetic", firstCallSignature(contents[3]))
+	}
+}
+
+func TestEnsureActiveLoopSignaturesPreservesReal(t *testing.T) {
+	t.Parallel()
+
+	real := []byte("a-real-signature")
+	contents := []*genai.Content{
+		genai.NewContentFromText("weather?", genai.RoleUser),
+		modelTurnWithCall(real),
+	}
+	ensureActiveLoopSignatures(contents, "gemini-3.1-pro-preview")
+	if string(firstCallSignature(contents[1])) != string(real) {
+		t.Fatalf("real signature was overwritten: %q", firstCallSignature(contents[1]))
+	}
+}
+
+func TestEnsureActiveLoopSignaturesSkipsBeforeActiveLoop(t *testing.T) {
+	t.Parallel()
+
+	contents := []*genai.Content{
+		genai.NewContentFromText("first question", genai.RoleUser),
+		modelTurnWithCall(nil), // BEFORE the active loop: must stay unsigned
+		genai.NewContentFromText("second question", genai.RoleUser),
+		modelTurnWithCall(nil), // active loop: gets synthetic
+	}
+	ensureActiveLoopSignatures(contents, "gemini-3.1-pro-preview")
+
+	if firstCallSignature(contents[1]) != nil {
+		t.Fatalf("pre-active-loop turn was signed: %q", firstCallSignature(contents[1]))
+	}
+	if string(firstCallSignature(contents[3])) != string(syntheticThoughtSignature) {
+		t.Fatalf("active-loop turn signature = %q, want synthetic", firstCallSignature(contents[3]))
+	}
+}
+
+func TestEnsureActiveLoopSignaturesGatedByModel(t *testing.T) {
+	t.Parallel()
+
+	contents := []*genai.Content{
+		genai.NewContentFromText("weather?", genai.RoleUser),
+		modelTurnWithCall(nil),
+	}
+	ensureActiveLoopSignatures(contents, "gemini-2.5-flash") // non-modern: no-op
+	if firstCallSignature(contents[1]) != nil {
+		t.Fatalf("legacy model got a synthetic signature: %q", firstCallSignature(contents[1]))
+	}
+}
+
+// TestLiveSyntheticSignatureFallback proves the fallback path: an assistant
+// turn whose function call carries no signature (as in compacted or pre-fix
+// history) still completes on Gemini 3.x because the synthetic sentinel is
+// injected. Gated on GEMINI_API_KEY.
+func TestLiveSyntheticSignatureFallback(t *testing.T) {
+	if os.Getenv("GEMINI_API_KEY") == "" {
+		t.Skip("GEMINI_API_KEY not set; skipping live synthetic-fallback test")
+	}
+
+	p := New(Options{})
+	tools := []loop.ToolSpec{{
+		Name:        "get_weather",
+		Description: "Get the current weather for a city.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+	}}
+	events, err := p.Stream(context.Background(), loop.ProviderRequest{
+		Model: "gemini-3.1-pro-preview",
+		Tools: tools,
+		Messages: []loop.Message{
+			{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "What's the weather in Toronto? Use get_weather."}}},
+			// Assistant tool call with NO signature — what a pre-fix transcript looks like.
+			{Role: loop.MessageRoleAssistant, Content: []loop.ContentPart{{Type: loop.ContentTypeToolCall, ToolCall: &loop.ToolCall{ID: "c1", Name: "get_weather", Arguments: json.RawMessage(`{"city":"Toronto"}`)}}}},
+			{Role: loop.MessageRoleTool, ToolCallID: "c1", ToolName: "get_weather", Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "sunny, 22C"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for ev := range events {
+		if ev.Type == loop.ProviderEventError {
+			t.Fatalf("provider error (synthetic fallback failed): %s", ev.Error)
+		}
+	}
+}
+
 // TestLiveSmoke exercises a real Gemini call when GEMINI_API_KEY is set.
 // CI never sets the variable, so this is a no-op there; it is the minimum
 // proof that the streaming path works end-to-end.

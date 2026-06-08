@@ -94,6 +94,10 @@ func (p *Provider) Stream(ctx context.Context, req loop.ProviderRequest) (<-chan
 	if err != nil {
 		return nil, err
 	}
+	// Backstop the round-tripped signatures: if any active-loop model turn
+	// reaches Gemini 3.x without one on its first function call (compacted or
+	// pre-fix history), inject the sentinel so the request validates.
+	ensureActiveLoopSignatures(contents, model)
 	config, err := buildGenerateConfig(req, model)
 	if err != nil {
 		return nil, err
