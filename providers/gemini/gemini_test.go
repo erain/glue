@@ -671,6 +671,23 @@ func TestLiveSyntheticSignatureFallback(t *testing.T) {
 	}
 }
 
+func TestNewClientConfigAPIVersion(t *testing.T) {
+	// Not parallel: mutates a process env var.
+	t.Setenv(APIVersionEnvKey, "v1alpha")
+	cfg := newClientConfig("k")
+	if cfg.HTTPOptions.APIVersion != "v1alpha" {
+		t.Fatalf("APIVersion = %q, want v1alpha", cfg.HTTPOptions.APIVersion)
+	}
+	if cfg.APIKey != "k" || cfg.Backend != genai.BackendGeminiAPI {
+		t.Fatalf("config = %#v, want APIKey=k Backend=GeminiAPI", cfg)
+	}
+
+	t.Setenv(APIVersionEnvKey, "")
+	if got := newClientConfig("k").HTTPOptions.APIVersion; got != "" {
+		t.Fatalf("APIVersion = %q, want empty when env unset", got)
+	}
+}
+
 // TestLiveSmoke exercises a real Gemini call when GEMINI_API_KEY is set.
 // CI never sets the variable, so this is a no-op there; it is the minimum
 // proof that the streaming path works end-to-end.

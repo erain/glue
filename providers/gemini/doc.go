@@ -5,7 +5,9 @@
 // function declarations, and maps function calls and results across the
 // normalized loop types. The model comes from AgentOptions.Model, a
 // per-call WithModel, or the provider default. The API key is taken from
-// Options.APIKey or the GEMINI_API_KEY environment variable.
+// Options.APIKey or the GEMINI_API_KEY environment variable. Setting
+// GOOGLE_GENAI_API_VERSION pins the API version (e.g. "v1alpha") to reach
+// version-gated preview features.
 //
 // Gemini 3.x returns an opaque thought signature on the parts it produces and
 // requires it echoed back on replay; the provider captures it (base64-encoded

@@ -37,6 +37,11 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   with a two-turn tool loop. (Also points the gated live smoke test at the
   provider default; it hardcoded the now-removed `gemini-2.5-flash`.)
 
+- **Gemini: `GOOGLE_GENAI_API_VERSION` env knob (`providers/gemini`).** Pins
+  the API version the client targets (e.g. `v1alpha`/`v1beta`) so users can
+  reach version-gated preview features without a code change, matching
+  gemini-cli. Unset leaves the SDK default in place.
+
 - **Fix Gemini default id: `gemini-3.1-pro-preview`, not `gemini-3.1-pro`.**
   v1.4.0 set the default to `gemini-3.1-pro`, which 404s — the public
   id on `generativelanguage.googleapis.com` v1beta carries the
