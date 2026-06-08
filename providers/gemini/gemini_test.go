@@ -198,7 +198,7 @@ func TestBuildGenerateConfigSetsSystemAndOptions(t *testing.T) {
 			"temperature":       0.5,
 			"max_output_tokens": 256,
 		},
-	})
+	}, "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("buildGenerateConfig: %v", err)
 	}
@@ -216,11 +216,11 @@ func TestBuildGenerateConfigSetsSystemAndOptions(t *testing.T) {
 func TestBuildGenerateConfigInvalidNumeric(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"temperature": "hot"}})
+	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"temperature": "hot"}}, "gemini-2.5-flash")
 	if err == nil || !strings.Contains(err.Error(), "temperature") {
 		t.Fatalf("err = %v, want temperature error", err)
 	}
-	_, err = buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"max_tokens": "lots"}})
+	_, err = buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"max_tokens": "lots"}}, "gemini-2.5-flash")
 	if err == nil || !strings.Contains(err.Error(), "max_tokens") {
 		t.Fatalf("err = %v, want max_tokens error", err)
 	}
@@ -234,7 +234,7 @@ func TestBuildGenerateConfigStructuredOutput(t *testing.T) {
 			"response_mime_type":   "application/json",
 			"response_json_schema": map[string]any{"type": "object"},
 		},
-	})
+	}, "gemini-2.5-flash")
 	if err != nil {
 		t.Fatalf("buildGenerateConfig: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestBuildGenerateConfigStructuredOutput(t *testing.T) {
 func TestBuildGenerateConfigBadResponseMIMEType(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"response_mime_type": 42}})
+	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"response_mime_type": 42}}, "gemini-2.5-flash")
 	if err == nil || !strings.Contains(err.Error(), "response_mime_type") {
 		t.Fatalf("err = %v, want response_mime_type error", err)
 	}
@@ -342,6 +342,218 @@ func TestNewWithoutOptionsDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeSignatureRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	if encodeSignature(nil) != "" || encodeSignature([]byte{}) != "" {
+		t.Fatal("empty signature should encode to empty string")
+	}
+	sig := []byte{0x00, 0x01, 0xfe, 0xff, 'a', 'b'}
+	enc := encodeSignature(sig)
+	if enc == "" {
+		t.Fatal("non-empty signature encoded to empty string")
+	}
+	if got := decodeSignature(enc); string(got) != string(sig) {
+		t.Fatalf("round-trip = %v, want %v", got, sig)
+	}
+	if decodeSignature("") != nil {
+		t.Fatal("empty string should decode to nil")
+	}
+	if decodeSignature("not!base64!!") != nil {
+		t.Fatal("corrupt signature should decode to nil, not panic")
+	}
+}
+
+func TestIsModernGeminiModel(t *testing.T) {
+	t.Parallel()
+
+	modern := []string{"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash"}
+	legacy := []string{"gemini-2.5-flash", "gemini-2.5-pro", "gemini-pro-latest", ""}
+	for _, m := range modern {
+		if !isModernGeminiModel(m) {
+			t.Errorf("isModernGeminiModel(%q) = false, want true", m)
+		}
+	}
+	for _, m := range legacy {
+		if isModernGeminiModel(m) {
+			t.Errorf("isModernGeminiModel(%q) = true, want false", m)
+		}
+	}
+}
+
+func TestBuildGenerateConfigIncludeThoughts(t *testing.T) {
+	t.Parallel()
+
+	modern, err := buildGenerateConfig(loop.ProviderRequest{}, "gemini-3.1-pro-preview")
+	if err != nil {
+		t.Fatalf("buildGenerateConfig modern: %v", err)
+	}
+	if modern.ThinkingConfig == nil || !modern.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("ThinkingConfig = %#v, want IncludeThoughts=true for gemini-3.x", modern.ThinkingConfig)
+	}
+
+	legacy, err := buildGenerateConfig(loop.ProviderRequest{}, "gemini-2.5-flash")
+	if err != nil {
+		t.Fatalf("buildGenerateConfig legacy: %v", err)
+	}
+	if legacy.ThinkingConfig != nil {
+		t.Fatalf("ThinkingConfig = %#v, want nil for non-reasoning id", legacy.ThinkingConfig)
+	}
+}
+
+func TestConvertMessagesEchoesToolCallSignature(t *testing.T) {
+	t.Parallel()
+
+	sig := []byte("the-opaque-signature-bytes")
+	contents, err := ConvertMessages([]loop.Message{
+		{Role: loop.MessageRoleAssistant, Content: []loop.ContentPart{
+			{Type: loop.ContentTypeToolCall, Signature: encodeSignature(sig), ToolCall: &loop.ToolCall{
+				ID: "c1", Name: "weather", Arguments: json.RawMessage(`{"city":"T"}`),
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ConvertMessages: %v", err)
+	}
+	part := contents[0].Parts[0]
+	if part.FunctionCall == nil {
+		t.Fatal("FunctionCall part missing")
+	}
+	if string(part.ThoughtSignature) != string(sig) {
+		t.Fatalf("ThoughtSignature = %q, want %q", part.ThoughtSignature, sig)
+	}
+}
+
+func TestConvertMessagesEchoesThinkingSignatureAsThought(t *testing.T) {
+	t.Parallel()
+
+	sig := []byte("thinking-signature")
+	contents, err := ConvertMessages([]loop.Message{
+		{Role: loop.MessageRoleAssistant, Content: []loop.ContentPart{
+			{Type: loop.ContentTypeThinking, Thinking: "let me think", Signature: encodeSignature(sig)},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ConvertMessages: %v", err)
+	}
+	part := contents[0].Parts[0]
+	if !part.Thought {
+		t.Fatal("thinking content must convert to a part with Thought=true")
+	}
+	if part.Text != "let me think" {
+		t.Fatalf("Text = %q, want 'let me think'", part.Text)
+	}
+	if string(part.ThoughtSignature) != string(sig) {
+		t.Fatalf("ThoughtSignature = %q, want %q", part.ThoughtSignature, sig)
+	}
+}
+
+func TestAppendThinkingLatchesSignature(t *testing.T) {
+	t.Parallel()
+
+	msg := &loop.Message{}
+	appendThinking(msg, "reasoning ", "")    // text, no signature yet
+	appendThinking(msg, "continues", "")     // coalesces
+	appendThinking(msg, "", "c2ln")          // signature-only terminator latches
+	if len(msg.Content) != 1 {
+		t.Fatalf("len(Content) = %d, want 1 coalesced thinking block", len(msg.Content))
+	}
+	if msg.Content[0].Thinking != "reasoning continues" {
+		t.Fatalf("Thinking = %q, want 'reasoning continues'", msg.Content[0].Thinking)
+	}
+	if msg.Content[0].Signature != "c2ln" {
+		t.Fatalf("Signature = %q, want latched c2ln", msg.Content[0].Signature)
+	}
+
+	// A lone empty delta with no signature and no prior block is a no-op.
+	empty := &loop.Message{}
+	appendThinking(empty, "", "")
+	if len(empty.Content) != 0 {
+		t.Fatalf("empty thinking delta created %d parts, want 0", len(empty.Content))
+	}
+}
+
+// TestLiveToolLoopRoundTripsSignature reproduces the original failure: a
+// second turn that replays a Gemini 3.x function call. Without the signature
+// round-trip the API returns "Function call is missing a thought_signature".
+// Gated on GEMINI_API_KEY; CI never sets it.
+func TestLiveToolLoopRoundTripsSignature(t *testing.T) {
+	if os.Getenv("GEMINI_API_KEY") == "" {
+		t.Skip("GEMINI_API_KEY not set; skipping live tool-loop test")
+	}
+
+	p := New(Options{})
+	tools := []loop.ToolSpec{{
+		Name:        "get_weather",
+		Description: "Get the current weather for a city.",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+	}}
+
+	// Turn 1: force a tool call and capture the assistant message verbatim
+	// (including the signature stored on the tool-call content part).
+	events, err := p.Stream(context.Background(), loop.ProviderRequest{
+		Model:    "gemini-3.1-pro-preview",
+		Tools:    tools,
+		Messages: []loop.Message{{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "What's the weather in Toronto? Use the get_weather tool."}}}},
+	})
+	if err != nil {
+		t.Fatalf("turn 1 Stream: %v", err)
+	}
+	var assistant *loop.Message
+	var call *loop.ToolCall
+	for ev := range events {
+		switch ev.Type {
+		case loop.ProviderEventToolCall:
+			call = ev.ToolCall
+		case loop.ProviderEventDone:
+			assistant = ev.Message
+		case loop.ProviderEventError:
+			t.Fatalf("turn 1 provider error: %s", ev.Error)
+		}
+	}
+	if assistant == nil || call == nil {
+		t.Fatal("turn 1 did not produce an assistant message with a tool call")
+	}
+	var gotSig bool
+	for _, part := range assistant.Content {
+		if part.Type == loop.ContentTypeToolCall && part.Signature != "" {
+			gotSig = true
+		}
+	}
+	if !gotSig {
+		t.Fatal("turn 1 tool call did not capture a thought signature")
+	}
+
+	// Turn 2: replay turn 1 plus a tool result. This is the request that
+	// previously 400'd.
+	events2, err := p.Stream(context.Background(), loop.ProviderRequest{
+		Model: "gemini-3.1-pro-preview",
+		Tools: tools,
+		Messages: []loop.Message{
+			{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "What's the weather in Toronto? Use the get_weather tool."}}},
+			*assistant,
+			{Role: loop.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "sunny, 22C"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("turn 2 Stream: %v", err)
+	}
+	var sawText bool
+	for ev := range events2 {
+		switch ev.Type {
+		case loop.ProviderEventTextDelta:
+			if ev.Delta != "" {
+				sawText = true
+			}
+		case loop.ProviderEventError:
+			t.Fatalf("turn 2 provider error (the bug if 'thought_signature'): %s", ev.Error)
+		}
+	}
+	if !sawText {
+		t.Fatal("turn 2 produced no text after the tool result")
+	}
+}
+
 // TestLiveSmoke exercises a real Gemini call when GEMINI_API_KEY is set.
 // CI never sets the variable, so this is a no-op there; it is the minimum
 // proof that the streaming path works end-to-end.
@@ -352,7 +564,9 @@ func TestLiveSmoke(t *testing.T) {
 
 	p := New(Options{})
 	events, err := p.Stream(context.Background(), loop.ProviderRequest{
-		Model: "gemini-2.5-flash",
+		// Use the provider default rather than a hardcoded id: gemini-2.5-flash
+		// was removed from the v1beta API, which 404'd this smoke test.
+		Model: DefaultModel,
 		Messages: []loop.Message{
 			{Role: loop.MessageRoleUser, Content: []loop.ContentPart{{Type: loop.ContentTypeText, Text: "Reply with the single word: glue"}}},
 		},

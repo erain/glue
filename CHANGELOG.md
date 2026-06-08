@@ -15,6 +15,18 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Fix Gemini 3.x tool calls: round-trip `thoughtSignature` (`providers/gemini`).**
+  Gemini 3.x (incl. the default `gemini-3.1-pro-preview`) returns an opaque
+  `thoughtSignature` on the parts it produces and **requires** it echoed back
+  on replay; without it the second turn of any tool-using conversation failed
+  with `400 … Function call is missing a thought_signature in functionCall
+  parts`. The provider now captures the signature from function-call and
+  thought parts (stored base64 on `ContentPart.Signature`) and replays it
+  verbatim, sends prior thinking back as real `thought` parts, and enables
+  `includeThoughts` on Gemini 3.x so reasoning streams through. Verified live
+  with a two-turn tool loop. (Also points the gated live smoke test at the
+  provider default; it hardcoded the now-removed `gemini-2.5-flash`.)
+
 - **Fix Gemini default id: `gemini-3.1-pro-preview`, not `gemini-3.1-pro`.**
   v1.4.0 set the default to `gemini-3.1-pro`, which 404s — the public
   id on `generativelanguage.googleapis.com` v1beta carries the

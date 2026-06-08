@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/erain/glue/loop"
 
@@ -68,7 +69,11 @@ func convertMessage(message loop.Message) (*genai.Content, error) {
 			}
 		case loop.ContentTypeThinking:
 			if part.Thinking != "" {
-				parts = append(parts, genai.NewPartFromText(part.Thinking))
+				thought := &genai.Part{Text: part.Thinking, Thought: true}
+				if sig := decodeSignature(part.Signature); len(sig) > 0 {
+					thought.ThoughtSignature = sig
+				}
+				parts = append(parts, thought)
 			}
 		case loop.ContentTypeImage:
 			if part.Image == nil {
@@ -87,11 +92,17 @@ func convertMessage(message loop.Message) (*genai.Content, error) {
 			if err != nil {
 				return nil, fmt.Errorf("gemini: tool call %q arguments: %w", part.ToolCall.Name, err)
 			}
-			parts = append(parts, &genai.Part{FunctionCall: &genai.FunctionCall{
+			call := &genai.Part{FunctionCall: &genai.FunctionCall{
 				ID:   part.ToolCall.ID,
 				Name: part.ToolCall.Name,
 				Args: args,
-			}})
+			}}
+			// Echo the thought signature the model produced for this call.
+			// Gemini 3.x rejects a replayed function call that has lost it.
+			if sig := decodeSignature(part.Signature); len(sig) > 0 {
+				call.ThoughtSignature = sig
+			}
+			parts = append(parts, call)
 		default:
 			return nil, fmt.Errorf("gemini: unsupported content type %q", part.Type)
 		}
@@ -155,6 +166,39 @@ func ConvertTools(tools []loop.ToolSpec) ([]*genai.Tool, error) {
 	return []*genai.Tool{{FunctionDeclarations: declarations}}, nil
 }
 
+// encodeSignature base64-encodes an opaque thought signature for storage on a
+// loop.ContentPart. Empty signatures stay empty so transcripts don't carry
+// noise.
+func encodeSignature(sig []byte) string {
+	if len(sig) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(sig)
+}
+
+// decodeSignature reverses encodeSignature. A corrupt or non-base64 value
+// (e.g. a hand-edited transcript) decodes to nil rather than failing the whole
+// request — a missing signature is recoverable, a hard error is not.
+func decodeSignature(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	sig, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil
+	}
+	return sig
+}
+
+// isModernGeminiModel reports whether the model belongs to the Gemini 3.x
+// family. Those ids emit opaque thought signatures that the API requires
+// echoed back on replay and benefit from includeThoughts; 2.5 and earlier do
+// neither. The id may carry suffixes (e.g. "gemini-3.1-pro-preview"), so match
+// on the family prefix.
+func isModernGeminiModel(model string) bool {
+	return strings.Contains(model, "gemini-3")
+}
+
 func rawObject(raw json.RawMessage) (map[string]any, error) {
 	if len(raw) == 0 {
 		return map[string]any{}, nil
@@ -180,7 +224,7 @@ func rawSchema(raw json.RawMessage) (any, error) {
 	return schema, nil
 }
 
-func buildGenerateConfig(req loop.ProviderRequest) (*genai.GenerateContentConfig, error) {
+func buildGenerateConfig(req loop.ProviderRequest, model string) (*genai.GenerateContentConfig, error) {
 	config := &genai.GenerateContentConfig{}
 	if req.SystemPrompt != "" {
 		config.SystemInstruction = genai.NewContentFromText(req.SystemPrompt, genai.RoleUser)
@@ -190,6 +234,16 @@ func buildGenerateConfig(req loop.ProviderRequest) (*genai.GenerateContentConfig
 		return nil, err
 	}
 	config.Tools = tools
+
+	// Surface the model's reasoning on Gemini 3.x: includeThoughts streams
+	// thought parts (and the signatures attached to them) so callers can show
+	// thinking and so signed thoughts round-trip. The function-call signature
+	// the API requires on replay is returned regardless of this flag, so it is
+	// complementary, not load-bearing. Older ids neither emit thoughts nor
+	// need the flag, so leave them untouched.
+	if isModernGeminiModel(model) {
+		config.ThinkingConfig = &genai.ThinkingConfig{IncludeThoughts: true}
+	}
 
 	for key, value := range req.Options {
 		switch key {
