@@ -166,6 +166,70 @@ func ConvertTools(tools []loop.ToolSpec) ([]*genai.Tool, error) {
 	return []*genai.Tool{{FunctionDeclarations: declarations}}, nil
 }
 
+// syntheticThoughtSignature is the sentinel Gemini's backend recognizes as
+// "skip thought-signature validation for this turn" — the same literal
+// Google's gemini-cli uses. We fall back to it only when a real signature is
+// absent (compacted history, transcripts written before signature
+// round-tripping landed, or a turn that genuinely arrived unsigned), so a
+// replayed Gemini 3.x function call does not 400 with "Function call is
+// missing a thought_signature". The SDK base64-encodes these bytes on the
+// wire and the backend recognizes the decoded value; verified accepted live.
+var syntheticThoughtSignature = []byte("skip_thought_signature_validator")
+
+// ensureActiveLoopSignatures guarantees that, for Gemini 3.x, every model turn
+// in the active loop has a thought signature on its first function call — the
+// invariant the API enforces. The active loop begins at the most recent
+// genuine user turn (one carrying text or images, not just function
+// responses); everything after it is the current tool-calling loop, and turns
+// before it are exempt. Real signatures (restored by convertMessage) are left
+// untouched; only a missing one gets the synthetic sentinel. Older models
+// neither emit nor require signatures, so they are skipped entirely.
+func ensureActiveLoopSignatures(contents []*genai.Content, model string) {
+	if !isModernGeminiModel(model) {
+		return
+	}
+	start := -1
+	for i := len(contents) - 1; i >= 0; i-- {
+		if isGenuineUserTurn(contents[i]) {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		return
+	}
+	for i := start; i < len(contents); i++ {
+		content := contents[i]
+		if content.Role != string(genai.RoleModel) {
+			continue
+		}
+		for _, part := range content.Parts {
+			if part == nil || part.FunctionCall == nil {
+				continue
+			}
+			if len(part.ThoughtSignature) == 0 {
+				part.ThoughtSignature = syntheticThoughtSignature
+			}
+			break // only the first function call in a turn needs a signature
+		}
+	}
+}
+
+// isGenuineUserTurn reports whether a content is a real user message (text or
+// image input) rather than a grouped batch of function responses, which also
+// carry the user role. It marks the active-loop boundary.
+func isGenuineUserTurn(content *genai.Content) bool {
+	if content == nil || content.Role != string(genai.RoleUser) {
+		return false
+	}
+	for _, part := range content.Parts {
+		if part != nil && part.FunctionResponse == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // encodeSignature base64-encodes an opaque thought signature for storage on a
 // loop.ContentPart. Empty signatures stay empty so transcripts don't carry
 // noise.
