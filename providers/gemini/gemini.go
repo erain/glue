@@ -19,6 +19,12 @@ import (
 // probe key availability without hard-coding the name.
 const EnvKey = "GEMINI_API_KEY"
 
+// APIVersionEnvKey, when set, pins the Gemini API version (e.g. "v1alpha" or
+// "v1beta") the client targets. It lets users reach version-gated preview
+// features without a code change, matching gemini-cli's GOOGLE_GENAI_API_VERSION
+// knob. Unset leaves the SDK default in place.
+const APIVersionEnvKey = "GOOGLE_GENAI_API_VERSION"
+
 // DefaultModel is the registry-level default model for this provider.
 //
 // gemini-3.1-pro-preview is the daily-driver default per maintainer
@@ -120,14 +126,25 @@ func (p *Provider) clientFor(ctx context.Context) (*genai.Client, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv(EnvKey)
 	}
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
+	client, err := genai.NewClient(ctx, newClientConfig(apiKey))
 	if err != nil {
 		return nil, fmt.Errorf("gemini: create client: %w", err)
 	}
 	return client, nil
+}
+
+// newClientConfig assembles the genai client config, honoring the optional
+// GOOGLE_GENAI_API_VERSION pin. Split out from clientFor so the env wiring is
+// unit-testable without constructing a live client.
+func newClientConfig(apiKey string) *genai.ClientConfig {
+	config := &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	}
+	if version := os.Getenv(APIVersionEnvKey); version != "" {
+		config.HTTPOptions.APIVersion = version
+	}
+	return config
 }
 
 func (p *Provider) stream(
