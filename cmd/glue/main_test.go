@@ -2805,7 +2805,7 @@ func TestResolveProvider(t *testing.T) {
 		wantModel string
 		wantErr   string
 	}{
-		{name: "default empty selects gemini", provider: "", model: "", wantName: "gemini", wantModel: "gemini-3.1-pro"},
+		{name: "default empty selects gemini", provider: "", model: "", wantName: "gemini", wantModel: "gemini-3.1-pro-preview"},
 		{name: "codex default model", provider: "codex", model: "", wantName: "codex", wantModel: "gpt-5-codex"},
 		{name: "explicit model overrides default", provider: "gemini", model: "gemini-2.0-pro", wantName: "gemini", wantModel: "gemini-2.0-pro"},
 		{name: "case insensitive name", provider: "CodeX", model: "", wantName: "codex", wantModel: "gpt-5-codex"},
