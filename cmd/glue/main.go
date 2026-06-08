@@ -320,6 +320,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
 	coding := flags.Bool("coding", false, "enable local coding tools for this run")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
+	yolo := flags.Bool("yolo", false, "auto-allow all side-effecting tool calls (write_file / edit_file / shell_exec / mcp). implies --coding-allow-overwrite. always use on a feature branch.")
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
 	mode := flags.String("mode", "text", `output mode for one-shot runs: "text" (default streamed text) or "json" (JSON-Lines events)`)
 	toolsAllow := flags.String("tools", "", "comma-separated allowlist of tool names to register (empty = all configured)")
@@ -395,11 +396,19 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		return err
 	}
 
+	// --yolo upgrades the overwrite policy too: the user explicitly told
+	// the model "do whatever," so making write_file ask permission to
+	// overwrite would be incoherent.
+	effectiveAllowOverwrite := *codingAllowOverwrite
+	if *yolo {
+		effectiveAllowOverwrite = true
+	}
+
 	tools, _, err := buildCodingTools(codingFlagConfig{
 		Enabled:         *coding,
 		WorkDir:         *workDir,
 		AllowedBinaries: append([]string(nil), allowedBinaries...),
-		AllowOverwrite:  *codingAllowOverwrite,
+		AllowOverwrite:  effectiveAllowOverwrite,
 	})
 	if err != nil {
 		return err
@@ -428,9 +437,14 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	// In interactive mode the TUI installs its own permission bridge
 	// per-prompt; the agent-level Permission is left nil so the bridge
 	// gets to render the prompt instead of fighting with the readline
-	// version.
+	// version. --yolo overrides both paths: every side-effecting tool
+	// call is auto-approved without a prompt round-trip.
 	var permission glue.Permission
-	if *coding && !interactive {
+	switch {
+	case *yolo:
+		permission = yoloPermission{}
+		fmt.Fprintf(stderr, "glue run: --yolo enabled; permission prompts are off (use on a feature branch).\n")
+	case *coding && !interactive:
 		permission = newLocalPromptPermission(stdin, stderr)
 		fmt.Fprintf(stderr, "glue run: coding tools enabled for %s\n", *workDir)
 	}
@@ -463,6 +477,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			Tools:        tools,
 			Store:        storeImpl,
 			ProviderImpl: providerImpl,
+			AlwaysAllow:  *yolo,
 		})
 	}
 	session, err := agent.Session(ctx, *id)
@@ -2462,6 +2477,21 @@ func buildCodingTools(cfg codingFlagConfig) ([]glue.Tool, toolscoding.Options, e
 		AllowedBinaries: append([]string(nil), cfg.AllowedBinaries...),
 		AllowOverwrite:  cfg.AllowOverwrite,
 	})
+}
+
+// yoloPermission auto-approves every side-effecting tool call. Used by
+// --yolo. The decision is marked RememberFor: RememberSession so a
+// downstream consumer of the daemon protocol that persists remembers
+// records the policy coherently (a yolo run trusts every action; that
+// trust applies for the rest of the session, not forever).
+type yoloPermission struct{}
+
+func (yoloPermission) Decide(_ context.Context, _ glue.PermissionRequest) (glue.PermissionDecision, error) {
+	return glue.PermissionDecision{
+		Allow:       true,
+		Reason:      "auto-approved by --yolo",
+		RememberFor: glue.RememberSession,
+	}, nil
 }
 
 type localPromptPermission struct {

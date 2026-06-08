@@ -372,7 +372,10 @@ session), and **`/tree`** (visualize the session lineage with
 [ADR-0015](docs/adr/0015-session-tree.md). Anywhere in a prompt,
 **`@<path>`** inlines that file's
 contents (`@"path with space"` for spaces, `@@literal` to escape — and
-the workspace blocklist refuses `.env` / `id_rsa` / etc.). **Enter**
+the workspace blocklist refuses `.env` / `id_rsa` / etc.). Typing
+**`@`** in the TUI input also opens an inline file-picker popup that
+fuzzy-matches workspace files; `↑/↓` to navigate, `Tab`/`Enter` to
+insert. **Enter**
 sends; **Ctrl+J** inserts a newline (works on every terminal —
 Shift+Enter does not). **Esc** cancels the
 current turn; **Ctrl+C** once cancels (and a second press quits);
@@ -386,7 +389,9 @@ zero TUI code.
 `--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
 `--tools name1,name2` (allowlist) / `--no-tools` (text-only),
 `--mode text|json` (one-shot output format; `json` emits stable
-JSONL events for scripting), `--usage`, and repeatable `--env`. `serve` brokers coding-tool
+JSONL events for scripting), **`--yolo`** (auto-approve every
+side-effecting tool call — daily-driver mode for trusted feature
+branches), `--usage`, and repeatable `--env`. `serve` brokers coding-tool
 permission requests to the connected `connect` client; it writes
 connection metadata to the user config dir (never the bearer token).
 The daemon protocol is [ADR-0010](docs/adr/0010-daemon-protocol.md).
