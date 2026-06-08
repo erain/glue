@@ -15,6 +15,16 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Default Gemini model is now `gemini-3.1-pro`** (was `gemini-2.5-flash`).
+  `gemini-2.5-flash` was removed from the v1beta `generateContent`
+  API and began returning 404 for users on the current key surface.
+  `gemini-3.1-pro` is the unmetered daily-driver target for this
+  project. Override at any time with `--model <id>` or `GLUE_MODEL`.
+  Library callers can still pass any model id through
+  `loop.ProviderRequest.Model` or `gemini.Options.DefaultModel`.
+
+## 1.3.0 — 2026-06-08
+
 - Added `cmd/glue` interactive TUI. `glue run` with no `--prompt` and a
   terminal on stdin+stdout now opens a bubbletea-based interactive
   coding agent: scrollable transcript, multi-line input, streaming

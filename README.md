@@ -14,7 +14,7 @@ Inspired by [Flue](https://github.com/withastro/flue) and
 ```go
 agent := glue.NewAgent(glue.AgentOptions{
 	Provider: gemini.New(gemini.Options{}),
-	Model:    "gemini-2.5-flash",
+	Model:    "gemini-3.1-pro",
 	Tools:    []glue.Tool{weatherTool},
 })
 session, _ := agent.Session(ctx, "demo")
@@ -68,7 +68,7 @@ func main() {
 	ctx := context.Background()
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider: gemini.New(gemini.Options{}),
-		Model:    "gemini-2.5-flash",
+		Model:    "gemini-3.1-pro",
 	})
 	session, err := agent.Session(ctx, "demo")
 	if err != nil {
