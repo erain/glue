@@ -15,6 +15,21 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Catppuccin TUI theme (`cmd/glue/tui`).** Replaced the slate +
+  Tailwind-primary palette with Catppuccin Mocha (dark) and Latte
+  (light), picked at construction time by lipgloss's terminal-
+  background heuristic. The accent role moves from #6d28d9 to mauve
+  (#cba6f7 Mocha / #8839ef Latte) — still distinctly purple, but a
+  pastel hue family where success/error/warn (green/red/peach) sit at
+  similar lightness/saturation so the chrome no longer shouts. Glamour
+  markdown output now ships under matching JSON style configs
+  (`glamour-mocha.json`, `glamour-latte.json`) with chroma syntax
+  highlighting via `catppuccin-mocha` / `catppuccin-latte`. All
+  variable names in `cmd/glue/tui/styles.go` are unchanged; downstream
+  callers (if any) keep compiling. Closes #305.
+
+## 1.4.0 — 2026-06-08
+
 - **Default Gemini model is now `gemini-3.1-pro`** (was `gemini-2.5-flash`).
   `gemini-2.5-flash` was removed from the v1beta `generateContent`
   API and began returning 404 for users on the current key surface.

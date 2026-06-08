@@ -2,17 +2,56 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Palette — mirrors the homepage purple accent so the brand is coherent
-// across web and terminal. AdaptiveColor handles dark vs. light terminals.
+// Palette — Catppuccin (https://github.com/catppuccin/catppuccin).
+//
+// Mocha for dark terminals, Latte for light terminals, picked at render
+// time by lipgloss.AdaptiveColor. Both families are intentionally
+// pastel: every color sits at similar lightness/saturation so accents
+// don't visually shout. The role names below are stable across the two
+// flavors — only the hex values change.
+//
+// Brand: glue's purple anchors on Catppuccin's `mauve`, which is close
+// enough to the homepage #6d28d9 that the brand reads as the same color
+// across web and terminal, but in a hue family that coexists with the
+// rest of the palette in a terminal.
+//
+// Reference flavor hexes for grep-ability:
+//   Mocha base #1e1e2e · text #cdd6f4 · mauve #cba6f7 · green #a6e3a1
+//          red #f38ba8 · peach #fab387 · subtext0 #a6adc8 · overlay1 #7f849c
+//          surface1 #45475a · lavender #b4befe
+//   Latte base #eff1f5 · text #4c4f69 · mauve #8839ef · green #40a02b
+//          red #d20f39 · peach #fe640b · subtext0 #6c6f85 · overlay1 #8c8fa1
+//          surface1 #bcc0cc · lavender #7287fd
 var (
-	accent   = lipgloss.Color("#6d28d9")
-	ink      = lipgloss.AdaptiveColor{Light: "#0f172a", Dark: "#e2e8f0"}
-	inkSoft  = lipgloss.AdaptiveColor{Light: "#475569", Dark: "#94a3b8"}
-	inkMuted = lipgloss.AdaptiveColor{Light: "#94a3b8", Dark: "#64748b"}
-	border   = lipgloss.AdaptiveColor{Light: "#e2e8f0", Dark: "#334155"}
-	okColor  = lipgloss.Color("#10b981")
-	errColor = lipgloss.Color("#ef4444")
-	warnCol  = lipgloss.Color("#f59e0b")
+	// accent — mauve. Brand color: user prefix, headers, focused chrome.
+	accent = lipgloss.AdaptiveColor{Light: "#8839ef", Dark: "#cba6f7"}
+
+	// accentSoft — lavender. Used for secondary brand emphasis (welcome
+	// card example prompts, picker selection dim row) where bold mauve
+	// would overpower.
+	accentSoft = lipgloss.AdaptiveColor{Light: "#7287fd", Dark: "#b4befe"}
+
+	// ink — text. Primary foreground for body text.
+	ink = lipgloss.AdaptiveColor{Light: "#4c4f69", Dark: "#cdd6f4"}
+
+	// inkSoft — subtext0. Secondary text (assistant prefix, body of
+	// tool cards, picker rows).
+	inkSoft = lipgloss.AdaptiveColor{Light: "#6c6f85", Dark: "#a6adc8"}
+
+	// inkMuted — overlay1. Hints, key cap reminders, status bar.
+	inkMuted = lipgloss.AdaptiveColor{Light: "#8c8fa1", Dark: "#7f849c"}
+
+	// border — surface1. Block, input, and picker borders.
+	border = lipgloss.AdaptiveColor{Light: "#bcc0cc", Dark: "#45475a"}
+
+	// okColor — green. Success markers, diff `+` lines.
+	okColor = lipgloss.AdaptiveColor{Light: "#40a02b", Dark: "#a6e3a1"}
+
+	// errColor — red. Errors, diff `-` lines.
+	errColor = lipgloss.AdaptiveColor{Light: "#d20f39", Dark: "#f38ba8"}
+
+	// warnCol — peach. Warnings, --yolo chip, spinner, permission key caps.
+	warnCol = lipgloss.AdaptiveColor{Light: "#fe640b", Dark: "#fab387"}
 )
 
 var (
@@ -36,7 +75,7 @@ var (
 
 	userPrefix = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	asstPrefix = lipgloss.NewStyle().Foreground(inkSoft)
-	sysLine    = lipgloss.NewStyle().Foreground(inkMuted)
+	sysLine    = lipgloss.NewStyle().Foreground(inkMuted).Italic(true)
 
 	toolHeader  = lipgloss.NewStyle().Foreground(inkSoft)
 	toolOk      = lipgloss.NewStyle().Foreground(okColor)
@@ -63,6 +102,8 @@ var (
 	// turnSeparator renders the thin rule between turns.
 	turnSeparator = lipgloss.NewStyle().Foreground(border).Render
 
-	// welcomeAccent is the soft purple used for example prompts.
-	welcomeAccent = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	// welcomeAccent is the soft mauve used for example prompts. We use
+	// accentSoft (lavender) so it's clearly brand-adjacent but doesn't
+	// compete with the bold mauve user prefix.
+	welcomeAccent = lipgloss.NewStyle().Foreground(accentSoft).Bold(true)
 )
