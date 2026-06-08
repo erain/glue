@@ -95,6 +95,32 @@ func TestRunCLIHelp(t *testing.T) {
 	}
 }
 
+func TestRunCLIVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, arg := range []string{"version", "--version", "-v"} {
+		arg := arg
+		t.Run(arg, func(t *testing.T) {
+			t.Parallel()
+			var stdout bytes.Buffer
+			code := runCLI(context.Background(), []string{arg}, &stdout, io.Discard, fakeFactory(nil))
+			if code != 0 {
+				t.Fatalf("code = %d, want 0", code)
+			}
+			out := stdout.String()
+			if !strings.HasPrefix(out, "glue ") {
+				t.Fatalf("version output should start with 'glue ': %q", out)
+			}
+			// The Go toolchain banner always lands; everything else (module
+			// version, vcs revision, build time) is conditional on how the
+			// binary was produced.
+			if !strings.Contains(out, "go") {
+				t.Fatalf("version output missing toolchain: %q", out)
+			}
+		})
+	}
+}
+
 func TestRunCLINoArgsPrintsHelp(t *testing.T) {
 	t.Parallel()
 

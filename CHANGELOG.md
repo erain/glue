@@ -15,6 +15,23 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **TUI: cap transcript at 100 cols, center on wide terminals
+  (`cmd/glue/tui`).** The viewport used to stretch to the full terminal
+  width, so on a 200-col terminal the assistant text wrapped at the
+  right edge and read as a wall. Now `bodyMaxWidth = 100` (locked to
+  the input box width) caps the conversation column and `View()`
+  centers it inside `m.width` via `lipgloss.PlaceHorizontal`. Glamour
+  markdown renderer width inherits the cap so wrapping aligns. Header
+  and status bar stay full-width — they read better edge-to-edge.
+  Closes #307.
+- **`glue version` / `glue --version` / `glue -v`.** Prints the module
+  version, git revision, build time, and Go toolchain from the linker-
+  embedded build info (same data as `go version -m $(which glue)`),
+  reachable as a first-class subcommand so users can self-diagnose a
+  stale binary without a side command.
+
+## 1.5.0 — 2026-06-08
+
 - **Catppuccin TUI theme (`cmd/glue/tui`).** Replaced the slate +
   Tailwind-primary palette with Catppuccin Mocha (dark) and Latte
   (light), picked at construction time by lipgloss's terminal-
