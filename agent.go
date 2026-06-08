@@ -97,6 +97,23 @@ func NewAgent(options AgentOptions) *Agent {
 	}
 }
 
+// ListSessions returns a metadata-only catalog of stored sessions if
+// the agent's [Store] implements [SessionLister]. Returns
+// [ErrSessionListingNotSupported] when the store does not.
+//
+// Mirrors [Agent.SearchSessions] in shape: provider-free, no transcript
+// content, intended for picker UIs and dashboards.
+func (a *Agent) ListSessions(ctx context.Context, opts ListSessionsOptions) ([]SessionSummary, error) {
+	if a == nil {
+		return nil, errors.New("glue: nil agent")
+	}
+	lister, ok := a.store.(SessionLister)
+	if !ok || a.store == nil {
+		return nil, ErrSessionListingNotSupported
+	}
+	return lister.ListSessions(ctx, opts)
+}
+
 // ToolCatalog returns a cloned provider-visible catalog of the agent's
 // configured tools, including permission metadata for hosts that need to
 // display or expose the tool surface without starting a session.

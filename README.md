@@ -361,8 +361,14 @@ moving spinner while running and an inline `[a] [s] [t] [n]` permission
 prompt right inside the card when a side-effecting tool needs approval,
 and a small `edit_file` diff preview. Slash commands: `/help`,
 `/exit`, `/clear` / `/new`, `/usage`, `/tools`, `/model <id>`,
-`/session [id]`. **Enter** sends; **Ctrl+J** inserts a newline (works
-on every terminal — Shift+Enter does not). **Esc** cancels the
+`/session [id]`, **`/compact`** (token-aware summarization of older
+messages to free context window), **`/resume`** (modal picker over
+past sessions; ↑/↓ navigate, Enter replays the chosen one into the
+transcript). Anywhere in a prompt, **`@<path>`** inlines that file's
+contents (`@"path with space"` for spaces, `@@literal` to escape — and
+the workspace blocklist refuses `.env` / `id_rsa` / etc.). **Enter**
+sends; **Ctrl+J** inserts a newline (works on every terminal —
+Shift+Enter does not). **Esc** cancels the
 current turn; **Ctrl+C** once cancels (and a second press quits);
 mouse wheel scrolls the transcript; PgUp/PgDn does too. The TUI
 dependencies
@@ -372,7 +378,9 @@ zero TUI code.
 
 `run` flags include `--provider`, `--model`, `--id`, `--store`,
 `--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
-`--usage`, and repeatable `--env`. `serve` brokers coding-tool
+`--tools name1,name2` (allowlist) / `--no-tools` (text-only),
+`--mode text|json` (one-shot output format; `json` emits stable
+JSONL events for scripting), `--usage`, and repeatable `--env`. `serve` brokers coding-tool
 permission requests to the connected `connect` client; it writes
 connection metadata to the user config dir (never the bearer token).
 The daemon protocol is [ADR-0010](docs/adr/0010-daemon-protocol.md).

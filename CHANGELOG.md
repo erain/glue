@@ -26,6 +26,36 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   one-shot paths (`glue run --prompt ...`, `echo ... | glue run`) are
   preserved exactly. The new charmbracelet dependencies live under
   `cmd/glue/tui/`; the library import graph is unchanged.
+- Pi-gap quick wins (`cmd/glue`):
+  - **`@file` argument expansion.** In `glue run --prompt`, in piped
+    stdin, and in the interactive TUI's submit handler, `@<path>`
+    inlines the file contents under a `--- @path ---` header so the
+    model sees the actual code. Supports `@"path with space"` and
+    `@@literal` escape. Workspace-rooted and refuses path-escape,
+    secret-shaped (`.env`), symlinks, directories, and oversized
+    files. Lives in the new `cmd/glue/atmentions` package.
+  - **`--tools <list>` and `--no-tools` flags on `glue run`.** Filter
+    the registered tool set: `--tools read_file,grep` restricts the
+    model to that allowlist; `--no-tools` strips them all for a
+    text-only run. Unknown names error with the list of available
+    tools (no silent typos).
+  - **`--mode json` output mode for one-shot runs.** Emits stable
+    JSON-Lines events on stdout (`start`, `text`, `tool_start`,
+    `tool_end`, `done`, `error`) for scripting and IDE integration.
+    The interactive TUI ignores `--mode`; piping or `--prompt` enables
+    it.
+  - **`/compact` slash command in the TUI.** Triggers a token-aware
+    `SummarizingCompactor` over the current session's transcript,
+    persists the compacted state to the store, and reports
+    `before → after` message counts as a system message.
+  - **`/resume` session picker in the TUI.** Opens a modal list of the
+    ten most-recent stored sessions (↑/↓ navigate, Enter select, Esc
+    cancel) and replays the chosen session's transcript into the TUI.
+    Needs a `Store` that implements `SessionLister`; the file store
+    qualifies.
+- Added `glue.Agent.ListSessions` (mirrors `Agent.SearchSessions`):
+  returns `[]SessionSummary` from a `SessionLister`-capable store, or
+  the new `ErrSessionListingNotSupported` sentinel.
 - TUI input layer polish (`cmd/glue/tui`):
   - Dropped the textarea's internal `│ ` prompt — the box border was the
     only vertical line you should see.

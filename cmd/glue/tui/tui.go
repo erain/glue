@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"time"
+
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -18,18 +20,31 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/atmentions"
 )
 
 // Config wires the TUI to a glue agent. Provider/Model/WorkDir are
 // display-only — the agent already owns them, the TUI just labels them.
 type Config struct {
-	Agent         *glue.Agent
-	SessionID     string
-	Provider      string
-	Model         string
-	WorkDir       string
-	Tools         []glue.Tool       // already registered on the agent; for /tools listing
-	BasePermission glue.Permission  // wrapped under permissionBridge so the TUI can prompt first
+	Agent          *glue.Agent
+	SessionID      string
+	Provider       string
+	Model          string
+	WorkDir        string
+	Tools          []glue.Tool     // already registered on the agent; for /tools listing
+	BasePermission glue.Permission // wrapped under permissionBridge so the TUI can prompt first
+
+	// Store is the agent's session store, passed through so /compact can
+	// write a compacted state back without reaching into Agent
+	// internals. Nil disables /compact and /resume's "load transcript"
+	// path with a friendly system message; the slash commands still
+	// parse so users discover them via /help.
+	Store glue.Store
+
+	// Provider is the live provider instance, needed only by /compact
+	// (which constructs a SummarizingCompactor on the fly). Nil disables
+	// /compact with the same friendly degradation as a missing Store.
+	ProviderImpl glue.Provider
 }
 
 // Run launches the TUI and blocks until the user quits. It returns
@@ -125,6 +140,9 @@ type Model struct {
 	// the active turn. Used to gate "thinking…" vs the actual state name
 	// in the status bar.
 	firstChunkSeen bool
+
+	// picker is the /resume modal state. Nil means "no picker open."
+	picker *sessionPicker
 
 	// Cancel-on-second-ctrl-c semantics
 	armedQuit bool
@@ -231,7 +249,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Permission prompt takes keyboard precedence.
+		// The /resume picker, when open, owns the keyboard. It's a modal
+		// overlay; arrow keys navigate, Enter selects, Esc cancels.
+		if m.picker != nil {
+			return m.handlePickerKey(msg)
+		}
+		// Permission prompt takes keyboard precedence over normal input.
 		if m.pending != nil {
 			return m.handlePermissionKey(msg)
 		}
@@ -437,6 +460,10 @@ func (m *Model) headerView() string {
 }
 
 func (m *Model) bottomView() string {
+	// /resume picker takes over the bottom region while open.
+	if m.picker != nil {
+		return renderPicker(m.picker, m.width)
+	}
 	// Permission prompts render inside the relevant tool card now, so the
 	// input box only carries the textarea. Cap the visual width on wide
 	// terminals so it doesn't feel disconnected from the chat above.
@@ -599,8 +626,23 @@ func (m *Model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Expand @file mentions into the prompt before it's sent to the
+	// model. The user sees their original `@util.go` in the transcript;
+	// the agent sees the rewritten prompt with the file contents
+	// appended. Skipped mentions become system messages so the user
+	// knows why a file didn't get inlined.
+	atRes, atErr := atmentions.Expand(text, atmentions.Options{WorkDir: m.cfg.WorkDir})
+	if atErr != nil {
+		m.appendSystem("@-mention error: " + atErr.Error())
+		m.rerender()
+		return m, nil
+	}
+	for _, skip := range atRes.Skipped {
+		m.appendSystem(skip.Mention + ": " + skip.Reason)
+	}
+
 	m.transcript = append(m.transcript, transcriptItem{Kind: itemUser, Text: text})
-	cmd := m.startTurn(text)
+	cmd := m.startTurn(atRes.Prompt)
 	m.rerender()
 	return m, cmd
 }
@@ -665,6 +707,10 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		}
 		m.rerender()
 		return m, nil
+	case "compact":
+		return m.runSlashCompact()
+	case "resume":
+		return m.runSlashResume()
 	default:
 		m.appendSystem("unknown command: /" + cmd.Name + " (try /help)")
 		m.rerender()
@@ -966,4 +1012,126 @@ func workOrDot(d string) string {
 		return "."
 	}
 	return d
+}
+
+// ---------- /compact ----------
+
+func (m *Model) runSlashCompact() (tea.Model, tea.Cmd) {
+	if m.cfg.Store == nil || m.cfg.ProviderImpl == nil {
+		m.appendSystem("/compact unavailable: store or provider not wired into the TUI")
+		m.rerender()
+		return m, nil
+	}
+	if m.turn != nil {
+		m.appendSystem("/compact: a turn is running; Esc to cancel first.")
+		m.rerender()
+		return m, nil
+	}
+	cfg := m.cfg
+	parentCtx := m.ctx
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parentCtx, 90*time.Second)
+		defer cancel()
+		session, err := cfg.Agent.Session(ctx, cfg.SessionID)
+		if err != nil {
+			return systemMsg("/compact: " + err.Error())
+		}
+		before := len(session.Messages())
+		comp := &glue.SummarizingCompactor{
+			Provider: cfg.ProviderImpl,
+			Model:    cfg.Model,
+		}
+		out, err := comp.Compact(ctx, session.Messages())
+		if err != nil {
+			return systemMsg("/compact failed: " + err.Error())
+		}
+		after := len(out)
+		if after >= before {
+			return systemMsg(fmt.Sprintf("/compact: nothing to compact (%d messages)", before))
+		}
+		state := session.State()
+		state.Messages = out
+		state.UpdatedAt = time.Now()
+		if err := cfg.Store.Save(ctx, cfg.SessionID, state); err != nil {
+			return systemMsg("/compact: save failed: " + err.Error())
+		}
+		return systemMsg(fmt.Sprintf("/compact: summarized %d → %d messages", before, after))
+	}
+}
+
+// ---------- /resume ----------
+
+func (m *Model) runSlashResume() (tea.Model, tea.Cmd) {
+	if m.cfg.Agent == nil {
+		m.appendSystem("/resume unavailable: no agent")
+		m.rerender()
+		return m, nil
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	items, err := m.cfg.Agent.ListSessions(ctx, glue.ListSessionsOptions{Limit: 10})
+	if err != nil {
+		m.appendSystem("/resume: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	// Hide the currently-active session from the picker — picking it
+	// would be a no-op.
+	filtered := make([]glue.SessionSummary, 0, len(items))
+	for _, s := range items {
+		if s.ID != m.cfg.SessionID {
+			filtered = append(filtered, s)
+		}
+	}
+	if len(filtered) == 0 {
+		m.appendSystem("/resume: no other sessions on the store.")
+		m.rerender()
+		return m, nil
+	}
+	m.picker = &sessionPicker{items: filtered}
+	m.rerender()
+	return m, nil
+}
+
+func (m *Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.picker = nil
+		m.appendSystem("/resume cancelled.")
+		m.rerender()
+		return m, nil
+	case tea.KeyUp:
+		m.picker.up()
+		m.rerender()
+		return m, nil
+	case tea.KeyDown:
+		m.picker.down()
+		m.rerender()
+		return m, nil
+	case tea.KeyEnter:
+		s, ok := m.picker.selected()
+		m.picker = nil
+		if !ok {
+			m.rerender()
+			return m, nil
+		}
+		// Switch to the picked session and replay its transcript.
+		ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+		defer cancel()
+		sess, err := m.cfg.Agent.Session(ctx, s.ID)
+		if err != nil {
+			m.appendSystem("/resume: " + err.Error())
+			m.rerender()
+			return m, nil
+		}
+		m.cfg.SessionID = s.ID
+		m.transcript = nil
+		m.appendSystem("resumed: " + s.ID)
+		m.transcript = append(m.transcript, transcriptFromMessages(sess.Messages())...)
+		m.turnNum = 0
+		m.lastUsage = nil
+		m.rerender()
+		return m, nil
+	}
+	return m, nil
 }

@@ -2,8 +2,16 @@ package glue
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrSessionListingNotSupported is returned when the active [Store]
+// does not implement [SessionLister]. Callers (e.g. a TUI session
+// picker) should treat this as "no session catalog available" and
+// degrade gracefully — show only the current session id, hide the
+// picker, etc.
+var ErrSessionListingNotSupported = errors.New("glue: store does not support session listing")
 
 // SessionStateVersion is the on-disk version tag for [SessionState].
 const SessionStateVersion = 1
