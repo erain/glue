@@ -21,12 +21,17 @@ const EnvKey = "GEMINI_API_KEY"
 
 // DefaultModel is the registry-level default model for this provider.
 //
-// gemini-3.1-pro is the daily-driver default per maintainer direction: it
-// is the model the project's primary key has unmetered access to, and it
-// is currently the most capable Gemini for coding-agent workloads. The
-// previous default (gemini-2.5-flash) was removed from the v1beta API and
-// began returning 404 on generateContent.
-const DefaultModel = "gemini-3.1-pro"
+// gemini-3.1-pro-preview is the daily-driver default per maintainer
+// direction: it is the model the project's primary key has unmetered
+// access to, and it is currently the most capable Gemini for coding-
+// agent workloads. Verified against ListModels — the public id carries
+// the -preview suffix (v1.4.0 mistakenly used "gemini-3.1-pro" without
+// it, which 404s). The previous default (gemini-2.5-flash) was removed
+// from the v1beta API outright. The companion id
+// gemini-3.1-pro-preview-customtools is a separate beta surface for
+// Google's CustomTools API; our function-calling path uses the standard
+// Tool spec so the base id is correct.
+const DefaultModel = "gemini-3.1-pro-preview"
 
 const providerName = "gemini"
 

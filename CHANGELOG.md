@@ -15,6 +15,15 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Fix Gemini default id: `gemini-3.1-pro-preview`, not `gemini-3.1-pro`.**
+  v1.4.0 set the default to `gemini-3.1-pro`, which 404s — the public
+  id on `generativelanguage.googleapis.com` v1beta carries the
+  `-preview` suffix. Verified against `ListModels`. Override paths
+  remain unchanged: `--model`, `GLUE_MODEL`, or
+  `gemini.Options.DefaultModel`.
+
+## 1.6.0 — 2026-06-08
+
 - **TUI: cap transcript at 100 cols, center on wide terminals
   (`cmd/glue/tui`).** The viewport used to stretch to the full terminal
   width, so on a 200-col terminal the assistant text wrapped at the

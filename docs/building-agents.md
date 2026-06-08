@@ -68,7 +68,7 @@ func main() {
 
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider: gemini.New(gemini.Options{}), // reads GEMINI_API_KEY
-		Model:    "gemini-3.1-pro",
+		Model:    "gemini-3.1-pro-preview",
 	})
 
 	session, err := agent.Session(ctx, "demo")
@@ -132,7 +132,7 @@ Register it on the agent:
 ```go
 agent := glue.NewAgent(glue.AgentOptions{
 	Provider: gemini.New(gemini.Options{}),
-	Model:    "gemini-3.1-pro",
+	Model:    "gemini-3.1-pro-preview",
 	Tools:    []glue.Tool{weatherTool()},
 })
 ```
@@ -158,7 +158,7 @@ import filestore "github.com/erain/glue/stores/file"
 
 agent := glue.NewAgent(glue.AgentOptions{
 	Provider: gemini.New(gemini.Options{}),
-	Model:    "gemini-3.1-pro",
+	Model:    "gemini-3.1-pro-preview",
 	Store:    filestore.New(".glue/sessions"),
 })
 ```
@@ -231,7 +231,7 @@ Set `WorkDir` and Glue discovers Markdown context on disk:
 ```go
 agent := glue.NewAgent(glue.AgentOptions{
 	Provider: prov,
-	Model:    "gemini-3.1-pro",
+	Model:    "gemini-3.1-pro-preview",
 	WorkDir:  ".",
 	Roles: []glue.Role{
 		{Name: "reviewer", Model: "gemini-2.5-pro", Instructions: "Review for SQL safety."},
@@ -262,7 +262,7 @@ if err != nil { log.Fatal(err) }
 
 orchestrator := glue.NewAgent(glue.AgentOptions{
 	Provider: prov,
-	Model:    "gemini-3.1-pro",
+	Model:    "gemini-3.1-pro-preview",
 	Tools:    []glue.Tool{researchTool},
 })
 ```
