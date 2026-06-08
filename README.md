@@ -361,9 +361,11 @@ moving spinner while running and an inline `[a] [s] [t] [n]` permission
 prompt right inside the card when a side-effecting tool needs approval,
 and a small `edit_file` diff preview. Slash commands: `/help`,
 `/exit`, `/clear` / `/new`, `/usage`, `/tools`, `/model <id>`,
-`/session [id]`. **Esc** cancels the current turn; **Ctrl+C** once
-cancels (and a second press quits); mouse wheel scrolls the transcript;
-PgUp/PgDn does too. The TUI dependencies
+`/session [id]`. **Enter** sends; **Ctrl+J** inserts a newline (works
+on every terminal — Shift+Enter does not). **Esc** cancels the
+current turn; **Ctrl+C** once cancels (and a second press quits);
+mouse wheel scrolls the transcript; PgUp/PgDn does too. The TUI
+dependencies
 (`charmbracelet/{bubbletea,bubbles,lipgloss,glamour}`) live under
 `cmd/glue/tui/` only — `go get github.com/erain/glue` consumers pull
 zero TUI code.
