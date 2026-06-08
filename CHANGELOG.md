@@ -15,15 +15,7 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
-- **Gemini: synthetic `thoughtSignature` fallback for unsigned replays
-  (`providers/gemini`).** When an active-loop model turn reaches Gemini 3.x
-  without a real signature on its first function call — compacted history, a
-  transcript written before signature round-tripping landed, or a turn that
-  genuinely arrived unsigned — the provider now injects the sentinel
-  `skip_thought_signature_validator` (the same value Google's gemini-cli uses)
-  so the request still validates. Scoped to the active loop (everything after
-  the most recent genuine user turn) and to Gemini 3.x ids; real signatures are
-  never overwritten. Verified live.
+## 1.8.0 — 2026-06-08
 
 - **Fix Gemini 3.x tool calls: round-trip `thoughtSignature` (`providers/gemini`).**
   Gemini 3.x (incl. the default `gemini-3.1-pro-preview`) returns an opaque
@@ -37,10 +29,22 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   with a two-turn tool loop. (Also points the gated live smoke test at the
   provider default; it hardcoded the now-removed `gemini-2.5-flash`.)
 
+- **Gemini: synthetic `thoughtSignature` fallback for unsigned replays
+  (`providers/gemini`).** When an active-loop model turn reaches Gemini 3.x
+  without a real signature on its first function call — compacted history, a
+  transcript written before signature round-tripping landed, or a turn that
+  genuinely arrived unsigned — the provider now injects the sentinel
+  `skip_thought_signature_validator` (the same value Google's gemini-cli uses)
+  so the request still validates. Scoped to the active loop (everything after
+  the most recent genuine user turn) and to Gemini 3.x ids; real signatures are
+  never overwritten. Verified live.
+
 - **Gemini: `GOOGLE_GENAI_API_VERSION` env knob (`providers/gemini`).** Pins
   the API version the client targets (e.g. `v1alpha`/`v1beta`) so users can
   reach version-gated preview features without a code change, matching
   gemini-cli. Unset leaves the SDK default in place.
+
+## 1.7.0 — 2026-06-08
 
 - **Fix Gemini default id: `gemini-3.1-pro-preview`, not `gemini-3.1-pro`.**
   v1.4.0 set the default to `gemini-3.1-pro`, which 404s — the public
