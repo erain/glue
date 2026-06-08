@@ -1,10 +1,22 @@
 package tui
 
 import (
+	_ "embed"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 )
+
+// Glamour Catppuccin theme files. Mocha for dark terminals, Latte for
+// light. We pick at construction time based on lipgloss's terminal
+// background heuristic.
+//
+//go:embed glamour-mocha.json
+var glamourMochaJSON []byte
+
+//go:embed glamour-latte.json
+var glamourLatteJSON []byte
 
 // markdownRenderer wraps charmbracelet/glamour to render assistant
 // markdown at the current viewport width. It is created lazily after
@@ -30,14 +42,30 @@ func (r *markdownRenderer) Resize(width int) {
 	if r.width == width && r.glam != nil {
 		return
 	}
+	// Pick the Catppuccin flavor matching the terminal background. If
+	// lipgloss can't decide we default to Mocha (the more common case
+	// for coding-agent users).
+	styleJSON := glamourMochaJSON
+	if !lipgloss.HasDarkBackground() {
+		styleJSON = glamourLatteJSON
+	}
 	g, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStylesFromJSONBytes(styleJSON),
 		glamour.WithWordWrap(width),
 		glamour.WithEmoji(),
 	)
 	if err != nil {
-		r.glam = nil
-		return
+		// Fall back to the auto style if our JSON is malformed — better
+		// to render plain than to crash the TUI.
+		g, err = glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(width),
+			glamour.WithEmoji(),
+		)
+		if err != nil {
+			r.glam = nil
+			return
+		}
 	}
 	r.glam = g
 	r.width = width
