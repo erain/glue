@@ -354,14 +354,19 @@ go run ./cmd/glue connect --prompt "Say hi" --id demo
 
 **Interactive mode** (designed in [ADR-0014](docs/adr/0014-coding-agent-tui.md)).
 With no `--prompt` and a terminal on both stdin and stdout, `glue run`
-opens a bubbletea TUI: scrollable transcript, multi-line input,
-streaming text, tool-call cards with inline permission prompts, and a
-small `edit_file` diff preview before you approve a change. Slash
-commands: `/help`, `/exit`, `/clear`, `/usage`, `/tools`,
-`/model <id>`, `/session [id]`. Ctrl+C cancels the current turn; press
-again to quit. The TUI dependencies (`charmbracelet/{bubbletea,bubbles,lipgloss}`)
-live under `cmd/glue/tui/` only — `go get github.com/erain/glue`
-consumers pull zero TUI code.
+opens a bubbletea TUI: scrollable transcript with sticky-scroll,
+multi-line input, streaming text (re-rendered as markdown after each
+turn settles via `charmbracelet/glamour`), tool-call cards with a
+moving spinner while running and an inline `[a] [s] [t] [n]` permission
+prompt right inside the card when a side-effecting tool needs approval,
+and a small `edit_file` diff preview. Slash commands: `/help`,
+`/exit`, `/clear` / `/new`, `/usage`, `/tools`, `/model <id>`,
+`/session [id]`. **Esc** cancels the current turn; **Ctrl+C** once
+cancels (and a second press quits); mouse wheel scrolls the transcript;
+PgUp/PgDn does too. The TUI dependencies
+(`charmbracelet/{bubbletea,bubbles,lipgloss,glamour}`) live under
+`cmd/glue/tui/` only — `go get github.com/erain/glue` consumers pull
+zero TUI code.
 
 `run` flags include `--provider`, `--model`, `--id`, `--store`,
 `--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
