@@ -20,7 +20,13 @@ import (
 const EnvKey = "GEMINI_API_KEY"
 
 // DefaultModel is the registry-level default model for this provider.
-const DefaultModel = "gemini-2.5-flash"
+//
+// gemini-3.1-pro is the daily-driver default per maintainer direction: it
+// is the model the project's primary key has unmetered access to, and it
+// is currently the most capable Gemini for coding-agent workloads. The
+// previous default (gemini-2.5-flash) was removed from the v1beta API and
+// began returning 404 on generateContent.
+const DefaultModel = "gemini-3.1-pro"
 
 const providerName = "gemini"
 

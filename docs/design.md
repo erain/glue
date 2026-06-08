@@ -231,7 +231,7 @@ Target P0 shape:
 ```go
 agent := glue.NewAgent(glue.AgentOptions{
     Provider: gemini.New(gemini.Options{APIKey: os.Getenv("GEMINI_API_KEY")}),
-    Model:    "gemini-2.5-flash",
+    Model:    "gemini-3.1-pro",
     Tools:    []glue.Tool{weatherTool},
 })
 
