@@ -25,9 +25,12 @@ import (
 	"syscall"
 	"time"
 
+	"sort"
+
 	"golang.org/x/term"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/atmentions"
 	"github.com/erain/glue/cmd/glue/tui"
 	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/providers"
@@ -318,6 +321,9 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	coding := flags.Bool("coding", false, "enable local coding tools for this run")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
+	mode := flags.String("mode", "text", `output mode for one-shot runs: "text" (default streamed text) or "json" (JSON-Lines events)`)
+	toolsAllow := flags.String("tools", "", "comma-separated allowlist of tool names to register (empty = all configured)")
+	noTools := flags.Bool("no-tools", false, "register zero tools (read-only/text-only run)")
 	usagePricing := registerUsagePricingFlags(flags)
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
@@ -372,6 +378,19 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		return err
 	}
+	// Validate output mode. The TUI ignores --mode (it has its own
+	// rendering); --mode json applies to one-shot text-streaming runs.
+	switch strings.ToLower(*mode) {
+	case "", "text", "json":
+		// ok
+	default:
+		return fmt.Errorf("unknown --mode %q (want text or json)", *mode)
+	}
+	if interactive && strings.ToLower(*mode) == "json" {
+		return errors.New("--mode json is only valid with --prompt or piped stdin (interactive TUI has its own output)")
+	}
+	jsonMode := strings.EqualFold(*mode, "json")
+
 	if err := loadEnvFiles(envs); err != nil {
 		return err
 	}
@@ -385,6 +404,27 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		return err
 	}
+	// Filter the tool set down: --no-tools strips them all (a "text-only"
+	// run with no agentic capabilities); --tools is an allowlist by name.
+	// Both apply on top of --coding so the user can say
+	// `--coding --tools read_file,grep` for a read-only coding agent.
+	tools, err = filterTools(tools, *toolsAllow, *noTools)
+	if err != nil {
+		return err
+	}
+	// @file expansion happens after env load (so any path side-effects
+	// are honored) and before agent construction. Skipped mentions are
+	// reported to stderr; the user's original "@path" stays in the
+	// prompt verbatim so the model can see they asked.
+	atRes, err := atmentions.Expand(effectivePrompt, atmentions.Options{WorkDir: *workDir})
+	if err != nil {
+		return fmt.Errorf("expand @-mentions: %w", err)
+	}
+	effectivePrompt = atRes.Prompt
+	for _, skip := range atRes.Skipped {
+		fmt.Fprintf(stderr, "glue run: %s: %s\n", skip.Mention, skip.Reason)
+	}
+
 	// In interactive mode the TUI installs its own permission bridge
 	// per-prompt; the agent-level Permission is left nil so the bridge
 	// gets to render the prompt instead of fighting with the readline
@@ -395,31 +435,43 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		fmt.Fprintf(stderr, "glue run: coding tools enabled for %s\n", *workDir)
 	}
 
-	agent, err := newAgent(newProvider, agentConfig{
-		Provider:   providerName,
-		Model:      effectiveModel,
-		StoreDir:   *storeDir,
-		WorkDir:    *workDir,
-		Tools:      tools,
-		Permission: permission,
-	})
+	// Construct the provider and store once so the TUI can reuse them
+	// for /compact (needs a Provider for SummarizingCompactor) and
+	// /resume (needs the Store to list sessions). The agent then takes
+	// the same pair via AgentOptions.
+	providerImpl, err := newProvider(providerName)
 	if err != nil {
 		return err
 	}
+	storeImpl := filestore.New(*storeDir)
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider:   providerImpl,
+		Model:      normalizeModel(effectiveModel),
+		Tools:      append([]glue.Tool(nil), tools...),
+		Store:      storeImpl,
+		WorkDir:    *workDir,
+		Permission: permission,
+	})
 
 	if interactive {
 		return tui.Run(ctx, tui.Config{
-			Agent:     agent,
-			SessionID: *id,
-			Provider:  providerName,
-			Model:     effectiveModel,
-			WorkDir:   *workDir,
-			Tools:     tools,
+			Agent:        agent,
+			SessionID:    *id,
+			Provider:     providerName,
+			Model:        effectiveModel,
+			WorkDir:      *workDir,
+			Tools:        tools,
+			Store:        storeImpl,
+			ProviderImpl: providerImpl,
 		})
 	}
 	session, err := agent.Session(ctx, *id)
 	if err != nil {
 		return err
+	}
+
+	if jsonMode {
+		return runOneShotJSON(ctx, session, effectivePrompt, *id, providerName, effectiveModel, stdout, *showUsage, usagePricing, stderr)
 	}
 
 	wroteDelta := false
@@ -444,6 +496,151 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		writeUsageSummary(stderr, summarizeUsage(response.NewMessages), *usagePricing)
 	}
 	return nil
+}
+
+// runOneShotJSON streams loop events to stdout as JSON Lines. Event
+// shape is intentionally small and stable across releases so scripts
+// (editors, CI, /codeagent integrations) can consume it:
+//
+//	{"type":"start","session":"...","provider":"...","model":"..."}
+//	{"type":"text","delta":"..."}
+//	{"type":"tool_start","call_id":"...","name":"...","args":{...}}
+//	{"type":"tool_end","call_id":"...","is_error":false,"text":"..."}
+//	{"type":"done","text":"...","stop_reason":"..."}
+//	{"type":"error","message":"..."}
+func runOneShotJSON(
+	ctx context.Context,
+	session *glue.Session,
+	prompt, sessionID, providerName, modelName string,
+	stdout io.Writer,
+	showUsage bool,
+	pricing *usagePricing,
+	stderr io.Writer,
+) error {
+	enc := json.NewEncoder(stdout)
+	emit := func(event map[string]any) {
+		_ = enc.Encode(event)
+	}
+	emit(map[string]any{
+		"type":     "start",
+		"session":  sessionID,
+		"provider": providerName,
+		"model":    modelName,
+	})
+	response, err := session.Prompt(ctx, prompt, glue.WithEvents(func(event glue.Event) {
+		switch event.Type {
+		case glue.EventTextDelta:
+			if event.Delta == "" {
+				return
+			}
+			emit(map[string]any{"type": "text", "delta": event.Delta})
+		case glue.EventToolStart:
+			if event.ToolCall == nil {
+				return
+			}
+			var args any
+			if len(event.ToolCall.Arguments) > 0 {
+				_ = json.Unmarshal(event.ToolCall.Arguments, &args)
+			}
+			emit(map[string]any{
+				"type":    "tool_start",
+				"call_id": event.ToolCall.ID,
+				"name":    event.ToolCall.Name,
+				"args":    args,
+			})
+		case glue.EventToolEnd:
+			text := ""
+			isErr := false
+			if event.ToolResult != nil {
+				isErr = event.ToolResult.IsError
+				var parts []string
+				for _, p := range event.ToolResult.Content {
+					if p.Type == glue.ContentTypeText && p.Text != "" {
+						parts = append(parts, p.Text)
+					}
+				}
+				text = strings.Join(parts, "\n")
+			}
+			emit(map[string]any{
+				"type":     "tool_end",
+				"call_id":  event.ToolCallID,
+				"is_error": isErr,
+				"text":     text,
+			})
+		case glue.EventError:
+			if event.Error != "" {
+				emit(map[string]any{"type": "error", "message": event.Error})
+			}
+		}
+	}))
+	if err != nil {
+		emit(map[string]any{"type": "error", "message": err.Error()})
+		return err
+	}
+	stopReason := ""
+	if len(response.NewMessages) > 0 {
+		last := response.NewMessages[len(response.NewMessages)-1]
+		stopReason = string(last.StopReason)
+	}
+	emit(map[string]any{
+		"type":        "done",
+		"text":        response.Text,
+		"stop_reason": stopReason,
+	})
+	if showUsage {
+		writeUsageSummary(stderr, summarizeUsage(response.NewMessages), *pricing)
+	}
+	return nil
+}
+
+// filterTools applies --tools / --no-tools to the configured tool set.
+func filterTools(in []glue.Tool, allowCSV string, noTools bool) ([]glue.Tool, error) {
+	if noTools {
+		if strings.TrimSpace(allowCSV) != "" {
+			return nil, errors.New("--tools and --no-tools are mutually exclusive")
+		}
+		return nil, nil
+	}
+	allowCSV = strings.TrimSpace(allowCSV)
+	if allowCSV == "" {
+		return in, nil
+	}
+	want := map[string]bool{}
+	for _, raw := range strings.Split(allowCSV, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		want[name] = true
+	}
+	if len(want) == 0 {
+		return nil, nil
+	}
+	var out []glue.Tool
+	seen := map[string]bool{}
+	for _, t := range in {
+		if want[t.Name] {
+			out = append(out, t)
+			seen[t.Name] = true
+		}
+	}
+	// Refuse unknown names so a typo doesn't silently produce zero tools.
+	var missing []string
+	for name := range want {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		available := make([]string, 0, len(in))
+		for _, t := range in {
+			available = append(available, t.Name)
+		}
+		sort.Strings(available)
+		return nil, fmt.Errorf("--tools: unknown tool name(s) %v (available: %v)", missing, available)
+	}
+	return out, nil
 }
 
 func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc) error {
