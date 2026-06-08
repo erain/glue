@@ -143,6 +143,8 @@ type Model struct {
 
 	// picker is the /resume modal state. Nil means "no picker open."
 	picker *sessionPicker
+	// tree is the /tree modal state. Nil means closed.
+	tree *treeModal
 
 	// Cancel-on-second-ctrl-c semantics
 	armedQuit bool
@@ -249,12 +251,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// The /resume picker, when open, owns the keyboard. It's a modal
-		// overlay; arrow keys navigate, Enter selects, Esc cancels.
+		// Modals own the keyboard while open: tree view first, then the
+		// /resume picker, then the in-card permission prompt, then normal
+		// input handling. Order matches "most recent overlay wins."
+		if m.tree != nil {
+			return m.handleTreeKey(msg)
+		}
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
 		}
-		// Permission prompt takes keyboard precedence over normal input.
 		if m.pending != nil {
 			return m.handlePermissionKey(msg)
 		}
@@ -306,6 +311,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case systemMsg:
 		m.appendSystem(string(msg))
+		m.rerender()
+		return m, nil
+
+	case sessionSwitchedMsg:
+		m.cfg.SessionID = msg.ID
+		m.transcript = nil
+		m.appendSystem(msg.Note + ": " + msg.ID)
+		m.transcript = append(m.transcript, transcriptFromMessages(msg.Messages)...)
+		m.turnNum = 0
+		m.lastUsage = nil
 		m.rerender()
 		return m, nil
 
@@ -460,7 +475,10 @@ func (m *Model) headerView() string {
 }
 
 func (m *Model) bottomView() string {
-	// /resume picker takes over the bottom region while open.
+	// Modals take over the bottom region while open.
+	if m.tree != nil {
+		return renderTreeModal(m.tree, m.width, m.cfg.SessionID)
+	}
 	if m.picker != nil {
 		return renderPicker(m.picker, m.width)
 	}
@@ -711,6 +729,12 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		return m.runSlashCompact()
 	case "resume":
 		return m.runSlashResume()
+	case "fork":
+		return m.runSlashFork(cmd.Arg)
+	case "clone":
+		return m.runSlashClone()
+	case "tree":
+		return m.runSlashTree()
 	default:
 		m.appendSystem("unknown command: /" + cmd.Name + " (try /help)")
 		m.rerender()
@@ -1091,6 +1115,195 @@ func (m *Model) runSlashResume() (tea.Model, tea.Cmd) {
 	m.picker = &sessionPicker{items: filtered}
 	m.rerender()
 	return m, nil
+}
+
+// ---------- /fork, /clone, /tree ----------
+
+func (m *Model) runSlashFork(arg string) (tea.Model, tea.Cmd) {
+	if m.cfg.Agent == nil {
+		m.appendSystem("/fork unavailable: no agent")
+		m.rerender()
+		return m, nil
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	current, err := m.cfg.Agent.Session(ctx, m.cfg.SessionID)
+	if err != nil {
+		m.appendSystem("/fork: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	msgs := current.Messages()
+	if len(msgs) == 0 {
+		m.appendSystem("/fork: nothing to fork (session has no messages yet)")
+		m.rerender()
+		return m, nil
+	}
+	// Default fork point: just before the most recent user message.
+	// That's "redo from my last turn" — the common case.
+	at := len(msgs)
+	if arg == "" {
+		at = lastUserMessageIndex(msgs)
+		if at < 0 {
+			at = len(msgs)
+		}
+	} else {
+		n, err := parseForkArg(arg, len(msgs))
+		if err != nil {
+			m.appendSystem("/fork: " + err.Error())
+			m.rerender()
+			return m, nil
+		}
+		at = n
+	}
+	newID := "tui:" + shortID()
+	if err := m.cfg.Agent.ForkSession(ctx, m.cfg.SessionID, at, newID); err != nil {
+		m.appendSystem("/fork: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	return m, switchToSession(m, newID, fmt.Sprintf("forked at message %d", at))
+}
+
+func (m *Model) runSlashClone() (tea.Model, tea.Cmd) {
+	if m.cfg.Agent == nil {
+		m.appendSystem("/clone unavailable: no agent")
+		m.rerender()
+		return m, nil
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	newID := "tui:" + shortID()
+	if err := m.cfg.Agent.CloneSession(ctx, m.cfg.SessionID, newID); err != nil {
+		m.appendSystem("/clone: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	return m, switchToSession(m, newID, "cloned current session")
+}
+
+func (m *Model) runSlashTree() (tea.Model, tea.Cmd) {
+	if m.cfg.Agent == nil || m.cfg.Store == nil {
+		m.appendSystem("/tree unavailable: agent or store not wired")
+		m.rerender()
+		return m, nil
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	root, flat, cursor, err := buildSessionTree(ctx, m.cfg.Agent, m.cfg.Store, m.cfg.SessionID)
+	if err != nil {
+		m.appendSystem("/tree: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	m.tree = &treeModal{root: root, flat: flat, cursor: cursor}
+	m.rerender()
+	return m, nil
+}
+
+func (m *Model) handleTreeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.tree = nil
+		m.rerender()
+		return m, nil
+	case tea.KeyUp:
+		m.tree.up()
+		m.rerender()
+		return m, nil
+	case tea.KeyDown:
+		m.tree.down()
+		m.rerender()
+		return m, nil
+	case tea.KeyEnter:
+		node, ok := m.tree.selected()
+		m.tree = nil
+		if !ok || node == nil {
+			m.rerender()
+			return m, nil
+		}
+		if node.Summary.ID == m.cfg.SessionID {
+			m.appendSystem("/tree: already on this session")
+			m.rerender()
+			return m, nil
+		}
+		return m, switchToSession(m, node.Summary.ID, "switched via /tree")
+	}
+	return m, nil
+}
+
+// switchToSession is the common path for /fork, /clone, and /tree: load
+// the named session, rebuild the transcript, and post a system note.
+// Returned as a tea.Cmd so the actual work runs asynchronously; the TUI
+// stays responsive while the store reads.
+func switchToSession(m *Model, newID, note string) tea.Cmd {
+	cfg := m.cfg
+	parent := m.ctx
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		defer cancel()
+		sess, err := cfg.Agent.Session(ctx, newID)
+		if err != nil {
+			return systemMsg("switch session: " + err.Error())
+		}
+		// The state we want lives in the session struct now. Replay it into
+		// the TUI by sending a dedicated message — the model resets its
+		// transcript when it receives this.
+		return sessionSwitchedMsg{
+			ID:       newID,
+			Note:     note,
+			Messages: sess.Messages(),
+		}
+	}
+}
+
+func lastUserMessageIndex(msgs []glue.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == glue.MessageRoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
+func parseForkArg(arg string, max int) (int, error) {
+	n, err := strconvAtoi(strings.TrimSpace(arg))
+	if err != nil {
+		return 0, fmt.Errorf("invalid index %q", arg)
+	}
+	if n < 0 || n > max {
+		return 0, fmt.Errorf("index %d out of range [0, %d]", n, max)
+	}
+	return n, nil
+}
+
+// strconvAtoi is inlined to avoid pulling strconv into this file just
+// for one use.
+func strconvAtoi(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	n := 0
+	neg := false
+	i := 0
+	if s[0] == '-' {
+		neg = true
+		i = 1
+	}
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("non-digit %q", string(c))
+		}
+		n = n*10 + int(c-'0')
+	}
+	if neg {
+		n = -n
+	}
+	return n, nil
 }
 
 func (m *Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

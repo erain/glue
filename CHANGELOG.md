@@ -26,6 +26,17 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   one-shot paths (`glue run --prompt ...`, `echo ... | glue run`) are
   preserved exactly. The new charmbracelet dependencies live under
   `cmd/glue/tui/`; the library import graph is unchanged.
+- **Session tree (`glue` + `cmd/glue/tui`).** New `Agent.ForkSession`
+  and `Agent.CloneSession` write child sessions whose metadata records
+  their place in the lineage; `SessionParent` reads it back. New typed
+  `ErrSessionNotFound`. Metadata keys are namespaced under
+  `glue/tree:`. The TUI gains three slash commands: `/fork [N]`
+  (defaults to "branch from just before my last user message"),
+  `/clone`, and `/tree` (modal lineage view with `↑/↓` navigate, Enter
+  switch, Esc cancel; current node marked `◉`, others `●`, non-root
+  nodes tagged `forked@N`). Designed in
+  [ADR-0015](docs/adr/0015-session-tree.md). Additive only — no
+  existing API or on-disk format changes.
 - Pi-gap quick wins (`cmd/glue`):
   - **`@file` argument expansion.** In `glue run --prompt`, in piped
     stdin, and in the interactive TUI's submit handler, `@<path>`

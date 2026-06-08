@@ -3,6 +3,7 @@ package glue
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -96,6 +97,97 @@ func NewAgent(options AgentOptions) *Agent {
 		sessions:            make(map[string]*Session),
 	}
 }
+
+// ForkSession copies the first atMessage messages of srcID into a fresh
+// newID, recording the parent linkage in metadata. Returns
+// [ErrSessionNotFound] if srcID is absent, or an error if atMessage is
+// out of range. atMessage may be 0 (an empty branch with parent
+// linkage) or len(messages) (equivalent to a clone). The new session is
+// persisted with a fresh CreatedAt; the message slice is cloned so
+// later edits to either session do not bleed across.
+//
+// Forking does not start a session in memory or run a turn; callers
+// typically call [Agent.Session] on newID immediately afterward to take
+// the forked transcript live.
+func (a *Agent) ForkSession(ctx context.Context, srcID string, atMessage int, newID string) error {
+	if a == nil {
+		return errors.New("glue: nil agent")
+	}
+	if a.store == nil {
+		return errors.New("glue: agent has no store; cannot fork")
+	}
+	src, ok, err := a.store.Load(ctx, srcID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrSessionNotFound
+	}
+	if atMessage < 0 || atMessage > len(src.Messages) {
+		return fmt.Errorf("glue: ForkSession atMessage %d out of range [0, %d]", atMessage, len(src.Messages))
+	}
+	now := nowFunc()
+	state := SessionState{
+		Version:   SessionStateVersion,
+		ID:        newID,
+		Messages:  cloneMessages(src.Messages[:atMessage]),
+		Metadata:  cloneMetadata(src.Metadata),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if state.Metadata == nil {
+		state.Metadata = make(map[string]any, 2)
+	}
+	state.Metadata[MetadataKeyParentSessionID] = srcID
+	state.Metadata[MetadataKeyParentMessageIndex] = atMessage
+	return a.store.Save(ctx, newID, state)
+}
+
+// CloneSession copies srcID's full transcript and metadata into newID,
+// preserving any existing parent linkage so a clone of a forked
+// session is still attributable to the same root. Returns
+// [ErrSessionNotFound] if srcID is absent.
+func (a *Agent) CloneSession(ctx context.Context, srcID, newID string) error {
+	if a == nil {
+		return errors.New("glue: nil agent")
+	}
+	if a.store == nil {
+		return errors.New("glue: agent has no store; cannot clone")
+	}
+	src, ok, err := a.store.Load(ctx, srcID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrSessionNotFound
+	}
+	now := nowFunc()
+	state := SessionState{
+		Version:   SessionStateVersion,
+		ID:        newID,
+		Messages:  cloneMessages(src.Messages),
+		Metadata:  cloneMetadata(src.Metadata),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return a.store.Save(ctx, newID, state)
+}
+
+// cloneMetadata deep-copies the top-level map. Nested values are
+// reference-copied — fine for the immutable metadata we carry today.
+func cloneMetadata(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// nowFunc is overridable for tests.
+var nowFunc = time.Now
 
 // ListSessions returns a metadata-only catalog of stored sessions if
 // the agent's [Store] implements [SessionLister]. Returns

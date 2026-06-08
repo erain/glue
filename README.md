@@ -364,7 +364,13 @@ and a small `edit_file` diff preview. Slash commands: `/help`,
 `/session [id]`, **`/compact`** (token-aware summarization of older
 messages to free context window), **`/resume`** (modal picker over
 past sessions; ↑/↓ navigate, Enter replays the chosen one into the
-transcript). Anywhere in a prompt, **`@<path>`** inlines that file's
+transcript), **`/fork [N]`** (branch from message N — defaults to
+"just before my last user turn" — into a new session id, keeping the
+original intact), **`/clone`** (full duplicate of the current
+session), and **`/tree`** (visualize the session lineage with
+`├─ / └─` glyphs, current node marked `◉`; pick one to switch). See
+[ADR-0015](docs/adr/0015-session-tree.md). Anywhere in a prompt,
+**`@<path>`** inlines that file's
 contents (`@"path with space"` for spaces, `@@literal` to escape — and
 the workspace blocklist refuses `.env` / `id_rsa` / etc.). **Enter**
 sends; **Ctrl+J** inserts a newline (works on every terminal —
