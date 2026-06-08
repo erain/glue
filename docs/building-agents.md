@@ -346,6 +346,15 @@ cfg := get() // cfg.Provider, cfg.Model, cfg.ID, cfg.Store, cfg.Work, cfg.MaxTur
 `glue.WithFailover`. [`examples/local-agent`](../examples/local-agent)
 is a complete, ~100-line CLI you can copy.
 
+**Want a real interactive TUI for your own agent?** The shipped
+`cmd/glue/tui` package is a bubbletea TUI bound to `glue.Agent` /
+`glue.Session` / `glue.Permission` — exactly the interfaces your agent
+already exposes. You can lift it (or copy-modify it) and call
+`tui.Run(ctx, tui.Config{Agent: ...})` from your binary's interactive
+branch. See [ADR-0014](adr/0014-coding-agent-tui.md) for the
+architecture and the permission-bridging trick that lets the loop
+block on user keystrokes without knowing it.
+
 ## Step 10 — Test without API keys
 
 The `Provider` interface is tiny, so tests drive sessions with a fake —

@@ -336,15 +336,32 @@ A thin CLI over the same library API, for trying things without writing
 a `main.go`:
 
 ```sh
+# Interactive TUI (default when stdin/stdout are a terminal and no --prompt):
+go run ./cmd/glue run --provider codex --coding --work .
+
 # One-shot run (any registered provider; default gemini):
 go run ./cmd/glue run --prompt "Say hi" --id demo --store .glue/sessions
 go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the failing test."
+
+# Scripted: pipe the prompt in.
+echo "summarize main.go" | go run ./cmd/glue run --provider codex --coding
 
 # Local HTTP+SSE daemon + a client that streams and brokers permissions:
 go run ./cmd/glue serve --store .glue/sessions
 go run ./cmd/glue connect --inspect
 go run ./cmd/glue connect --prompt "Say hi" --id demo
 ```
+
+**Interactive mode** (designed in [ADR-0014](docs/adr/0014-coding-agent-tui.md)).
+With no `--prompt` and a terminal on both stdin and stdout, `glue run`
+opens a bubbletea TUI: scrollable transcript, multi-line input,
+streaming text, tool-call cards with inline permission prompts, and a
+small `edit_file` diff preview before you approve a change. Slash
+commands: `/help`, `/exit`, `/clear`, `/usage`, `/tools`,
+`/model <id>`, `/session [id]`. Ctrl+C cancels the current turn; press
+again to quit. The TUI dependencies (`charmbracelet/{bubbletea,bubbles,lipgloss}`)
+live under `cmd/glue/tui/` only — `go get github.com/erain/glue`
+consumers pull zero TUI code.
 
 `run` flags include `--provider`, `--model`, `--id`, `--store`,
 `--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
