@@ -94,7 +94,7 @@ func (p *Provider) Stream(ctx context.Context, req loop.ProviderRequest) (<-chan
 	if err != nil {
 		return nil, err
 	}
-	config, err := buildGenerateConfig(req)
+	config, err := buildGenerateConfig(req, model)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +169,13 @@ func (p *Provider) stream(
 			if part == nil {
 				continue
 			}
+			// Gemini 3.x returns an opaque thought signature on the part it
+			// produced (typically the function call, sometimes a thought).
+			// It must be echoed back verbatim on replay or the next request
+			// 400s with "Function call is missing a thought_signature". We
+			// store it base64-encoded so file-backed transcripts stay
+			// JSON-clean; convert.go decodes it on the way back out.
+			signature := encodeSignature(part.ThoughtSignature)
 			if part.FunctionCall != nil {
 				toolCallCount++
 				toolCall, err := convertFunctionCall(part.FunctionCall, toolCallCount)
@@ -176,20 +183,26 @@ func (p *Provider) stream(
 					send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventError, Error: err.Error()})
 					return
 				}
-				output.Content = append(output.Content, loop.ContentPart{Type: loop.ContentTypeToolCall, ToolCall: &toolCall})
+				output.Content = append(output.Content, loop.ContentPart{Type: loop.ContentTypeToolCall, ToolCall: &toolCall, Signature: signature})
 				if !send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventToolCall, ToolCall: &toolCall}) {
 					return
 				}
 				continue
 			}
-			if part.Text == "" {
+			if part.Thought {
+				// A thought part may carry text, a signature, or both; the
+				// signature sometimes arrives on a later text-less delta, so
+				// latch it onto the coalesced thinking block rather than
+				// dropping it with the empty text.
+				appendThinking(&output, part.Text, signature)
+				if part.Text != "" {
+					if !send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventThinkingDelta, Delta: part.Text}) {
+						return
+					}
+				}
 				continue
 			}
-			if part.Thought {
-				appendThinking(&output, part.Text)
-				if !send(ctx, events, loop.ProviderEvent{Type: loop.ProviderEventThinkingDelta, Delta: part.Text}) {
-					return
-				}
+			if part.Text == "" {
 				continue
 			}
 			appendText(&output, part.Text)
@@ -221,32 +234,32 @@ func send(ctx context.Context, events chan<- loop.ProviderEvent, event loop.Prov
 }
 
 func appendText(message *loop.Message, delta string) {
-	appendPart(message, loop.ContentTypeText, delta)
-}
-
-func appendThinking(message *loop.Message, delta string) {
-	appendPart(message, loop.ContentTypeThinking, delta)
-}
-
-func appendPart(message *loop.Message, kind loop.ContentType, delta string) {
 	last := len(message.Content) - 1
-	if last >= 0 && message.Content[last].Type == kind {
-		switch kind {
-		case loop.ContentTypeText:
-			message.Content[last].Text += delta
-		case loop.ContentTypeThinking:
-			message.Content[last].Thinking += delta
+	if last >= 0 && message.Content[last].Type == loop.ContentTypeText {
+		message.Content[last].Text += delta
+		return
+	}
+	message.Content = append(message.Content, loop.ContentPart{Type: loop.ContentTypeText, Text: delta})
+}
+
+// appendThinking coalesces consecutive thinking deltas into one content part
+// and latches the most recent non-empty thought signature onto it. A signed
+// but text-less delta updates the signature without creating an empty block;
+// a signature with no prior thinking block opens one so the signature is not
+// lost.
+func appendThinking(message *loop.Message, delta, signature string) {
+	last := len(message.Content) - 1
+	if last >= 0 && message.Content[last].Type == loop.ContentTypeThinking {
+		message.Content[last].Thinking += delta
+		if signature != "" {
+			message.Content[last].Signature = signature
 		}
 		return
 	}
-	part := loop.ContentPart{Type: kind}
-	switch kind {
-	case loop.ContentTypeText:
-		part.Text = delta
-	case loop.ContentTypeThinking:
-		part.Thinking = delta
+	if delta == "" && signature == "" {
+		return
 	}
-	message.Content = append(message.Content, part)
+	message.Content = append(message.Content, loop.ContentPart{Type: loop.ContentTypeThinking, Thinking: delta, Signature: signature})
 }
 
 func applyResponseMetadata(message *loop.Message, response *genai.GenerateContentResponse) {
