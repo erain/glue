@@ -25,7 +25,10 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/tui"
 	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
@@ -336,9 +339,35 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if agentName != "default" && agentName != "gemini" {
 		return fmt.Errorf("unknown agent %q; only 'default' is available in this runner", agentName)
 	}
-	if strings.TrimSpace(*prompt) == "" {
-		return errors.New("missing required --prompt")
+
+	// Resolve the prompt and the run mode:
+	//   - --prompt set                            → one-shot (today's behavior, unchanged)
+	//   - --prompt empty + stdin not a TTY        → read stdin as the prompt, one-shot
+	//   - --prompt empty + stdin AND stdout TTYs  → interactive TUI
+	//   - --prompt empty + only stdin TTY         → refuse (no place to draw)
+	effectivePrompt := strings.TrimSpace(*prompt)
+	interactive := false
+	if effectivePrompt == "" {
+		stdinTTY := isFileTTY(stdin)
+		stdoutTTY := isFileTTY(stdout)
+		switch {
+		case !stdinTTY:
+			// Piped or test input. Read everything as the prompt.
+			data, err := io.ReadAll(stdin)
+			if err != nil {
+				return fmt.Errorf("read prompt from stdin: %w", err)
+			}
+			effectivePrompt = strings.TrimSpace(string(data))
+			if effectivePrompt == "" {
+				return errors.New("missing required --prompt (and stdin was empty)")
+			}
+		case stdinTTY && stdoutTTY:
+			interactive = true
+		default:
+			return errors.New("missing required --prompt (stdout is not a terminal; interactive mode unavailable)")
+		}
 	}
+
 	providerName, effectiveModel, err := resolveProvider(*provider, *model)
 	if err != nil {
 		return err
@@ -356,8 +385,12 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		return err
 	}
+	// In interactive mode the TUI installs its own permission bridge
+	// per-prompt; the agent-level Permission is left nil so the bridge
+	// gets to render the prompt instead of fighting with the readline
+	// version.
 	var permission glue.Permission
-	if *coding {
+	if *coding && !interactive {
 		permission = newLocalPromptPermission(stdin, stderr)
 		fmt.Fprintf(stderr, "glue run: coding tools enabled for %s\n", *workDir)
 	}
@@ -373,13 +406,24 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		return err
 	}
+
+	if interactive {
+		return tui.Run(ctx, tui.Config{
+			Agent:     agent,
+			SessionID: *id,
+			Provider:  providerName,
+			Model:     effectiveModel,
+			WorkDir:   *workDir,
+			Tools:     tools,
+		})
+	}
 	session, err := agent.Session(ctx, *id)
 	if err != nil {
 		return err
 	}
 
 	wroteDelta := false
-	response, err := session.Prompt(ctx, *prompt, glue.WithEvents(func(event glue.Event) {
+	response, err := session.Prompt(ctx, effectivePrompt, glue.WithEvents(func(event glue.Event) {
 		if event.Type == glue.EventTextDelta && event.Delta != "" {
 			fmt.Fprint(stdout, event.Delta)
 			wroteDelta = true
@@ -2381,6 +2425,17 @@ func resolveProvider(name, model string) (string, string, error) {
 		model = factory.DefaultModel
 	}
 	return name, model, nil
+}
+
+// isFileTTY reports whether the given reader/writer is an os.File backed
+// by a terminal. Returns false for non-files (test buffers, pipes) and
+// for closed/invalid fds.
+func isFileTTY(v any) bool {
+	f, ok := v.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error) {

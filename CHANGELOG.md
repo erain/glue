@@ -15,7 +15,17 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
-_(no changes yet)_
+- Added `cmd/glue` interactive TUI. `glue run` with no `--prompt` and a
+  terminal on stdin+stdout now opens a bubbletea-based interactive
+  coding agent: scrollable transcript, multi-line input, streaming
+  text, tool-call cards with inline permission prompts, and a small
+  `edit_file` diff preview. Slash commands: `/help`, `/exit`,
+  `/clear`, `/usage`, `/tools`, `/model <id>`, `/session [id]`. Ctrl+C
+  cancels the current turn on first press, quits on second. Designed
+  in [ADR-0014](docs/adr/0014-coding-agent-tui.md). Scripted and
+  one-shot paths (`glue run --prompt ...`, `echo ... | glue run`) are
+  preserved exactly. The new charmbracelet dependencies live under
+  `cmd/glue/tui/`; the library import graph is unchanged.
 
 ## 0.1.0 — 2026-05-27
 
