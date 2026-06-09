@@ -15,6 +15,8 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+## 1.10.0 — 2026-06-09
+
 - **Goal loop: `Agent.PursueGoal` — "loop engineering" / `/goal` (Phase 1).**
   A new library primitive that turns one persistent objective into an
   autonomous loop: a planner decomposes the goal into a verifiable checklist,
