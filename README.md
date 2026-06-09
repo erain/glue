@@ -333,7 +333,8 @@ own `Executor` to run in a container/VM. See
 ## The `glue` CLI
 
 A thin CLI over the same library API, for trying things without writing
-a `main.go`:
+a `main.go` — and a full terminal coding agent in its own right
+(homepage: <https://glue-coding-agent-site.vercel.app>):
 
 ```sh
 # Interactive TUI (default when stdin/stdout are a terminal and no --prompt):
