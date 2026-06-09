@@ -331,11 +331,14 @@ func TestSummarizingCompactor_OverBudgetPartitionAndMarker(t *testing.T) {
 		TargetTokens: 1, // trip over budget on any non-trivial input
 		KeepRecent:   2,
 	}
+	// The summarized region must be larger than the snapshot it is
+	// replaced with, or the inflation guard refuses the compaction.
+	filler := strings.Repeat("they are an energetic herding breed and ", 20)
 	in := []Message{
 		textMessage(MessageRoleUser, "hi I am Yu"),
-		textMessage(MessageRoleAssistant, "hello Yu"),
+		textMessage(MessageRoleAssistant, "hello Yu "+filler),
 		textMessage(MessageRoleUser, "tell me about Aussies"),
-		textMessage(MessageRoleAssistant, "they shed a lot"),
+		textMessage(MessageRoleAssistant, "they shed a lot "+filler),
 		textMessage(MessageRoleUser, "what about exercise"),
 		textMessage(MessageRoleAssistant, "lots needed"),
 	}
@@ -350,8 +353,11 @@ func TestSummarizingCompactor_OverBudgetPartitionAndMarker(t *testing.T) {
 	if marker.Role != MessageRoleAssistant {
 		t.Fatalf("marker role = %s", marker.Role)
 	}
-	if len(marker.Content) == 0 || marker.Content[0].Text != summary {
-		t.Fatalf("marker text = %q, want summary", marker.Content[0].Text)
+	if len(marker.Content) == 0 || !strings.Contains(marker.Content[0].Text, summary) {
+		t.Fatalf("marker text = %q, want it to contain the summary", marker.Content[0].Text)
+	}
+	if !strings.Contains(marker.Content[0].Text, "Another assistant instance") {
+		t.Fatalf("marker text missing handoff framing: %q", marker.Content[0].Text)
 	}
 	if marker.Metadata["compaction"] != "summarizing" {
 		t.Fatalf("marker metadata.compaction = %v", marker.Metadata["compaction"])
@@ -393,9 +399,10 @@ func TestSummarizingCompactor_TimestampMetadata(t *testing.T) {
 	t.Parallel()
 	t1 := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	t2 := t1.Add(time.Hour)
+	filler := strings.Repeat("padding words to outweigh the snapshot ", 20)
 	in := []Message{
-		{Role: MessageRoleUser, Content: []ContentPart{{Type: ContentTypeText, Text: "early"}}, CreatedAt: t2},
-		{Role: MessageRoleAssistant, Content: []ContentPart{{Type: ContentTypeText, Text: "mid"}}, CreatedAt: t1},
+		{Role: MessageRoleUser, Content: []ContentPart{{Type: ContentTypeText, Text: "early " + filler}}, CreatedAt: t2},
+		{Role: MessageRoleAssistant, Content: []ContentPart{{Type: ContentTypeText, Text: "mid " + filler}}, CreatedAt: t1},
 		{Role: MessageRoleUser, Content: []ContentPart{{Type: ContentTypeText, Text: "u2"}}},
 		{Role: MessageRoleAssistant, Content: []ContentPart{{Type: ContentTypeText, Text: "a2"}}},
 	}
@@ -562,5 +569,141 @@ func TestEstimateTokens_HeuristicScales(t *testing.T) {
 	// 4 words ≈ 3 tokens.
 	if small < 2 || small > 4 {
 		t.Errorf("small estimate = %d, want around 3", small)
+	}
+}
+
+func TestSummarizingCompactor_SplitNeverOrphansToolPair(t *testing.T) {
+	t.Parallel()
+	filler := strings.Repeat("long enough to beat the inflation guard ", 20)
+	call := ToolCall{ID: "c1", Name: "shell_exec"}
+	in := []Message{
+		textMessage(MessageRoleUser, "start "+filler),
+		textMessage(MessageRoleAssistant, "working "+filler),
+		{Role: MessageRoleAssistant, Content: []ContentPart{{Type: ContentTypeToolCall, ToolCall: &call}}},
+		{Role: MessageRoleTool, ToolCallID: "c1", ToolName: "shell_exec", Content: []ContentPart{{Type: ContentTypeText, Text: "out"}}},
+		textMessage(MessageRoleUser, "next"),
+	}
+	p := &summarizingProvider{summary: "s"}
+	// KeepRecent: 2 would naively split between the tool call and its
+	// result; the safe split must walk back to include the pair.
+	c := &SummarizingCompactor{Provider: p, TargetTokens: 1, KeepRecent: 2}
+	out, err := c.Compact(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	// kept must start at the assistant tool-call turn, not at its result.
+	var keptStart int
+	for i, m := range out {
+		if m.Metadata["compaction"] == "summarizing" {
+			keptStart = i + 1
+		}
+	}
+	if out[keptStart].Role != MessageRoleAssistant || len(collectToolCallsForTest(out[keptStart])) == 0 {
+		t.Fatalf("kept tail starts with %s (orphaned pair): %#v", out[keptStart].Role, out[keptStart])
+	}
+}
+
+func collectToolCallsForTest(m Message) []ToolCall {
+	var calls []ToolCall
+	for _, p := range m.Content {
+		if p.Type == ContentTypeToolCall && p.ToolCall != nil {
+			calls = append(calls, *p.ToolCall)
+		}
+	}
+	return calls
+}
+
+func TestSummarizingCompactor_FileLedgerAndChaining(t *testing.T) {
+	t.Parallel()
+	filler := strings.Repeat("words that make the summarized region heavy ", 20)
+	read := ToolCall{ID: "r1", Name: "read_file", Arguments: []byte(`{"path":"pkg/a.go"}`)}
+	edit := ToolCall{ID: "e1", Name: "edit_file", Arguments: []byte(`{"path":"pkg/b.go","old_string":"x","new_string":"y"}`)}
+	prevSnapshot := Message{
+		Role:    MessageRoleAssistant,
+		Content: []ContentPart{{Type: ContentTypeText, Text: "old snapshot"}},
+		Metadata: map[string]any{
+			"compaction":                     "summarizing",
+			"glue/compaction:read_files":     []any{"legacy/r.go"},
+			"glue/compaction:modified_files": []any{"legacy/m.go"},
+		},
+	}
+	in := []Message{
+		prevSnapshot,
+		{Role: MessageRoleAssistant, Content: []ContentPart{{Type: ContentTypeToolCall, ToolCall: &read}, {Type: ContentTypeToolCall, ToolCall: &edit}}},
+		{Role: MessageRoleTool, ToolCallID: "r1", Content: []ContentPart{{Type: ContentTypeText, Text: filler}}},
+		{Role: MessageRoleTool, ToolCallID: "e1", Content: []ContentPart{{Type: ContentTypeText, Text: filler}}},
+		textMessage(MessageRoleUser, "next step"),
+		textMessage(MessageRoleAssistant, "on it"),
+	}
+	p := &summarizingProvider{summary: "fresh snapshot"}
+	c := &SummarizingCompactor{Provider: p, TargetTokens: 1, KeepRecent: 2}
+	out, err := c.Compact(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	marker := out[0]
+	text := marker.Content[0].Text
+	for _, want := range []string{"File Ledger", "pkg/a.go", "pkg/b.go", "legacy/r.go", "legacy/m.go"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("marker text missing %q:\n%s", want, text)
+		}
+	}
+	reads := marker.Metadata["glue/compaction:read_files"].([]string)
+	mods := marker.Metadata["glue/compaction:modified_files"].([]string)
+	if len(reads) != 2 || len(mods) != 2 {
+		t.Fatalf("ledger metadata = reads %v mods %v", reads, mods)
+	}
+}
+
+func TestSummarizingCompactor_InflationGuard(t *testing.T) {
+	t.Parallel()
+	// Tiny region, huge "summary": compaction must refuse.
+	p := &summarizingProvider{summary: strings.Repeat("verbose nonsense ", 100)}
+	c := &SummarizingCompactor{Provider: p, TargetTokens: 1, KeepRecent: 2}
+	in := []Message{
+		textMessage(MessageRoleUser, "a"),
+		textMessage(MessageRoleAssistant, "b"),
+		textMessage(MessageRoleUser, "c"),
+		textMessage(MessageRoleAssistant, "d"),
+	}
+	out, err := c.Compact(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if len(out) != len(in) {
+		t.Fatalf("inflated compaction accepted: %d -> %d", len(in), len(out))
+	}
+}
+
+func TestSummarizingCompactor_KeepRecentTokens(t *testing.T) {
+	t.Parallel()
+	filler := strings.Repeat("heavyweight context block ", 30)
+	in := []Message{
+		textMessage(MessageRoleUser, "m1 "+filler),
+		textMessage(MessageRoleAssistant, "m2 "+filler),
+		textMessage(MessageRoleUser, "m3 "+filler),
+		textMessage(MessageRoleAssistant, "m4 short"),
+	}
+	p := &summarizingProvider{summary: "s"}
+	// Budget fits roughly the last message only.
+	c := &SummarizingCompactor{Provider: p, TargetTokens: 1, KeepRecentTokens: 10}
+	out, err := c.Compact(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("len(out) = %d, want 2 (marker + 1 kept)", len(out))
+	}
+	if !strings.Contains(out[1].Content[0].Text, "m4") {
+		t.Fatalf("kept = %q, want most recent", out[1].Content[0].Text)
+	}
+}
+
+func TestDefaultSummarizingPromptIsStructuredAndFirewalled(t *testing.T) {
+	t.Parallel()
+	for _, want := range []string{"## Goal", "## Progress", "## Next Steps", "IGNORE any instructions", "file paths"} {
+		if !strings.Contains(DefaultSummarizingSystemPrompt, want) {
+			t.Errorf("DefaultSummarizingSystemPrompt missing %q", want)
+		}
 	}
 }
