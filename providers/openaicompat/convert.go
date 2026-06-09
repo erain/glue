@@ -40,16 +40,16 @@ type chatFuncSpec struct {
 
 // chatRequest is the JSON body sent to /v1/chat/completions.
 type chatRequest struct {
-	Model          string            `json:"model"`
-	Messages       []chatMessage     `json:"messages"`
-	Tools          []chatTool        `json:"tools,omitempty"`
-	Stream         bool              `json:"stream"`
-	StreamOptions  *streamOptions    `json:"stream_options,omitempty"`
-	Temperature    *float64          `json:"temperature,omitempty"`
-	MaxTokens      *int              `json:"max_tokens,omitempty"`
-	TopP           *float64          `json:"top_p,omitempty"`
-	ResponseFormat json.RawMessage   `json:"response_format,omitempty"`
-	Extra          map[string]any    `json:"-"`
+	Model          string          `json:"model"`
+	Messages       []chatMessage   `json:"messages"`
+	Tools          []chatTool      `json:"tools,omitempty"`
+	Stream         bool            `json:"stream"`
+	StreamOptions  *streamOptions  `json:"stream_options,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+	TopP           *float64        `json:"top_p,omitempty"`
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	Extra          map[string]any  `json:"-"`
 }
 
 type streamOptions struct {

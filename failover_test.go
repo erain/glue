@@ -149,4 +149,3 @@ func TestFailover_CommitsAfterFirstSuccessfulEvent(t *testing.T) {
 		t.Fatalf("expected committed-but-errored first provider, got %+v", got)
 	}
 }
-

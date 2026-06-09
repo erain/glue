@@ -165,7 +165,7 @@ func TestSearch_LimitAndOffset(t *testing.T) {
 	state := glue.SessionState{ID: "L", CreatedAt: now, UpdatedAt: now}
 	for i := 0; i < 6; i++ {
 		state.Messages = append(state.Messages, glue.Message{
-			Role: glue.MessageRoleUser,
+			Role:    glue.MessageRoleUser,
 			Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: "needle match line " + string(rune('a'+i))}},
 		})
 	}

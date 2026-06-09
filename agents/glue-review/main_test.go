@@ -280,4 +280,3 @@ func TestLiveReviewSmoke(t *testing.T) {
 	}
 	t.Logf("review output (%d bytes):\n%s", out.Len(), out.String())
 }
-

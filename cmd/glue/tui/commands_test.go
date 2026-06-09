@@ -15,8 +15,8 @@ func TestParseSlashCommand(t *testing.T) {
 	}{
 		{"", false, "", ""},
 		{"hello world", false, "", ""},
-		{"/", false, "", ""},     // bare slash is not a command
-		{"  /", false, "", ""},   // whitespace tolerated, still nothing
+		{"/", false, "", ""},   // bare slash is not a command
+		{"  /", false, "", ""}, // whitespace tolerated, still nothing
 		{"/help", true, "help", ""},
 		{"  /help  ", true, "help", ""},
 		{"/HELP", true, "help", ""}, // case-insensitive name

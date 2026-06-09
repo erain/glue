@@ -115,10 +115,10 @@ type respCompletedPayload struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
-			InputTokens         int64 `json:"input_tokens"`
-			OutputTokens        int64 `json:"output_tokens"`
-			TotalTokens         int64 `json:"total_tokens"`
-			CachedInputTokens   int64 `json:"cached_input_tokens,omitempty"`
+			InputTokens       int64 `json:"input_tokens"`
+			OutputTokens      int64 `json:"output_tokens"`
+			TotalTokens       int64 `json:"total_tokens"`
+			CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
 		} `json:"usage"`
 	} `json:"response"`
 }

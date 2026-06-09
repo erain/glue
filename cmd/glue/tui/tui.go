@@ -105,8 +105,8 @@ func shortID() string {
 type turnState struct {
 	cancel context.CancelFunc
 	// indexes of currently-streaming items so deltas append cheaply
-	asstIndex int                  // -1 if no current assistant item
-	toolIndex map[string]int       // ToolCallID -> transcript index
+	asstIndex int            // -1 if no current assistant item
+	toolIndex map[string]int // ToolCallID -> transcript index
 }
 
 func newTurnState() *turnState {
@@ -145,9 +145,9 @@ type Model struct {
 	transcript []transcriptItem
 
 	// Current turn
-	turn     *turnState
-	turnNum  int
-	pending  *permPending
+	turn    *turnState
+	turnNum int
+	pending *permPending
 	// permQueue holds permission requests that arrived while another was
 	// already on screen — a background /goal loop and a chat turn can ask
 	// concurrently, and a single slot would silently drop one (deadlocking
@@ -514,7 +514,6 @@ func (m *Model) inputHeight() int {
 	return h
 }
 
-
 func (m *Model) rerender() {
 	// Sticky scroll: only auto-scroll if the user is already at the
 	// bottom. If they scrolled up to read older context, preserve their
@@ -572,7 +571,7 @@ func turnRule(width int) string {
 func (m *Model) headerView() string {
 	left := headerBrand.Render("glue") +
 		"  " + headerStyle.Render(fmt.Sprintf("session %s · %s/%s",
-			m.cfg.SessionID, providerOrDefault(m.cfg.Provider), modelOrDefault(m.cfg.Model)))
+		m.cfg.SessionID, providerOrDefault(m.cfg.Provider), modelOrDefault(m.cfg.Model)))
 	right := headerStyle.Render(workOrDot(m.cfg.WorkDir))
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {

@@ -27,8 +27,8 @@ func TestDetectAtTriggerOpensOnAtWord(t *testing.T) {
 		{"", "", false},
 		{"hello", "", false},
 		{"alice@example.com", "", false}, // no preceding whitespace
-		{"@@param", "", false},            // escaped literal @
-		{"@ut hello", "", false},          // word ended already
+		{"@@param", "", false},           // escaped literal @
+		{"@ut hello", "", false},         // word ended already
 		{"@a\tb", "", false},
 	}
 	for _, c := range cases {
@@ -85,7 +85,7 @@ func makePickerFixture(t *testing.T) *atPicker {
 	mk("cmd/util/helper.go", "")
 	mk("vendor/x/util.go", "")
 	mk("README.md", "")
-	mk(".git/config", "")     // should be skipped
+	mk(".git/config", "")  // should be skipped
 	mk(".env", "SECRET=1") // should be blocklisted
 	return newAtPicker(dir)
 }

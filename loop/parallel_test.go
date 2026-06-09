@@ -38,7 +38,9 @@ func TestRunParallelOverlapsExecutors(t *testing.T) {
 	wait := Tool{
 		ToolSpec: ToolSpec{Name: "wait"},
 		Execute: func(_ context.Context, call ToolCall) (ToolResult, error) {
-			var args struct{ MS int `json:"ms"` }
+			var args struct {
+				MS int `json:"ms"`
+			}
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
 				return ToolResult{}, err
 			}
@@ -129,7 +131,9 @@ func TestRunParallelEmitsToolEndsInSourceOrder(t *testing.T) {
 	wait := Tool{
 		ToolSpec: ToolSpec{Name: "wait"},
 		Execute: func(_ context.Context, call ToolCall) (ToolResult, error) {
-			var args struct{ MS int `json:"ms"` }
+			var args struct {
+				MS int `json:"ms"`
+			}
 			_ = json.Unmarshal(call.Arguments, &args)
 			time.Sleep(time.Duration(args.MS) * time.Millisecond)
 			return ToolResult{Content: []ContentPart{{Type: ContentTypeText, Text: call.ID}}}, nil

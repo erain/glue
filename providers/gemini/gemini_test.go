@@ -263,12 +263,12 @@ func TestMapFinishReason(t *testing.T) {
 	t.Parallel()
 
 	cases := map[genai.FinishReason]loop.StopReason{
-		"":                              loop.StopReasonStop,
-		genai.FinishReasonUnspecified:   loop.StopReasonStop,
-		genai.FinishReasonStop:          loop.StopReasonStop,
-		genai.FinishReasonMaxTokens:     loop.StopReasonLength,
-		genai.FinishReasonSafety:        loop.StopReasonError,
-		genai.FinishReasonRecitation:    loop.StopReasonError,
+		"":                                  loop.StopReasonStop,
+		genai.FinishReasonUnspecified:       loop.StopReasonStop,
+		genai.FinishReasonStop:              loop.StopReasonStop,
+		genai.FinishReasonMaxTokens:         loop.StopReasonLength,
+		genai.FinishReasonSafety:            loop.StopReasonError,
+		genai.FinishReasonRecitation:        loop.StopReasonError,
 		genai.FinishReasonProhibitedContent: loop.StopReasonError,
 	}
 	for input, want := range cases {
@@ -452,9 +452,9 @@ func TestAppendThinkingLatchesSignature(t *testing.T) {
 	t.Parallel()
 
 	msg := &loop.Message{}
-	appendThinking(msg, "reasoning ", "")    // text, no signature yet
-	appendThinking(msg, "continues", "")     // coalesces
-	appendThinking(msg, "", "c2ln")          // signature-only terminator latches
+	appendThinking(msg, "reasoning ", "") // text, no signature yet
+	appendThinking(msg, "continues", "")  // coalesces
+	appendThinking(msg, "", "c2ln")       // signature-only terminator latches
 	if len(msg.Content) != 1 {
 		t.Fatalf("len(Content) = %d, want 1 coalesced thinking block", len(msg.Content))
 	}

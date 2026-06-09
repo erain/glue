@@ -90,7 +90,7 @@ func TestHumanAge(t *testing.T) {
 	// Just sanity: cover the buckets so we don't regress them.
 	cases := []string{"just now", "m ago", "h ago", "d ago"}
 	got := []string{
-		humanAge(30_000_000_000),       // 30s
+		humanAge(30_000_000_000),          // 30s
 		humanAge(30 * 60 * 1_000_000_000), // 30 min
 		humanAge(3 * 3600 * 1_000_000_000),
 		humanAge(48 * 3600 * 1_000_000_000),
