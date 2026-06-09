@@ -17,6 +17,20 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Next-speaker stall recovery (`loop`, `glue`, `cmd/glue`).** Gemini's
+  classic stall — narrating "I will now update the file." and stopping
+  without calling a tool — is now recovered: with the new opt-in
+  `RunRequest.AutoContinue` / `AgentOptions.AutoContinue`, an assistant
+  turn whose closing sentence announces a future action (and asks no
+  question) gets a synthetic "Please continue." user message (marked
+  `glue/auto-continue`, at most twice per run, `EventAutoContinue`
+  emitted). The `glue` binary enables it automatically for the gemini
+  provider when tools are registered. The surrogate-sanitization item
+  from the roadmap was verified unnecessary back in #313 (Go's
+  `encoding/json` already sanitizes invalid UTF-8)
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P2.7). Closes #343.
+
 - **Compaction upgrade (`glue.SummarizingCompactor`).** The default
   summarization prompt now requests a structured state snapshot (Goal /
   Constraints / Progress / Key Decisions / Next Steps / Critical
