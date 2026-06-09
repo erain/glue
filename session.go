@@ -210,27 +210,47 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 		permission = config.permission
 	}
 
-	result, runErr := loop.Run(ctx, loop.RunRequest{
-		Provider:     s.agent.provider,
-		Model:        config.model,
-		SystemPrompt: config.systemPrompt,
-		Messages:     runMessages,
-		Tools:        config.tools,
-		Options:      config.options,
-		MaxTurns:     config.maxTurns,
-		SessionID:    s.id,
-		Permission:   permission,
-		Hooks:        cloneHooks(s.agent.hooks),
-		Emit: func(event Event) {
-			if config.emit != nil {
-				config.emit(event)
-			}
-			for _, aux := range config.auxEmits {
-				aux(event)
-			}
-			s.dispatchEvent(event)
-		},
-	})
+	run := func(messages []Message) (loop.RunResult, error) {
+		return loop.Run(ctx, loop.RunRequest{
+			Provider:     s.agent.provider,
+			Model:        config.model,
+			SystemPrompt: config.systemPrompt,
+			Messages:     messages,
+			Tools:        config.tools,
+			Options:      config.options,
+			MaxTurns:     config.maxTurns,
+			SessionID:    s.id,
+			Permission:   permission,
+			Hooks:        cloneHooks(s.agent.hooks),
+			Emit: func(event Event) {
+				if config.emit != nil {
+					config.emit(event)
+				}
+				for _, aux := range config.auxEmits {
+					aux(event)
+				}
+				s.dispatchEvent(event)
+			},
+		})
+	}
+
+	result, runErr := run(runMessages)
+
+	// Context overflow is not retryable as-is: compact once (ignoring
+	// the size threshold — the provider just told us we are over) and
+	// retry once. Without a compactor the overflow surfaces unchanged.
+	var overflow *loop.OverflowError
+	if errors.As(runErr, &overflow) && s.agent.compactor != nil {
+		compacted, err := s.agent.compactor.Compact(ctx, cloneMessages(base))
+		if err == nil && len(compacted) > 0 && len(compacted) < len(base) {
+			s.mu.Lock()
+			s.messages = cloneMessages(compacted)
+			s.updatedAt = time.Now().UTC()
+			s.mu.Unlock()
+			base = compacted
+			result, runErr = run(append(base, userMessage))
+		}
+	}
 
 	s.mu.Lock()
 	s.messages = append(s.messages, userMessage)
