@@ -40,7 +40,7 @@ func TestPursueGoalCheckpointsRecord(t *testing.T) {
 	}}
 	agent := NewAgent(AgentOptions{Provider: provider, Model: "fake-1", Store: store})
 
-	res, err := agent.PursueGoal(context.Background(), GoalSpec{Objective: "ship A", SessionPrefix: "goal-rec1"})
+	res, err := agent.PursueGoal(context.Background(), GoalSpec{Objective: "ship A", SessionPrefix: "goal-rec1", WorkDir: "/tmp/wt"})
 	if err != nil {
 		t.Fatalf("PursueGoal: %v", err)
 	}
@@ -60,6 +60,9 @@ func TestPursueGoalCheckpointsRecord(t *testing.T) {
 	}
 	if rec.Summary != "all done" {
 		t.Fatalf("record summary = %q", rec.Summary)
+	}
+	if rec.WorkDir != "/tmp/wt" {
+		t.Fatalf("record workdir = %q, want /tmp/wt round-tripped", rec.WorkDir)
 	}
 	if rec.Resumable() {
 		t.Fatal("achieved goal must not be resumable")

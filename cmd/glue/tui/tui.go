@@ -50,6 +50,12 @@ type Config struct {
 	// permission bridge auto-approves every request without surfacing
 	// it. Wired by cmd/glue's --yolo flag.
 	AlwaysAllow bool
+
+	// BuildTools rebuilds the run's tool set rooted at a different
+	// directory — how /goal -w gives an isolated worktree its own coding
+	// tools while honoring the run's tool flags. Nil disables worktree
+	// isolation with a friendly message.
+	BuildTools func(workDir string) ([]glue.Tool, error)
 }
 
 // Run launches the TUI and blocks until the user quits. It returns

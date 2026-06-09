@@ -376,8 +376,10 @@ checklist card in the transcript, a `◎ goal · iter 2/10 · 1/4 ✓` status-ba
 segment, and `/goal status` / `pause` / `resume` (continues from the verified
 checklist without re-planning — even in a new process, since progress is
 checkpointed to the session store) / `list` (recent goals with status and
-age) / `clear` subcommands — see
-[ADR-0016](docs/adr/0016-goal-loop.md)). Anywhere in a prompt,
+age) / `clear` subcommands; `/goal -w <objective>` isolates the run in its
+own git worktree at `.glue/worktrees/<goal-id>` on branch `goal/<id>`, so
+the loop never touches your checkout and the result is a reviewable
+branch — see [ADR-0016](docs/adr/0016-goal-loop.md)). Anywhere in a prompt,
 **`@<path>`** inlines that file's
 contents (`@"path with space"` for spaces, `@@literal` to escape — and
 the workspace blocklist refuses `.env` / `id_rsa` / etc.). Typing

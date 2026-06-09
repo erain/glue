@@ -15,6 +15,18 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Goal worktree isolation — `/goal -w` (goal loop Phase 3b).**
+  `/goal -w <objective>` (or `--worktree`) runs the goal's maker and checker
+  in a dedicated git worktree at `.glue/worktrees/<goal-id>` on branch
+  `goal/<id>`, leaving your checkout untouched; the finished goal names the
+  branch to review and merge (never auto-merged). The run's coding tool set
+  is rebuilt rooted at the worktree via the new `tui.Config.BuildTools`
+  factory (wired from `glue run --coding` with the same `--allow-binary` /
+  `--coding-allow-overwrite` / `--tools` / `--no-tools` flags), and the new
+  `GoalSpec.WorkDir` / `GoalRecord.WorkDir` (`glue/goal:workdir`) field makes
+  resume — in-process or across restarts — re-attach the same worktree and
+  branch. Without `--coding` or outside a git repository, `-w` refuses with a
+  clear message before any goal starts. Closes #326.
 - **Durable goal state + resume across restarts (goal loop Phase 3a).**
   When the agent has a `Store`, `Agent.PursueGoal` checkpoints a `GoalRecord`
   (objective, status, verified checklist, iterations, usage, summary) as

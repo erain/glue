@@ -18,6 +18,7 @@ const (
 	goalMetaIterations = "glue/goal:iterations"
 	goalMetaUsage      = "glue/goal:usage" // JSON-encoded Usage
 	goalMetaSummary    = "glue/goal:summary"
+	goalMetaWorkDir    = "glue/goal:workdir"
 )
 
 // GoalRecord is the durable snapshot of a goal loop, checkpointed by
@@ -32,6 +33,7 @@ type GoalRecord struct {
 	Iterations int             `json:"iterations"`
 	Usage      Usage           `json:"usage"`
 	Summary    string          `json:"summary,omitempty"`
+	WorkDir    string          `json:"work_dir,omitempty"` // tool root, e.g. an isolated worktree
 	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
@@ -80,6 +82,7 @@ func (a *Agent) saveGoalRecord(ctx context.Context, rec GoalRecord) error {
 	state.Metadata[goalMetaIterations] = rec.Iterations
 	state.Metadata[goalMetaUsage] = string(usage)
 	state.Metadata[goalMetaSummary] = rec.Summary
+	state.Metadata[goalMetaWorkDir] = rec.WorkDir
 	state.UpdatedAt = now
 	return a.store.Save(ctx, rec.ID, state)
 }
@@ -177,6 +180,9 @@ func goalRecordFromState(state SessionState) (GoalRecord, bool) {
 	}
 	if s, ok := state.Metadata[goalMetaSummary].(string); ok {
 		rec.Summary = s
+	}
+	if s, ok := state.Metadata[goalMetaWorkDir].(string); ok {
+		rec.WorkDir = s
 	}
 	return rec, true
 }
