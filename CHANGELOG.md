@@ -17,6 +17,19 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **History hardening (`loop`).** Every `loop.Run` now repairs the
+  transcript before anything reaches the provider, via the new exported
+  `loop.HardenHistory`: assistant tool calls whose result is missing
+  (Esc-cancel, crash, resumed/forked session) get a synthesized
+  `IsError` result marked `glue/synthetic`; orphaned tool results and
+  empty assistant turns are dropped; tool-call IDs are normalized to
+  `[A-Za-z0-9_-]{1,64}` consistently across call and result; and turns
+  produced by a different model lose their thinking blocks and
+  provider-specific signatures. Both the Gemini and OpenAI-compatible
+  APIs reject these malformed transcripts with opaque 400s
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P0.3). Closes #340.
+
 - **Structured output truncation (`glue`, `tools/shell`, `tools/fs`).**
   `shell_exec` output is now captured head+tail instead of head-only —
   a long build log keeps both the first error and the final status,

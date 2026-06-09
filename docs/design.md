@@ -173,6 +173,12 @@ The `loop` package is the architectural center. Its job is to run a transcript
 until the provider stops or the context is canceled.
 
 1. Start with a system prompt, existing messages, available tools, and provider.
+   The history is first repaired by `loop.HardenHistory`: assistant tool
+   calls missing their result (interrupted turns) get a synthesized error
+   result, orphaned results and empty assistant turns are dropped,
+   tool-call IDs are normalized, and turns from a different model lose
+   their thinking blocks and provider signatures — providers reject all
+   of these with opaque 400s otherwise.
 2. Ask the provider to stream an assistant response.
 3. Emit text/tool/lifecycle events as provider events arrive.
 4. Append the final assistant message to the transcript.
