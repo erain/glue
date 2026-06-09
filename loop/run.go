@@ -49,6 +49,11 @@ type RunRequest struct {
 	// message (at most twice per run) instead of ending the turn.
 	// Recovers the classic Gemini narrate-then-stop stall.
 	AutoContinue bool
+
+	// Guardrails bounds the repeated-call and consecutive-mistake
+	// detectors. The zero value enables them with defaults; set
+	// Guardrails.Disabled to turn them off.
+	Guardrails GuardrailPolicy
 }
 
 // RunResult is returned by [Run]. Messages is the full transcript including
@@ -105,6 +110,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	lastAssistantMsg := -1
 	lastAssistantNew := -1
 	autoContinues := 0
+	guard := newGuardState(req.Guardrails)
 	for turn := 0; turn < maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return fail(err)
@@ -146,6 +152,21 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		messages = append(messages, toolMessages...)
 		newMessages = append(newMessages, toolMessages...)
+
+		switch verdict := guard.observe(toolCalls, toolMessages); verdict.action {
+		case guardNudge:
+			nudge := guardrailUserMessage(verdict.message, verdict.kind)
+			messages = append(messages, nudge)
+			newMessages = append(newMessages, nudge)
+			emit(Event{Type: EventGuardrail, Error: verdict.message, Metadata: map[string]any{
+				"kind": verdict.kind, "count": verdict.count, "action": "nudge",
+			}})
+		case guardHalt:
+			emit(Event{Type: EventGuardrail, Error: verdict.err.Error(), Metadata: map[string]any{
+				"kind": verdict.kind, "count": verdict.count, "action": "halt",
+			}})
+			return fail(verdict.err)
+		}
 
 		emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
 	}
