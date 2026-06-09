@@ -17,6 +17,8 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+## 1.13.0 — 2026-06-09
+
 - **Per-model capability registry + tool-owned prompt assembly
   (`providers`, `loop`, `tools/*`, `cmd/glue`).** The providers
   registry now carries declarative `Capabilities` per provider
