@@ -107,13 +107,16 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	case *coding:
 		permission = newLocalPromptPermission(stdin, stderr)
 	}
+	systemPrompt, autoContinue := capabilityDefaults(resolvedProvider, tools, *coding)
 	agent := glue.NewAgent(glue.AgentOptions{
-		Provider:   providerImpl,
-		Model:      normalizeModel(effectiveModel),
-		Tools:      tools,
-		Store:      store,
-		WorkDir:    *workDir,
-		Permission: permission,
+		Provider:     providerImpl,
+		Model:        normalizeModel(effectiveModel),
+		Tools:        tools,
+		Store:        store,
+		WorkDir:      *workDir,
+		Permission:   permission,
+		SystemPrompt: systemPrompt,
+		AutoContinue: autoContinue,
 	})
 
 	spec := glue.GoalSpec{

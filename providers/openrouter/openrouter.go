@@ -38,6 +38,11 @@ func init() {
 		New:          func() loop.Provider { return New(Options{}) },
 		DefaultModel: DefaultModel,
 		EnvKey:       EnvKey,
+		Capabilities: providers.Capabilities{
+			// Aggregator of mostly open-weight models; window varies —
+			// 128k is a safe floor. Default (explicit) prompt variant.
+			ContextWindow: 131_072,
+		},
 	})
 }
 

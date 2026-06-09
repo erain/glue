@@ -17,6 +17,25 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Per-model capability registry + tool-owned prompt assembly
+  (`providers`, `loop`, `tools/*`, `cmd/glue`).** The providers
+  registry now carries declarative `Capabilities` per provider
+  (context window, parallel-tool safety, prompt variant, auto-continue
+  proneness; `providers.CapabilitiesFor(name)`), replacing
+  if-provider-name switches — the `glue` binary's Gemini auto-continue
+  gating now reads the registry. Tools own their prompt text: the new
+  `ToolSpec.PromptSnippet` / `PromptGuidelines` fields (set across
+  `tools/fs`, `tools/shell`, `tools/git`) feed
+  `coding.SystemPrompt(tools, variant)`, which assembles a coding
+  system prompt from the active toolset — one line per tool plus
+  deduplicated guidelines, in a terse variant for frontier models
+  (gemini, codex) and an explicit variant for open-weight models. The
+  `glue` binary previously ran `--coding` with **no** system prompt;
+  it now gets the assembled one, and the prompt can never drift from
+  the registered toolset (snapshot-tested)
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P1.5). Closes #345.
+
 - **Loop guardrails (`loop`).** Two graduated detectors now watch every
   tool round, on by default (`RunRequest.Guardrails`, zero value =
   defaults; `Disabled` opts out): repeating the **same tool call with

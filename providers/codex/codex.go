@@ -45,6 +45,12 @@ func init() {
 		// No env key: subscription auth lives in auth.json, not an env
 		// var. providers.KeyAvailable("codex") will always report false
 		// — agents should probe auth.LoadTokens instead.
+		Capabilities: providers.Capabilities{
+			// gpt-5-codex: 400k window, frontier model, terse steering.
+			ContextWindow: 400_000,
+			ParallelTools: true,
+			PromptVariant: "terse",
+		},
 	})
 }
 

@@ -88,3 +88,21 @@ func TestRegistry_CaseInsensitive(t *testing.T) {
 		t.Fatal("Lookup must be case-insensitive on uppercase too")
 	}
 }
+
+func TestCapabilitiesForUnknownProvider(t *testing.T) {
+	caps := CapabilitiesFor("no-such-provider")
+	if caps != (Capabilities{}) {
+		t.Fatalf("caps = %#v, want zero value", caps)
+	}
+}
+
+func TestCapabilitiesForRegistered(t *testing.T) {
+	Register("caps-test", Factory{
+		DefaultModel: "m",
+		Capabilities: Capabilities{ContextWindow: 42, ParallelTools: true, PromptVariant: "terse", AutoContinue: true},
+	})
+	caps := CapabilitiesFor("caps-test")
+	if caps.ContextWindow != 42 || !caps.ParallelTools || caps.PromptVariant != "terse" || !caps.AutoContinue {
+		t.Fatalf("caps = %#v", caps)
+	}
+}

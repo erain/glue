@@ -53,8 +53,9 @@ func LogBranchTool(opts LogBranchOptions) glue.Tool {
 
 	return glue.NewTool[logBranchArgs](
 		glue.ToolSpec{
-			Name:        "git_log_branch",
-			Description: "Show the commit history of the current branch since a base ref (default 'main'). Useful for reading commit messages to understand author intent.",
+			Name:          "git_log_branch",
+			Description:   "Show the commit history of the current branch since a base ref (default 'main'). Useful for reading commit messages to understand author intent.",
+			PromptSnippet: "Show branch commit history vs a base ref",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {

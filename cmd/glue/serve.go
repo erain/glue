@@ -97,6 +97,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		StoreDir: *storeDir,
 		WorkDir:  *workDir,
 		Tools:    tools,
+		Coding:   *coding,
 	})
 	if err != nil {
 		return err

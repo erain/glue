@@ -102,8 +102,9 @@ func ListDirTool(opts NavOptions) (glue.Tool, error) {
 
 	return glue.NewTool[listDirArgs](
 		glue.ToolSpec{
-			Name:        "list_dir",
-			Description: "List the immediate entries of a directory inside the workspace (non-recursive). Read-only.",
+			Name:          "list_dir",
+			Description:   "List the immediate entries of a directory inside the workspace (non-recursive). Read-only.",
+			PromptSnippet: "List a directory's entries",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -180,8 +181,9 @@ func FindTool(opts NavOptions) (glue.Tool, error) {
 
 	return glue.NewTool[findFilesArgs](
 		glue.ToolSpec{
-			Name:        "find_files",
-			Description: "Recursively find files whose name matches a glob pattern (e.g. *.go) under a workspace directory. Returns workspace-relative paths. Read-only; skips .git.",
+			Name:          "find_files",
+			Description:   "Recursively find files whose name matches a glob pattern (e.g. *.go) under a workspace directory. Returns workspace-relative paths. Read-only; skips .git.",
+			PromptSnippet: "Find files by name glob",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -275,8 +277,12 @@ func GrepTool(opts NavOptions) (glue.Tool, error) {
 
 	return glue.NewTool[grepArgs](
 		glue.ToolSpec{
-			Name:        "grep",
-			Description: "Recursively search file contents for a regular expression (RE2) under a workspace directory. Returns path:line:text matches. Read-only; skips .git, secret-shaped files, and files over the size ceiling.",
+			Name:          "grep",
+			Description:   "Recursively search file contents for a regular expression (RE2) under a workspace directory. Returns path:line:text matches. Read-only; skips .git, secret-shaped files, and files over the size ceiling.",
+			PromptSnippet: "Search file contents by regex",
+			PromptGuidelines: []string{
+				"Navigate with grep/find_files/list_dir instead of shell find or ls.",
+			},
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {

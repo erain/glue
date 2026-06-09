@@ -19,6 +19,30 @@ import (
 	"github.com/erain/glue/loop"
 )
 
+// Capabilities records harness-relevant facts about a provider's
+// models, declared at registration instead of scattered through
+// if-provider-name switches. The zero value means "unknown / assume
+// nothing": consumers must treat absent capabilities conservatively.
+type Capabilities struct {
+	// ContextWindow is the default model's context window in tokens.
+	// Zero means unknown.
+	ContextWindow int
+
+	// ParallelTools reports whether tool calls from one assistant turn
+	// are safe to execute concurrently against this provider's models.
+	ParallelTools bool
+
+	// PromptVariant selects the system-prompt flavor assembled for
+	// this provider's models: "terse" for frontier models that need
+	// minimal steering, "" for the default (more explicit) variant.
+	PromptVariant string
+
+	// AutoContinue reports that the provider's models are prone to the
+	// narrate-then-stop stall and benefit from the loop's bounded
+	// "Please continue." nudge.
+	AutoContinue bool
+}
+
 // Factory describes one registered provider.
 type Factory struct {
 	// New returns a fresh provider configured with package defaults
@@ -33,6 +57,20 @@ type Factory struct {
 	// EnvKey is the environment variable the provider reads when
 	// APIKey is empty. Used by KeyAvailable.
 	EnvKey string
+
+	// Capabilities declares harness-relevant facts about the
+	// provider's models. Optional; the zero value means unknown.
+	Capabilities Capabilities
+}
+
+// CapabilitiesFor returns the registered capabilities for name, or the
+// zero value when the provider is unknown or declared none.
+func CapabilitiesFor(name string) Capabilities {
+	f, ok := Lookup(name)
+	if !ok {
+		return Capabilities{}
+	}
+	return f.Capabilities
 }
 
 var (

@@ -98,8 +98,12 @@ func Exec(opts ExecOptions) (glue.Tool, error) {
 
 	return glue.NewTool[execArgs](
 		glue.ToolSpec{
-			Name:               ToolName,
-			Description:        "Run a bounded argv-style command in the configured workspace. Requires permission. Commands are not run through a shell; argv[0] must be an allowed binary basename.",
+			Name:          ToolName,
+			Description:   "Run a bounded argv-style command in the configured workspace. Requires permission. Commands are not run through a shell; argv[0] must be an allowed binary basename.",
+			PromptSnippet: "Run an allowlisted command (argv-style, no shell)",
+			PromptGuidelines: []string{
+				"Use shell_exec for builds and tests; long output is kept head+tail with the full stream spooled to a named temp file.",
+			},
 			RequiresPermission: true,
 			PermissionAction:   "exec",
 			PermissionTarget:   permissionTarget,
