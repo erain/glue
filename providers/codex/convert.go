@@ -12,15 +12,15 @@ import (
 // endpoint. Fields mirror Codex CLI's ResponsesApiRequest in
 // codex-rs/core/src/client.rs.
 type responsesRequest struct {
-	Model              string           `json:"model"`
-	Instructions       string           `json:"instructions,omitempty"`
-	Input              []responsesInput `json:"input"`
-	Tools              []responsesTool  `json:"tools,omitempty"`
-	ToolChoice         string           `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool             `json:"parallel_tool_calls"`
-	Stream             bool             `json:"stream"`
-	Store              bool             `json:"store"`
-	Include            []string         `json:"include,omitempty"`
+	Model             string           `json:"model"`
+	Instructions      string           `json:"instructions,omitempty"`
+	Input             []responsesInput `json:"input"`
+	Tools             []responsesTool  `json:"tools,omitempty"`
+	ToolChoice        string           `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool             `json:"parallel_tool_calls"`
+	Stream            bool             `json:"stream"`
+	Store             bool             `json:"store"`
+	Include           []string         `json:"include,omitempty"`
 }
 
 // responsesInput is one item in the Responses input array. The active

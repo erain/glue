@@ -280,8 +280,8 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, model
 	}
 
 	var (
-		text     strings.Builder
-		hasText  bool
+		text      strings.Builder
+		hasText   bool
 		toolCalls []loop.ToolCall
 		completed bool
 		failed    bool

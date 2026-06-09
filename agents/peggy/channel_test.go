@@ -12,9 +12,9 @@ func TestChannelSessionID(t *testing.T) {
 		want    string
 	}{
 		{"telegram", "12345", "telegram:12345"},
-		{"TELEGRAM", "abc", "telegram:abc"},      // lower-cased
-		{"  telegram  ", "9", "telegram:9"},     // trimmed
-		{"", "7", "7"},                           // no-op for empty channel
+		{"TELEGRAM", "abc", "telegram:abc"}, // lower-cased
+		{"  telegram  ", "9", "telegram:9"}, // trimmed
+		{"", "7", "7"},                      // no-op for empty channel
 		{"slack", "U123", "slack:U123"},
 	}
 	for _, tc := range cases {

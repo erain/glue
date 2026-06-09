@@ -60,10 +60,10 @@ type Manager struct {
 	// Now is used in tests to control time. Nil means time.Now.
 	Now func() time.Time
 
-	mu       sync.Mutex
-	path     string // resolved on first Load
-	apiKey   *string
-	tokens   *Tokens
+	mu     sync.Mutex
+	path   string // resolved on first Load
+	apiKey *string
+	tokens *Tokens
 }
 
 // NewManager returns a Manager with default behavior.

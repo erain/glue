@@ -16,12 +16,13 @@ import "github.com/charmbracelet/lipgloss"
 // rest of the palette in a terminal.
 //
 // Reference flavor hexes for grep-ability:
-//   Mocha base #1e1e2e · text #cdd6f4 · mauve #cba6f7 · green #a6e3a1
-//          red #f38ba8 · peach #fab387 · subtext0 #a6adc8 · overlay1 #7f849c
-//          surface1 #45475a · lavender #b4befe
-//   Latte base #eff1f5 · text #4c4f69 · mauve #8839ef · green #40a02b
-//          red #d20f39 · peach #fe640b · subtext0 #6c6f85 · overlay1 #8c8fa1
-//          surface1 #bcc0cc · lavender #7287fd
+//
+//	Mocha base #1e1e2e · text #cdd6f4 · mauve #cba6f7 · green #a6e3a1
+//	       red #f38ba8 · peach #fab387 · subtext0 #a6adc8 · overlay1 #7f849c
+//	       surface1 #45475a · lavender #b4befe
+//	Latte base #eff1f5 · text #4c4f69 · mauve #8839ef · green #40a02b
+//	       red #d20f39 · peach #fe640b · subtext0 #6c6f85 · overlay1 #8c8fa1
+//	       surface1 #bcc0cc · lavender #7287fd
 var (
 	// accent — mauve. Brand color: user prefix, headers, focused chrome.
 	accent = lipgloss.AdaptiveColor{Light: "#8839ef", Dark: "#cba6f7"}

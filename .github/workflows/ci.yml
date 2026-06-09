@@ -32,6 +32,15 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "gofmt drift in:"
+            echo "$out"
+            exit 1
+          fi
+
       - name: Vet
         run: go vet ./...
 

@@ -134,7 +134,7 @@ type savingErrStore struct{ err error }
 func (s savingErrStore) Load(context.Context, string) (SessionState, bool, error) {
 	return SessionState{}, false, nil
 }
-func (s savingErrStore) Save(context.Context, string, SessionState) error  { return s.err }
+func (s savingErrStore) Save(context.Context, string, SessionState) error { return s.err }
 func (savingErrStore) Delete(context.Context, string) error               { return nil }
 
 func TestSessionPromptSurfacesSaveError(t *testing.T) {

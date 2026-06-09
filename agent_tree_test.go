@@ -227,13 +227,13 @@ func TestSessionParentMissingMetadata(t *testing.T) {
 		t.Fatal("empty metadata should not look like a fork")
 	}
 	if _, _, ok := glue.SessionParent(glue.SessionState{Metadata: map[string]any{
-		glue.MetadataKeyParentSessionID: "", // empty string is not a valid parent
+		glue.MetadataKeyParentSessionID:    "", // empty string is not a valid parent
 		glue.MetadataKeyParentMessageIndex: 0,
 	}}); ok {
 		t.Fatal("empty parent id should not look like a fork")
 	}
 	if _, _, ok := glue.SessionParent(glue.SessionState{Metadata: map[string]any{
-		glue.MetadataKeyParentSessionID: "x",
+		glue.MetadataKeyParentSessionID:    "x",
 		glue.MetadataKeyParentMessageIndex: "not-a-number",
 	}}); ok {
 		t.Fatal("non-numeric index should not look like a fork")

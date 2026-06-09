@@ -35,20 +35,20 @@ func TestPathBlockedDefaults(t *testing.T) {
 		{".netrc", true},
 		{".pgpass", true},
 		{"config/api_secret.txt", true},
-		{"deploy/secrets.yaml", true},      // basename matches `secrets`
-		{"deploy/secrets/foo.yaml", true},  // path component matches `secrets`
-		{"infra/.aws/credentials", true},   // .aws component
+		{"deploy/secrets.yaml", true},     // basename matches `secrets`
+		{"deploy/secrets/foo.yaml", true}, // path component matches `secrets`
+		{"infra/.aws/credentials", true},  // .aws component
 		{"server.kubeconfig", true},
-		{"FOO_SECRET.env", true},           // case-insensitive basename
-		{".ENV", true},                     // case-insensitive
+		{"FOO_SECRET.env", true}, // case-insensitive basename
+		{".ENV", true},           // case-insensitive
 
 		// Should NOT block (legitimate code).
 		{"main.go", false},
 		{"docs/README.md", false},
 		{"src/handler.ts", false},
-		{"environment.go", false},          // contains "env" but not the pattern
-		{"keychain.go", false},             // contains "key" but not `*.key`
-		{"private/notes.md", false},        // word "private" alone is not blocked
+		{"environment.go", false},   // contains "env" but not the pattern
+		{"keychain.go", false},      // contains "key" but not `*.key`
+		{"private/notes.md", false}, // word "private" alone is not blocked
 	}
 	for _, c := range cases {
 		got, pat := pathBlocked(c.path, defaults)
@@ -103,12 +103,12 @@ func TestMergeBlocklistDedups(t *testing.T) {
 func TestSplitCommaList(t *testing.T) {
 	t.Parallel()
 	cases := map[string][]string{
-		"":                     nil,
-		"  ":                   nil,
-		"a":                    {"a"},
-		"a,b,c":                {"a", "b", "c"},
-		" a , b , c ":          {"a", "b", "c"},
-		"a,,b":                 {"a", "b"},
+		"":            nil,
+		"  ":          nil,
+		"a":           {"a"},
+		"a,b,c":       {"a", "b", "c"},
+		" a , b , c ": {"a", "b", "c"},
+		"a,,b":        {"a", "b"},
 	}
 	for in, want := range cases {
 		got := splitCommaList(in)

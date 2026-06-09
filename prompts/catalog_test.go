@@ -8,9 +8,9 @@ import (
 
 func newTestFS() fstest.MapFS {
 	return fstest.MapFS{
-		"prompts/v1.md":   {Data: []byte("v1 body\n")},
-		"prompts/v2.md":   {Data: []byte("v2 body\n\n")},
-		"prompts/notes/x": {Data: []byte("nested non-md")},
+		"prompts/v1.md":    {Data: []byte("v1 body\n")},
+		"prompts/v2.md":    {Data: []byte("v2 body\n\n")},
+		"prompts/notes/x":  {Data: []byte("nested non-md")},
 		"prompts/skip.txt": {Data: []byte("not markdown")},
 	}
 }

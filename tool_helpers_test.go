@@ -90,4 +90,3 @@ func TestNewTool_MalformedArgsReturnsErrorResult(t *testing.T) {
 		t.Fatalf("expected error text to name the tool; got %q", res.Content[0].Text)
 	}
 }
-

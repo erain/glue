@@ -14,9 +14,9 @@ import (
 func TestLayoutCapsViewportAtBodyMaxWidth(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name     string
-		termW    int
-		wantVPW  int
+		name    string
+		termW   int
+		wantVPW int
 	}{
 		{"narrow stays uncapped", 60, 60},
 		{"at exactly cap", bodyMaxWidth, bodyMaxWidth},
