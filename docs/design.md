@@ -271,6 +271,18 @@ session-id prefix, and returns the child final text as the tool result. Child
 prompt failures are visible to the parent model as error tool results; context
 cancellation and deadlines still abort the parent loop.
 
+`Agent.PursueGoal` is the goal-loop primitive — glue's "loop engineering" /
+`/goal`. A `GoalSpec` objective drives an autonomous outer loop that wraps the
+single-turn loop: a planner decomposes the objective into a verifiable
+checklist, then each iteration runs a **maker** (a fresh session seeded from the
+durable checklist — a Ralph-style loop, so memory lives in the checklist, not a
+growing transcript) followed by a separate **checker** session that audits
+against real evidence via `Session.PromptJSON` and decides completion. Guardrails
+(max iterations, no-progress detection, token budget) bound it, and `GoalSpec.Emit`
+streams progress. The maker≠checker split keeps the writer from grading its own
+homework. See [ADR-0016](adr/0016-goal-loop.md). Phase 1 is the headless
+primitive; the TUI `/goal` command and durable resume are follow-ups.
+
 ## Gemini Provider
 
 The first provider package is `providers/gemini`, implemented with

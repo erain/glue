@@ -15,6 +15,19 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Goal loop: `Agent.PursueGoal` — "loop engineering" / `/goal` (Phase 1).**
+  A new library primitive that turns one persistent objective into an
+  autonomous loop: a planner decomposes the goal into a verifiable checklist,
+  then each iteration runs a **maker** (a fresh session seeded from the
+  checklist — a Ralph-style loop, so memory lives in durable state, not a
+  growing transcript) followed by a separate **checker** session that audits
+  against real evidence (`Session.PromptJSON`) and decides completion — the
+  writer never grades its own homework. Bounded by `GoalSpec` guardrails
+  (`MaxIterations`, `NoProgressLimit`, `TokenBudget`) and observable via
+  `GoalSpec.Emit`. Headless primitive only; the TUI `/goal` command and durable
+  resume are follow-ups. Designed in
+  [ADR-0016](docs/adr/0016-goal-loop.md). Closes #320.
+
 ## 1.9.0 — 2026-06-09
 
 - **TUI: inline autocomplete for `/` slash commands (`cmd/glue/tui`).**
