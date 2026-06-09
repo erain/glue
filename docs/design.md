@@ -282,10 +282,16 @@ against real evidence via `Session.PromptJSON` and decides completion. Guardrail
 streams progress. The maker≠checker split keeps the writer from grading its own
 homework. See [ADR-0016](adr/0016-goal-loop.md). A non-empty `GoalSpec.Checklist`
 seeds the loop and skips planning — that is how a paused goal resumes from its
-last verified state. The TUI surfaces all of this as `/goal <objective>` with
-`status` / `pause` / `resume` / `clear` subcommands, a live checklist card in
-the transcript, and a `◎ goal` status-bar segment; durable resume across
-restarts is the Phase 3 follow-up.
+last verified state. When the agent has a `Store`, `PursueGoal` also
+checkpoints a durable [`GoalRecord`](../goal_store.go) (objective, status,
+checklist, iterations, usage) as namespaced `glue/goal:*` metadata on the
+`SessionPrefix` session — a context cancellation persists as `paused` — and
+`Agent.LoadGoal` / `Agent.ListGoals` read records back; `GoalSpec.StartIteration`
+lets a resumed run continue iteration numbering so maker/checker sessions stay
+fresh. The TUI surfaces all of this as `/goal <objective>` with `status` /
+`pause` / `resume` (continues the most recent unfinished record, even in a new
+process) / `list` / `clear` subcommands, a live checklist card in the
+transcript, and a `◎ goal` status-bar segment.
 
 ## Gemini Provider
 

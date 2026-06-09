@@ -114,9 +114,11 @@ func TestSlashGoalSubcommandGating(t *testing.T) {
 	if !strings.Contains(lastSystem(), "no goal running") {
 		t.Errorf("/goal pause with no goal: %q", lastSystem())
 	}
+	// With no in-memory goal, resume consults the store — no agent wired
+	// here, so the lookup degrades with a message instead of panicking.
 	m.handleSlashGoal("resume")
-	if !strings.Contains(lastSystem(), "no goal to resume") {
-		t.Errorf("/goal resume with no goal: %q", lastSystem())
+	if !strings.Contains(lastSystem(), "no agent wired") {
+		t.Errorf("/goal resume with no goal/agent: %q", lastSystem())
 	}
 
 	m.goal = &goalState{objective: "x", running: true, maxIterations: 10, cardIdx: -1}
@@ -221,6 +223,138 @@ func scriptedTurn(text string) []glue.ProviderEvent {
 	}
 }
 
+// goalMemStore is a minimal in-memory glue.Store + SessionLister for
+// resume-across-restart tests.
+type goalMemStore struct {
+	mu     sync.Mutex
+	states map[string]glue.SessionState
+}
+
+func newGoalMemStore() *goalMemStore {
+	return &goalMemStore{states: map[string]glue.SessionState{}}
+}
+
+func (s *goalMemStore) Load(_ context.Context, id string) (glue.SessionState, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.states[id]
+	return st, ok, nil
+}
+
+func (s *goalMemStore) Save(_ context.Context, id string, state glue.SessionState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states[id] = state
+	return nil
+}
+
+func (s *goalMemStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.states, id)
+	return nil
+}
+
+func (s *goalMemStore) ListSessions(_ context.Context, opts glue.ListSessionsOptions) ([]glue.SessionSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []glue.SessionSummary
+	for id, st := range s.states {
+		if opts.Prefix != "" && !strings.HasPrefix(id, opts.Prefix) {
+			continue
+		}
+		out = append(out, glue.SessionSummary{ID: id, CreatedAt: st.CreatedAt, UpdatedAt: st.UpdatedAt})
+	}
+	return out, nil
+}
+
+// pausedGoalRecordState crafts the durable glue/goal:* record a paused goal
+// leaves behind — written literally because the key strings are a stable
+// on-store format.
+func pausedGoalRecordState(id string) glue.SessionState {
+	return glue.SessionState{
+		Version: 1,
+		ID:      id,
+		Metadata: map[string]any{
+			"glue/goal:objective":  "finish B",
+			"glue/goal:status":     string(glue.GoalPaused),
+			"glue/goal:checklist":  `[{"title":"A","done":true,"evidence":"A.go"},{"title":"B"}]`,
+			"glue/goal:iterations": 2,
+		},
+		CreatedAt: time.Now().Add(-time.Hour),
+		UpdatedAt: time.Now().Add(-time.Minute),
+	}
+}
+
+func TestGoalResumeAcrossRestart(t *testing.T) {
+	t.Parallel()
+	store := newGoalMemStore()
+	store.states["goal-prev"] = pausedGoalRecordState("goal-prev")
+
+	// The resumed run must skip planning: only a maker turn and a checker
+	// verdict are scripted, and a planning call would consume the maker
+	// turn and fail the assertions below.
+	provider := &scriptedGoalProvider{turns: [][]glue.ProviderEvent{
+		scriptedTurn("finished B"),
+		scriptedTurn(`{"done":true,"items":[{"title":"A","done":true},{"title":"B","done":true}],"summary":"done"}`),
+	}}
+	agent := glue.NewAgent(glue.AgentOptions{Provider: provider, Model: "fake-1", Store: store})
+
+	m := makeTestModel(t)
+	m.cfg.Agent = agent
+	msgs := make(chan tea.Msg, 64)
+	m.send = func(msg tea.Msg) { msgs <- msg }
+
+	m.handleSlashGoal("resume")
+	if m.goal == nil || m.goal.id != "goal-prev" {
+		t.Fatalf("goal = %+v, want resumed under goal-prev", m.goal)
+	}
+
+	deadline := time.After(10 * time.Second)
+	for m.goalRunning() {
+		select {
+		case msg := <-msgs:
+			m.Update(msg)
+		case <-deadline:
+			t.Fatal("timed out waiting for resumed goal to finish")
+		}
+	}
+	if m.goal.status != glue.GoalAchieved {
+		t.Fatalf("status = %q, want achieved", m.goal.status)
+	}
+	if m.goal.iteration != 3 {
+		t.Fatalf("iteration = %d, want 3 (continues prior numbering)", m.goal.iteration)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (no planning call on resume)", provider.calls)
+	}
+	if _, ok := store.states["goal-prev:iter-3"]; !ok {
+		t.Error("missing goal-prev:iter-3 session — resumed run reused old iteration ids?")
+	}
+}
+
+func TestGoalListRendersStoredRecords(t *testing.T) {
+	t.Parallel()
+	store := newGoalMemStore()
+	store.states["goal-prev"] = pausedGoalRecordState("goal-prev")
+	agent := glue.NewAgent(glue.AgentOptions{Provider: &scriptedGoalProvider{}, Store: store})
+
+	m := makeTestModel(t)
+	m.cfg.Agent = agent
+	m.listStoredGoals()
+
+	last := m.transcript[len(m.transcript)-1]
+	if last.Kind != itemBlock || last.BlockTitle != "Goals" {
+		t.Fatalf("last item = %+v, want Goals block", last)
+	}
+	plain := stripANSI(last.render(renderCtx{width: 120}))
+	for _, want := range []string{"paused", "1/2", "finish B", "ago"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("goal list missing %q\n%s", want, plain)
+		}
+	}
+}
+
 func TestStartGoalRunsLoopToAchieved(t *testing.T) {
 	t.Parallel()
 	provider := &scriptedGoalProvider{turns: [][]glue.ProviderEvent{
@@ -235,7 +369,7 @@ func TestStartGoalRunsLoopToAchieved(t *testing.T) {
 	msgs := make(chan tea.Msg, 64)
 	m.send = func(msg tea.Msg) { msgs <- msg }
 
-	m.startGoal("ship A", nil)
+	m.startGoal(goalStart{objective: "ship A"})
 	if !m.goalRunning() {
 		t.Fatal("goal not running after startGoal")
 	}
