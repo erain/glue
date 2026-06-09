@@ -17,6 +17,23 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **`edit_file` repair ladder (`tools/fs`).** `old_string` no longer has
+  to match byte-for-byte: a deterministic cascade absorbs the drift
+  models introduce — trailing-whitespace differences, indentation drift
+  (the replacement is re-indented to the file's real indentation, with
+  per-level tab/space mapping), smart-quote/Unicode-dash/exotic-space
+  folding, block-anchor matching for ≥3-line blocks with a misquoted
+  middle, and over-escape repair (literal `\n` sequences from
+  double-escaped JSON). CRLF line endings and a UTF-8 BOM are preserved
+  on write. Non-exact matches are reported in the result; success now
+  echoes the updated lines (so the model needn't re-read the file);
+  failures echo what was searched for with concrete advice; and
+  "rest of code unchanged"-style placeholder replacements are rejected.
+  Source-verified port of the consensus technique across pi, Cline,
+  Codex CLI, and Gemini CLI
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md) P0.1).
+  Closes #338.
+
 ## 1.12.0 — 2026-06-09
 
 - **Headless `glue goal` subcommand — scheduled/CI goal runs (goal loop

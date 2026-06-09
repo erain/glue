@@ -72,7 +72,7 @@ func FileEdit(opts EditFileOptions) (glue.Tool, error) {
 	return glue.NewTool[fileEditArgs](
 		glue.ToolSpec{
 			Name:               "edit_file",
-			Description:        "Replace an exact string in an existing UTF-8 text file inside the configured workspace. Requires permission. old_string must match exactly once unless replace_all is set. Use this for surgical edits instead of rewriting the whole file with write_file.",
+			Description:        "Replace a string in an existing UTF-8 text file inside the configured workspace. Requires permission. old_string should match the file exactly; small whitespace, indentation, or quote/dash differences are repaired automatically and reported. old_string must match exactly once unless replace_all is set. The result echoes the updated lines — base follow-up edits on them instead of re-reading the file.",
 			RequiresPermission: true,
 			PermissionAction:   "edit_file",
 			PermissionTarget:   fileEditPermissionTarget,
@@ -142,27 +142,40 @@ func editFile(workDir string, args fileEditArgs, policy editPolicy) (glue.ToolRe
 		return glue.ToolResult{}, fmt.Errorf("fs: file %q is %d bytes, exceeds max %d", rel, info.Size(), policy.maxBytes)
 	}
 
+	if containsLazyPlaceholder(args.NewString) && !containsLazyPlaceholder(args.OldString) {
+		return glue.ToolResult{}, fmt.Errorf("fs: new_string contains a placeholder like \"rest of code unchanged\"; write the complete replacement text instead")
+	}
+
 	data, err := os.ReadFile(target)
 	if err != nil {
 		return glue.ToolResult{}, err
 	}
 	content := string(data)
 
-	count := strings.Count(content, args.OldString)
-	if count == 0 {
-		return glue.ToolResult{}, fmt.Errorf("fs: old_string not found in %q; read the file and match its exact text", rel)
+	// Normalize a UTF-8 BOM and CRLF line endings away for matching;
+	// both are restored on write so the file keeps its original form.
+	hadBOM := strings.HasPrefix(content, "\uFEFF")
+	if hadBOM {
+		content = strings.TrimPrefix(content, "\uFEFF")
 	}
-	if count > 1 && !args.ReplaceAll {
-		return glue.ToolResult{}, fmt.Errorf("fs: old_string matches %d times in %q; add surrounding context for a unique match or set replace_all=true", count, rel)
+	hadCRLF := strings.Contains(content, "\r\n")
+	if hadCRLF {
+		content = strings.ReplaceAll(content, "\r\n", "\n")
+	}
+	oldStr := strings.ReplaceAll(args.OldString, "\r\n", "\n")
+	newStr := strings.ReplaceAll(args.NewString, "\r\n", "\n")
+
+	updatedLF, outcome, err := applyLadderEdit(content, oldStr, newStr, args.ReplaceAll)
+	if err != nil {
+		return glue.ToolResult{}, fmt.Errorf("fs: %w in %q", err, rel)
 	}
 
-	var updated string
-	replacements := count
-	if args.ReplaceAll {
-		updated = strings.ReplaceAll(content, args.OldString, args.NewString)
-	} else {
-		updated = strings.Replace(content, args.OldString, args.NewString, 1)
-		replacements = 1
+	updated := updatedLF
+	if hadCRLF {
+		updated = strings.ReplaceAll(updated, "\n", "\r\n")
+	}
+	if hadBOM {
+		updated = "\uFEFF" + updated
 	}
 
 	updatedBytes := []byte(updated)
@@ -180,15 +193,26 @@ func editFile(workDir string, args fileEditArgs, policy editPolicy) (glue.ToolRe
 
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))
 	plural := ""
-	if replacements != 1 {
+	if outcome.updated != 1 {
 		plural = "s"
 	}
+	summary := fmt.Sprintf("made %d replacement%s in %s (%d bytes)", outcome.updated, plural, cleanRel, len(updatedBytes))
+	if outcome.strategy != "exact" || outcome.unescaped {
+		how := outcome.strategy
+		if outcome.unescaped {
+			how += " after unescaping over-escaped sequences"
+		}
+		summary += fmt.Sprintf(" via %s match — old_string did not match the file byte-for-byte; base future edits on the updated lines below", how)
+	}
+	snippet := editSnippet(updatedLF, outcome.firstLine, outcome.lastLine, 2, 24, 2000)
+	text := fmt.Sprintf("%s\n\nupdated lines %d-%d:\n%s", summary, outcome.firstLine, outcome.lastLine, snippet)
 	return glue.ToolResult{
-		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: fmt.Sprintf("made %d replacement%s in %s (%d bytes)", replacements, plural, cleanRel, len(updatedBytes))}},
+		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: text}},
 		Metadata: map[string]any{
 			"path":         cleanRel,
-			"replacements": replacements,
+			"replacements": outcome.updated,
 			"bytes":        len(updatedBytes),
+			"strategy":     outcome.strategy,
 		},
 	}, nil
 }
