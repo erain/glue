@@ -1,11 +1,13 @@
 # Changelog
 
-The library at `github.com/erain/glue` is **pre-1.0**; the `0.x`
-series may break API on minor bumps. See
+The library at `github.com/erain/glue` versions on a `1.x` line but
+has **not** locked its API: minor bumps may still break API, exactly
+as the pre-1.0 stance in
 [`docs/adr/0013-pre-1-0-stability-stance.md`](docs/adr/0013-pre-1-0-stability-stance.md)
-for the policy, and pin a tag in your `go.mod` if you need stability.
-Breaking changes always land with a `**Breaking:**` entry under a
-minor-bump section — never on a patch release.
+describes (its addendum records how the `1.x` line started). Pin a
+tag in your `go.mod` if you need stability. Breaking changes always
+land with a `**Breaking:**` entry under a minor-bump section — never
+on a patch release.
 
 This file tracks library-level changes. The reference agents version
 independently:

@@ -34,8 +34,11 @@ go.work.sum
 # Local agent harness state
 .claude/
 
-# Built example binaries (e.g. `go build ./examples/glue-review` lands here).
+# Built binaries (e.g. `go build ./cmd/glue` or
+# `go build ./agents/glue-review` lands here).
+/glue
 /glue-review
 /local-agent
+/peggy
 
 .gstack/
