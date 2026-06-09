@@ -28,30 +28,58 @@ func parseSlashCommand(s string) (slashCommand, bool) {
 	return slashCommand{Name: strings.ToLower(name), Arg: strings.TrimSpace(arg)}, true
 }
 
+// slashSpec describes one slash command for both /help and the inline
+// autocomplete picker, so the two never drift. Name is the primary form
+// (no leading slash); Aliases are equivalents that dispatch the same way.
+type slashSpec struct {
+	Name    string
+	Aliases []string
+	Args    string // e.g. "<id>", "[N]", or "" when the command takes none
+	Desc    string
+}
+
+// display renders the command for the /help table and the picker, e.g.
+// "/exit, /quit, /q" or "/model <id>".
+func (s slashSpec) display() string {
+	name := "/" + s.Name
+	for _, a := range s.Aliases {
+		name += ", /" + a
+	}
+	if s.Args != "" {
+		name += " " + s.Args
+	}
+	return name
+}
+
+// slashSpecs is the canonical command list. Keep it in sync with the
+// dispatch in (*Model).handleSlash.
+func slashSpecs() []slashSpec {
+	return []slashSpec{
+		{Name: "help", Desc: "show this list"},
+		{Name: "exit", Aliases: []string{"quit", "q"}, Desc: "leave the TUI"},
+		{Name: "clear", Aliases: []string{"new"}, Desc: "clear the transcript and start a fresh session id"},
+		{Name: "usage", Desc: "show this turn's token usage (when the provider reports it)"},
+		{Name: "tools", Desc: "list registered tools"},
+		{Name: "model", Args: "<id>", Desc: "switch model for subsequent turns"},
+		{Name: "session", Args: "[id]", Desc: "print current session id, or switch to <id>"},
+		{Name: "compact", Desc: "summarize older messages to free context window"},
+		{Name: "resume", Desc: "pick a past session and replay it into the transcript"},
+		{Name: "fork", Args: "[N]", Desc: "branch from message N (default: last user turn) into a new session"},
+		{Name: "clone", Desc: "duplicate the current session into a fresh id"},
+		{Name: "tree", Desc: "visualize and switch between branches in this session's lineage"},
+	}
+}
+
 // describeCommands renders the /help body.
 func describeCommands() string {
-	type row struct{ name, doc string }
-	rows := []row{
-		{"/help", "show this list"},
-		{"/exit, /quit, /q", "leave the TUI"},
-		{"/clear, /new", "clear the transcript and start a fresh session id"},
-		{"/usage", "show this turn's token usage (when the provider reports it)"},
-		{"/tools", "list registered tools"},
-		{"/model <id>", "switch model for subsequent turns"},
-		{"/session [id]", "print current session id, or switch to <id>"},
-		{"/compact", "summarize older messages to free context window"},
-		{"/resume", "pick a past session and replay it into the transcript"},
-		{"/fork [N]", "branch from message N (default: last user turn) into a new session"},
-		{"/clone", "duplicate the current session into a fresh id"},
-		{"/tree", "visualize and switch between branches in this session's lineage"},
-	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+	specs := slashSpecs()
+	sort.SliceStable(specs, func(i, j int) bool { return specs[i].display() < specs[j].display() })
 	var b strings.Builder
-	for i, r := range rows {
+	for i, s := range specs {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(fmt.Sprintf("  %-22s  %s", r.name, r.doc))
+		b.WriteString(fmt.Sprintf("  %-22s  %s", s.display(), s.Desc))
 	}
 	return b.String()
 }

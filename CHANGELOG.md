@@ -15,6 +15,14 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **TUI: inline autocomplete for `/` slash commands (`cmd/glue/tui`).**
+  Typing `/` now opens a filtering command popup (mirroring the `@`-file
+  picker): `↑/↓` navigate, `Tab` completes, `Esc` closes (keeping what you
+  typed), and `Enter` runs a fully-typed or no-argument command while
+  completing an argument-taking one (e.g. `/model `). The command list is now
+  a single source of truth shared by the picker and `/help`, so they can't
+  drift. Closes #318.
+
 ## 1.8.0 — 2026-06-08
 
 - **Fix Gemini 3.x tool calls: round-trip `thoughtSignature` (`providers/gemini`).**
