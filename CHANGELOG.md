@@ -15,6 +15,27 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **TUI `/goal`: drive the goal loop from inside `glue run` (Phase 2).**
+  `/goal <objective>` runs `Agent.PursueGoal` in the background on its own
+  session ids while the chat stays usable: a live goal card in the transcript
+  updates in place per iteration (verified `[x]/[ ]` checklist with evidence,
+  iteration counter, token usage, last checker verdict), and the status bar
+  gains a `◎ goal · iter 2/10 · 1/4 ✓ · 12.3k tok` segment. Subcommands:
+  `/goal status`, `/goal pause` (cancels cleanly, keeps the verified
+  checklist), `/goal resume` (continues from that checklist without
+  re-planning), `/goal clear`. Goal tool calls flow through the same in-card
+  permission prompt as chat turns — pending permission requests are now a FIFO
+  queue, so a concurrent goal + chat request can no longer drop one (`--yolo`
+  makes goals fully autonomous). Closes #322.
+- **`GoalSpec.Checklist`: seed `Agent.PursueGoal` with an existing plan.**
+  When non-empty, the planning step is skipped and the loop continues from the
+  given items (done flags and evidence respected) — the primitive behind
+  `/goal resume`, and the hook Phase 3's durable resume will reuse.
+- **`GoalSpec.Permission` now applies to the planner and checker sessions too**
+  (previously maker-only). Without this, a checker under an agent with no
+  default permission policy — e.g. the interactive TUI — was denied every
+  side-effecting tool and could not run builds or tests to verify evidence.
+
 ## 1.10.0 — 2026-06-09
 
 - **Goal loop: `Agent.PursueGoal` — "loop engineering" / `/goal` (Phase 1).**

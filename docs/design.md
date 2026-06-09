@@ -280,8 +280,12 @@ growing transcript) followed by a separate **checker** session that audits
 against real evidence via `Session.PromptJSON` and decides completion. Guardrails
 (max iterations, no-progress detection, token budget) bound it, and `GoalSpec.Emit`
 streams progress. The maker≠checker split keeps the writer from grading its own
-homework. See [ADR-0016](adr/0016-goal-loop.md). Phase 1 is the headless
-primitive; the TUI `/goal` command and durable resume are follow-ups.
+homework. See [ADR-0016](adr/0016-goal-loop.md). A non-empty `GoalSpec.Checklist`
+seeds the loop and skips planning — that is how a paused goal resumes from its
+last verified state. The TUI surfaces all of this as `/goal <objective>` with
+`status` / `pause` / `resume` / `clear` subcommands, a live checklist card in
+the transcript, and a `◎ goal` status-bar segment; durable resume across
+restarts is the Phase 3 follow-up.
 
 ## Gemini Provider
 
