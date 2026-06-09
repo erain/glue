@@ -161,9 +161,18 @@ milestone).
   autonomous goal loop — `Agent.PursueGoal`, TUI `/goal` (durable,
   resumable, optionally worktree-isolated), and the headless
   `glue goal` subcommand for cron/CI
-  ([ADR 0016](adr/0016-goal-loop.md), `v1.10.0`–`v1.12.0`). Remaining:
-  daemon goal endpoints, a sandboxed `Executor` backend (container/VM),
-  and TUI-on-`glue connect`.
+  ([ADR 0016](adr/0016-goal-loop.md), `v1.10.0`–`v1.12.0`). The coding
+  agent ships as its own product face with a homepage
+  (<https://glue-coding-agent-site.vercel.app>, repo
+  [glue-coding-agent-site](https://github.com/erain/glue-coding-agent-site)).
+  Next: **harness quality** — a source-verified analysis of pi, Cline,
+  Codex CLI, and Gemini CLI distilled into
+  [`coding-harness-roadmap.md`](coding-harness-roadmap.md) (edit-repair
+  ladder, structured truncation, history hardening, retry/overflow
+  recovery, compaction upgrades, Gemini loop polish), prioritized for
+  Gemini 3.x first and open-weight OpenRouter/NVIDIA models second.
+  Still planned beyond that: daemon goal endpoints, a sandboxed
+  `Executor` backend (container/VM), and TUI-on-`glue connect`.
 - **Track B — Peggy.** Peggy v0.1–v0.5 plus dogfood hardening (M1–M6)
   shipped: single-prompt CLI, Telegram channel, durable sqlite+FTS5
   memory with curated recall, opt-in coding tools, MCP servers, the
