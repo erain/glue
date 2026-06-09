@@ -15,6 +15,8 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+## 1.11.0 — 2026-06-09
+
 - **TUI `/goal`: drive the goal loop from inside `glue run` (Phase 2).**
   `/goal <objective>` runs `Agent.PursueGoal` in the background on its own
   session ids while the chat stays usable: a live goal card in the transcript
