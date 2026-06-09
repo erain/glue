@@ -67,7 +67,9 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		maxTurns = defaultMaxTurns
 	}
 
-	messages := cloneMessages(req.Messages)
+	// Repair transcript invariants (dangling tool calls, empty turns,
+	// foreign-model artifacts) before anything reaches the provider.
+	messages := HardenHistory(req.Messages, req.Model)
 	req.Hooks = cloneHooks(req.Hooks)
 	newMessages := make([]Message, 0)
 	emit := func(e Event) {
