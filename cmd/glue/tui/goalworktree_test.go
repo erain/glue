@@ -2,18 +2,18 @@ package tui
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/worktree"
 )
 
 // scratchRepo initializes a git repository with one commit so worktrees can
-// branch off it.
+// branch off it. The worktree mechanics themselves are tested in the
+// cmd/glue/worktree package; here we test the /goal -w flow around them.
 func scratchRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -23,55 +23,11 @@ func scratchRepo(t *testing.T) string {
 		{"config", "user.name", "test"},
 		{"commit", "--allow-empty", "-q", "-m", "init"},
 	} {
-		if _, err := gitOutput(dir, args...); err != nil {
+		if _, err := worktree.Git(dir, args...); err != nil {
 			t.Fatalf("git %v: %v", args, err)
 		}
 	}
 	return dir
-}
-
-func TestEnsureGoalWorktreeCreatesAndReuses(t *testing.T) {
-	t.Parallel()
-	repo := scratchRepo(t)
-
-	dir, err := ensureGoalWorktree(repo, "goal-abc123")
-	if err != nil {
-		t.Fatalf("ensureGoalWorktree: %v", err)
-	}
-	want := filepath.Join(repo, ".glue", "worktrees", "goal-abc123")
-	if dir != want {
-		t.Fatalf("dir = %q, want %q", dir, want)
-	}
-	if _, err := os.Stat(dir); err != nil {
-		t.Fatalf("worktree dir missing: %v", err)
-	}
-	branch, err := gitOutput(dir, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil || branch != "goal/abc123" {
-		t.Fatalf("branch = %q err=%v, want goal/abc123", branch, err)
-	}
-
-	// Second call (resume) reuses the existing worktree.
-	again, err := ensureGoalWorktree(repo, "goal-abc123")
-	if err != nil || again != dir {
-		t.Fatalf("reuse: dir=%q err=%v", again, err)
-	}
-
-	// Deleted worktree but surviving branch: re-attach instead of failing
-	// on the duplicate branch name.
-	if _, err := gitOutput(repo, "worktree", "remove", "--force", dir); err != nil {
-		t.Fatalf("worktree remove: %v", err)
-	}
-	reattached, err := ensureGoalWorktree(repo, "goal-abc123")
-	if err != nil || reattached != dir {
-		t.Fatalf("re-attach: dir=%q err=%v", reattached, err)
-	}
-}
-
-func TestEnsureGoalWorktreeOutsideRepo(t *testing.T) {
-	t.Parallel()
-	if _, err := ensureGoalWorktree(t.TempDir(), "goal-x"); err == nil || !strings.Contains(err.Error(), "git repository") {
-		t.Fatalf("err = %v, want needs-a-git-repository", err)
-	}
 }
 
 func TestSlashGoalWorktreeFlagGating(t *testing.T) {
@@ -124,7 +80,7 @@ func TestIsolatedGoalRunsInWorktreeAndPersistsWorkDir(t *testing.T) {
 	m.send = func(msg tea.Msg) { msgs <- msg }
 
 	m.handleSlashGoal("-w ship A")
-	if m.goal == nil || m.goal.workDir == "" || m.goal.branch != goalBranch(m.goal.id) {
+	if m.goal == nil || m.goal.workDir == "" || m.goal.branch != worktree.Branch(m.goal.id) {
 		t.Fatalf("goal = %+v, want isolated with branch", m.goal)
 	}
 	if builtAt != m.goal.workDir {

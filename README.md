@@ -350,6 +350,12 @@ echo "summarize main.go" | go run ./cmd/glue run --provider codex --coding
 go run ./cmd/glue serve --store .glue/sessions
 go run ./cmd/glue connect --inspect
 go run ./cmd/glue connect --prompt "Say hi" --id demo
+
+# Headless goal loop (schedulable from cron/CI; exit code reflects the
+# outcome: 0 achieved · 2 blocked · 3 max-iterations · 4 budget · 1 error):
+go run ./cmd/glue goal --coding --yolo --worktree "Make the linter pass on ./..."
+go run ./cmd/glue goal --list
+go run ./cmd/glue goal --resume
 ```
 
 **Interactive mode** (designed in [ADR-0014](docs/adr/0014-coding-agent-tui.md)).
