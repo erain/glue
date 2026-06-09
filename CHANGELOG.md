@@ -17,6 +17,22 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Retry/overflow recovery (`loop`, `glue`)
+  ([ADR-0017](docs/adr/0017-loop-retry-overflow-recovery.md)).**
+  Transient provider failures (429/5xx, rate limits, dropped or
+  never-finished streams) are now retried at the loop level with
+  exponential backoff (3 retries, 2s base, 30s cap), honoring
+  server-provided `Retry-After` / Gemini `RetryInfo.retryDelay` hints;
+  the new `EventRetry` event reports each attempt. Auth/billing/
+  invalid-request errors still fail fast, and context-window overflow
+  surfaces as the new typed `*loop.OverflowError` — which
+  `Session.Prompt` catches, compacts once (when a `Compactor` is
+  configured), and retries once. Retries never duplicate history:
+  nothing is appended until an attempt succeeds. Opt out with the new
+  `RunRequest.Retry: loop.RetryPolicy{Disabled: true}`
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P1.4). Closes #341.
+
 - **History hardening (`loop`).** Every `loop.Run` now repairs the
   transcript before anything reaches the provider, via the new exported
   `loop.HardenHistory`: assistant tool calls whose result is missing

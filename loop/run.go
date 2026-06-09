@@ -37,6 +37,11 @@ type RunRequest struct {
 	Permission   Permission
 	Hooks        []Hook
 	Emit         func(Event)
+
+	// Retry bounds loop-level provider retries (transient failures,
+	// dropped streams). The zero value enables retries with defaults;
+	// set Retry.Disabled for the pre-retry fail-fast behavior.
+	Retry RetryPolicy
 }
 
 // RunResult is returned by [Run]. Messages is the full transcript including
@@ -98,7 +103,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 
 		emit(Event{Type: EventTurnStart})
-		assistant, err := runAssistantTurn(ctx, req, messages, emit)
+		assistant, err := runAssistantTurnWithRetry(ctx, req, messages, emit)
 		if err != nil {
 			return fail(err)
 		}
