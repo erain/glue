@@ -474,16 +474,21 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 
 ## Project status & contributing
 
-The harness is feature-complete for the `0.x` series, tagged at
-**`v0.1.0`**, and in active use behind the
-[`agents/glue-review`](agents/glue-review) and
-[`agents/peggy`](agents/peggy) reference agents. The library remains
-pre-1.0: the public `Agent` / `Session` surface is stable in practice,
-but minor versions may still break API. The full stability stance is
-[ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md); breaking
-changes always land with a `**Breaking:**` entry in
-[`CHANGELOG.md`](CHANGELOG.md), never on a patch release. Security
-reports go through [`SECURITY.md`](SECURITY.md).
+The project advances on three fronts: the **framework** (the library
+you `go get` — feature-complete and stable in practice), the **`glue`
+binary as a coding agent** (interactive TUI, coding tools, and the
+autonomous goal loop, [ADR-0016](docs/adr/0016-goal-loop.md)), and
+**Peggy**, the long-running personal assistant built on top
+([`agents/peggy`](agents/peggy)). Releases are tagged on a `1.x` line
+(currently well past `v1.10`), but the stability stance is still the
+pre-stability one recorded in
+[ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md) (see its
+addendum for why the tags say `1.x`): the public `Agent` / `Session`
+surface is stable in practice, but **minor versions may still break
+API** until a deliberate surface-review pass. Breaking changes always
+land with a `**Breaking:**` entry in [`CHANGELOG.md`](CHANGELOG.md),
+never on a patch release. Security reports go through
+[`SECURITY.md`](SECURITY.md).
 
 Glue is built one GitHub issue at a time. The contributor workflow,
 branch/PR conventions, and the active tracker are documented in

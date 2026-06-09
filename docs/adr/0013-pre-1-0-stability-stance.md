@@ -78,3 +78,29 @@ tagged release behind `go get github.com/erain/glue@v0.1.0`. Future
 breaking changes are cheap (one minor bump) but visible (one CHANGELOG
 entry per break). Locking to `v1.0.0` remains a future, deliberate
 choice rather than a launch-deadline accident.
+
+## Addendum (2026-06-09): the release line is `1.x`, the stance is unchanged
+
+This ADR chose to stay on `0.x` and cut `v0.1.0`. In practice the
+release line drifted: after `v0.5.0`, the next release was tagged
+**`v1.2.0`** (2026-06-08, the interactive-TUI release) — there was
+never a deliberate `v1.0.0` surface-review pass, and no `v1.0.0` or
+`v1.1.0` tag exists. Subsequent releases continued the `1.x` line
+(`v1.3.0` … `v1.12.0` and counting).
+
+Published module versions are immutable in the Go module proxy and
+`go get` resolves "latest" by SemVer, so the `1.x` line cannot be
+walked back without breaking consumers. We therefore accept the tags
+as they are and keep the *stance* of this ADR rather than its version
+numbers:
+
+- The surface-lock that `v1.0.0` normally implies **has not
+  happened**. Minor bumps on the `1.x` line may still break API,
+  flagged by `**Breaking:**` CHANGELOG entries, never on a patch
+  release — exactly the pre-1.0 discipline decided above.
+- The deliberate surface-review pass remains a future gate; when it
+  happens, the lock will be announced explicitly (likely as a `v2.0.0`
+  with a documented stability guarantee, since `v1.0.0` is no longer
+  available to carry that meaning).
+- README and CHANGELOG carry the caveat so consumers are not misled
+  by the `1.x` major version.

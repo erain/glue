@@ -153,9 +153,17 @@ milestone).
   `cmd/glue run|serve --provider <name> --coding` runs it on any
   registered provider (codex for a ChatGPT-subscription coding agent).
   Boundary recorded in
-  [ADR 0012](adr/0012-sdk-coding-agent-peggy-boundary.md). The binary's
-  coding surface is functional; interactive multi-turn session UX and a
-  sandboxed `Executor` backend remain.
+  [ADR 0012](adr/0012-sdk-coding-agent-peggy-boundary.md). Since then
+  the binary became a full interactive coding agent: the bubbletea TUI
+  with streaming, tool cards, inline permission prompts, and slash
+  commands ([ADR 0014](adr/0014-coding-agent-tui.md)); session
+  fork/clone/tree ([ADR 0015](adr/0015-session-tree.md)); and the
+  autonomous goal loop — `Agent.PursueGoal`, TUI `/goal` (durable,
+  resumable, optionally worktree-isolated), and the headless
+  `glue goal` subcommand for cron/CI
+  ([ADR 0016](adr/0016-goal-loop.md), `v1.10.0`–`v1.12.0`). Remaining:
+  daemon goal endpoints, a sandboxed `Executor` backend (container/VM),
+  and TUI-on-`glue connect`.
 - **Track B — Peggy.** Peggy v0.1–v0.5 plus dogfood hardening (M1–M6)
   shipped: single-prompt CLI, Telegram channel, durable sqlite+FTS5
   memory with curated recall, opt-in coding tools, MCP servers, the
