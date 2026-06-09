@@ -17,6 +17,23 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Compaction upgrade (`glue.SummarizingCompactor`).** The default
+  summarization prompt now requests a structured state snapshot (Goal /
+  Constraints / Progress / Key Decisions / Next Steps / Critical
+  Context, exact paths and error messages preserved verbatim) with a
+  prompt-injection firewall, and instructs the summarizer to integrate
+  any previous snapshot instead of re-summarizing it. The snapshot is
+  framed as a handoff from another assistant instance (reduces re-doing
+  finished work). New: a cumulative **file ledger** — read/modified
+  paths extracted from coding-tool calls, merged across compactions and
+  carried in marker metadata; **safe split points** that never orphan a
+  tool-call/result pair; opt-in `KeepRecentTokens` to select the
+  verbatim tail by token budget instead of message count; and an
+  **inflation guard** that refuses a "summary" bigger than the region
+  it replaces
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P1.6). Closes #342.
+
 - **Retry/overflow recovery (`loop`, `glue`)
   ([ADR-0017](docs/adr/0017-loop-retry-overflow-recovery.md)).**
   Transient provider failures (429/5xx, rate limits, dropped or
