@@ -38,6 +38,9 @@ type agentConfig struct {
 	WorkDir    string
 	Tools      []glue.Tool
 	Permission glue.Permission
+	// Coding selects the assembled coding system prompt (built from
+	// the active toolset in the provider's preferred variant).
+	Coding bool
 }
 
 func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory) error {
@@ -190,13 +193,16 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		return err
 	}
 	storeImpl := filestore.New(*storeDir)
+	systemPrompt, autoContinue := capabilityDefaults(providerName, tools, *coding)
 	agent := glue.NewAgent(glue.AgentOptions{
-		Provider:   providerImpl,
-		Model:      normalizeModel(effectiveModel),
-		Tools:      append([]glue.Tool(nil), tools...),
-		Store:      storeImpl,
-		WorkDir:    *workDir,
-		Permission: permission,
+		Provider:     providerImpl,
+		Model:        normalizeModel(effectiveModel),
+		Tools:        append([]glue.Tool(nil), tools...),
+		Store:        storeImpl,
+		WorkDir:      *workDir,
+		Permission:   permission,
+		SystemPrompt: systemPrompt,
+		AutoContinue: autoContinue,
 	})
 
 	if interactive {

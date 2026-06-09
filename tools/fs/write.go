@@ -71,8 +71,12 @@ func FileWrite(opts FileWriteOptions) (glue.Tool, error) {
 
 	return glue.NewTool[fileWriteArgs](
 		glue.ToolSpec{
-			Name:               "write_file",
-			Description:        "Write UTF-8 text to a file inside the configured workspace. Requires permission. Refuses path escape, symlink escape, oversized content, and overwrites unless explicitly allowed.",
+			Name:          "write_file",
+			Description:   "Write UTF-8 text to a file inside the configured workspace. Requires permission. Refuses path escape, symlink escape, oversized content, and overwrites unless explicitly allowed.",
+			PromptSnippet: "Create a new file (or overwrite when allowed)",
+			PromptGuidelines: []string{
+				"Prefer edit_file for changing existing files; write_file is for new files or full rewrites.",
+			},
 			RequiresPermission: true,
 			PermissionAction:   "write_file",
 			PermissionTarget:   fileWritePermissionTarget,

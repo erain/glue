@@ -63,8 +63,12 @@ func ReadFileTool(opts ReadFileOptions) glue.Tool {
 
 	return glue.NewTool[readFileArgs](
 		glue.ToolSpec{
-			Name:        "read_file",
-			Description: fmt.Sprintf("Read a UTF-8 text file from the working directory. Returns at most max_lines lines (default %d) and max_bytes bytes (default %d), whichever cap hits first; truncated reads say how to continue with offset. Refuses to open secret-shaped files (.env, id_rsa, *.pem, credentials.json, etc.).", DefaultReadMaxLines, DefaultReadMaxBytes),
+			Name:          "read_file",
+			Description:   fmt.Sprintf("Read a UTF-8 text file from the working directory. Returns at most max_lines lines (default %d) and max_bytes bytes (default %d), whichever cap hits first; truncated reads say how to continue with offset. Refuses to open secret-shaped files (.env, id_rsa, *.pem, credentials.json, etc.).", DefaultReadMaxLines, DefaultReadMaxBytes),
+			PromptSnippet: "Read a file (line-offset paging for large files)",
+			PromptGuidelines: []string{
+				"Use read_file to examine files instead of shell cat/sed.",
+			},
 			Parameters: json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "properties": {

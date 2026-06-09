@@ -29,6 +29,13 @@ func init() {
 		New:          func() loop.Provider { return New(Options{}) },
 		DefaultModel: DefaultModel,
 		EnvKey:       EnvKey,
+		Capabilities: providers.Capabilities{
+			// Open-weight hosting; window varies by model — 128k is a
+			// safe floor. Default (explicit) prompt variant; sequential
+			// tools: open-weight function calling is less reliable
+			// under concurrency.
+			ContextWindow: 131_072,
+		},
 	})
 }
 

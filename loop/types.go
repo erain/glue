@@ -105,6 +105,17 @@ type ToolSpec struct {
 	RequiresPermission bool                  `json:"-"`
 	PermissionAction   string                `json:"-"`
 	PermissionTarget   func(ToolCall) string `json:"-"`
+
+	// PromptSnippet is a one-line description of the tool for system
+	// prompts assembled from the active toolset (the pi pattern: the
+	// tool owns its own prompt text, so prompt and toolset cannot
+	// drift). Empty means the tool is omitted from assembled prompts.
+	PromptSnippet string `json:"-"`
+
+	// PromptGuidelines are usage rules contributed to an assembled
+	// system prompt only while this tool is registered. Deduplicated
+	// across tools at assembly time.
+	PromptGuidelines []string `json:"-"`
 }
 
 // ToolExecutor runs a tool call locally and returns a normalized result.

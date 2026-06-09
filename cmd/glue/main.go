@@ -27,6 +27,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
+	toolscoding "github.com/erain/glue/tools/coding"
 
 	// Register the shipped providers so they resolve through the
 	// providers registry by name (--provider). Importing for side
@@ -173,20 +174,30 @@ func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error)
 	if err != nil {
 		return nil, err
 	}
+	systemPrompt, autoContinue := capabilityDefaults(cfg.Provider, cfg.Tools, cfg.Coding)
 	return glue.NewAgent(glue.AgentOptions{
-		Provider:   provider,
-		Model:      normalizeModel(cfg.Model),
-		Tools:      append([]glue.Tool(nil), cfg.Tools...),
-		Store:      filestore.New(cfg.StoreDir),
-		WorkDir:    cfg.WorkDir,
-		Permission: cfg.Permission,
-		// Gemini is prone to the narrate-then-stop stall ("I will now
-		// edit the file." with no tool call); the loop's bounded
-		// "Please continue." nudge recovers it. Other providers keep
-		// the default behavior until a capability registry makes this
-		// per-model (#345).
-		AutoContinue: cfg.Provider == "gemini" && len(cfg.Tools) > 0,
+		Provider:     provider,
+		Model:        normalizeModel(cfg.Model),
+		Tools:        append([]glue.Tool(nil), cfg.Tools...),
+		Store:        filestore.New(cfg.StoreDir),
+		WorkDir:      cfg.WorkDir,
+		Permission:   cfg.Permission,
+		SystemPrompt: systemPrompt,
+		AutoContinue: autoContinue,
 	}), nil
+}
+
+// capabilityDefaults derives capability-driven agent settings from the
+// providers registry: the coding system prompt is assembled from the
+// active toolset in the provider's preferred variant, and the
+// narrate-then-stop nudge is enabled only for providers that declare
+// the stall (today: gemini).
+func capabilityDefaults(providerName string, tools []glue.Tool, coding bool) (systemPrompt string, autoContinue bool) {
+	caps := providers.CapabilitiesFor(providerName)
+	if coding && len(tools) > 0 {
+		systemPrompt = toolscoding.SystemPrompt(tools, caps.PromptVariant)
+	}
+	return systemPrompt, caps.AutoContinue && len(tools) > 0
 }
 
 func normalizeModel(model string) string {

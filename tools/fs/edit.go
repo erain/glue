@@ -71,8 +71,12 @@ func FileEdit(opts EditFileOptions) (glue.Tool, error) {
 
 	return glue.NewTool[fileEditArgs](
 		glue.ToolSpec{
-			Name:               "edit_file",
-			Description:        "Replace a string in an existing UTF-8 text file inside the configured workspace. Requires permission. old_string should match the file exactly; small whitespace, indentation, or quote/dash differences are repaired automatically and reported. old_string must match exactly once unless replace_all is set. The result echoes the updated lines — base follow-up edits on them instead of re-reading the file.",
+			Name:          "edit_file",
+			Description:   "Replace a string in an existing UTF-8 text file inside the configured workspace. Requires permission. old_string should match the file exactly; small whitespace, indentation, or quote/dash differences are repaired automatically and reported. old_string must match exactly once unless replace_all is set. The result echoes the updated lines — base follow-up edits on them instead of re-reading the file.",
+			PromptSnippet: "Make a surgical string replacement in an existing file",
+			PromptGuidelines: []string{
+				"Keep edit_file old_string as small as possible while still unique; base follow-up edits on the updated lines echoed in the result.",
+			},
 			RequiresPermission: true,
 			PermissionAction:   "edit_file",
 			PermissionTarget:   fileEditPermissionTarget,

@@ -46,6 +46,15 @@ func init() {
 		New:          func() loop.Provider { return New(Options{}) },
 		DefaultModel: DefaultModel,
 		EnvKey:       EnvKey,
+		Capabilities: providers.Capabilities{
+			// Gemini 3.x Pro: 1M-token window; frontier model that
+			// prefers terse steering; prone to the narrate-then-stop
+			// stall the loop's AutoContinue nudge recovers.
+			ContextWindow: 1_048_576,
+			ParallelTools: true,
+			PromptVariant: "terse",
+			AutoContinue:  true,
+		},
 	})
 }
 

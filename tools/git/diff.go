@@ -58,8 +58,9 @@ func DiffBranchTool(opts DiffBranchOptions) glue.Tool {
 
 	return glue.NewTool[diffBranchArgs](
 		glue.ToolSpec{
-			Name:        "git_diff_branch",
-			Description: "Show the diff of the current branch versus a base ref (default 'main'). Includes file additions, deletions, and modifications. The diff may be pre-filtered by deployment-supplied path globs — only files in scope appear. Use this first to scope the review.",
+			Name:          "git_diff_branch",
+			Description:   "Show the diff of the current branch versus a base ref (default 'main'). Includes file additions, deletions, and modifications. The diff may be pre-filtered by deployment-supplied path globs — only files in scope appear. Use this first to scope the review.",
+			PromptSnippet: "Show the branch diff vs a base ref",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
