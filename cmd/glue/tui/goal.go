@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,6 +22,7 @@ const goalMaxIterations = 10
 // struct only mirrors what the Emit events report, for the live card and
 // the status bar.
 type goalState struct {
+	id        string // GoalSpec.SessionPrefix, also the durable record id
 	objective string
 	cancel    context.CancelFunc
 
@@ -29,7 +31,7 @@ type goalState struct {
 	status  glue.GoalStatus // terminal status once finished; "" while running or paused
 
 	iteration     int
-	maxIterations int
+	maxIterations int // last iteration number of this run (startIteration + budget - 1)
 	checklist     []glue.ChecklistItem
 	usage         glue.Usage
 	summary       string // last checker verdict summary
@@ -48,7 +50,7 @@ func (m *Model) handleSlashGoal(arg string) (tea.Model, tea.Cmd) {
 		if m.goal != nil {
 			m.appendBlock("Goal", m.goal.cardBody())
 		} else {
-			m.appendSystem("usage: /goal <objective> — then /goal status · pause · resume · clear")
+			m.appendSystem("usage: /goal <objective> — then /goal status · pause · resume · list · clear")
 		}
 	case "status":
 		if m.goal == nil {
@@ -68,14 +70,25 @@ func (m *Model) handleSlashGoal(arg string) (tea.Model, tea.Cmd) {
 	case "resume":
 		switch {
 		case m.goal == nil:
-			m.appendSystem("/goal resume: no goal to resume — start one with /goal <objective>")
+			// No goal in this process — look for the most recent unfinished
+			// record in the store (resume across restarts).
+			return m.resumeStoredGoal()
 		case m.goal.running:
 			m.appendSystem("/goal resume: goal is already running")
+		case m.goal.status == glue.GoalAchieved:
+			m.appendSystem("/goal resume: goal already achieved — /goal clear, then start a new one")
 		case len(m.goal.checklist) == 0:
 			m.appendSystem("/goal resume: no checklist captured; start over with /goal <objective>")
 		default:
-			return m.startGoal(m.goal.objective, m.goal.checklist)
+			return m.startGoal(goalStart{
+				objective:      m.goal.objective,
+				seed:           m.goal.checklist,
+				id:             m.goal.id,
+				startIteration: m.goal.iteration + 1,
+			})
 		}
+	case "list":
+		return m.listStoredGoals()
 	case "clear", "stop":
 		if m.goal == nil {
 			m.appendSystem("/goal clear: no goal to clear")
@@ -88,16 +101,24 @@ func (m *Model) handleSlashGoal(arg string) (tea.Model, tea.Cmd) {
 			m.appendSystem("goal cleared.")
 		}
 	default:
-		return m.startGoal(arg, nil)
+		return m.startGoal(goalStart{objective: arg})
 	}
 	m.rerender()
 	return m, nil
 }
 
-// startGoal launches Agent.PursueGoal in the background. A non-empty seed
-// is the resume path: the loop skips planning and continues from the last
-// verified checklist.
-func (m *Model) startGoal(objective string, seed []glue.ChecklistItem) (tea.Model, tea.Cmd) {
+// goalStart parameterizes one PursueGoal launch. A non-empty seed is the
+// resume path (the loop skips planning); id and startIteration carry the
+// durable record identity and iteration numbering across pauses/restarts.
+type goalStart struct {
+	objective      string
+	seed           []glue.ChecklistItem
+	id             string // session prefix; empty starts a fresh goal-<id>
+	startIteration int    // 0 means 1
+}
+
+// startGoal launches Agent.PursueGoal in the background.
+func (m *Model) startGoal(req goalStart) (tea.Model, tea.Cmd) {
 	if m.goal != nil && m.goal.running {
 		m.appendSystem("/goal: a goal is already running — /goal status to inspect, /goal pause or /goal clear first.")
 		m.rerender()
@@ -108,14 +129,22 @@ func (m *Model) startGoal(objective string, seed []glue.ChecklistItem) (tea.Mode
 		m.rerender()
 		return m, nil
 	}
+	if req.id == "" {
+		req.id = "goal-" + shortID()
+	}
+	if req.startIteration <= 0 {
+		req.startIteration = 1
+	}
 
 	ctx, cancel := context.WithCancel(m.ctx)
 	g := &goalState{
-		objective:     objective,
+		id:            req.id,
+		objective:     req.objective,
 		cancel:        cancel,
 		running:       true,
-		maxIterations: goalMaxIterations,
-		checklist:     append([]glue.ChecklistItem(nil), seed...),
+		iteration:     req.startIteration - 1,
+		maxIterations: req.startIteration + goalMaxIterations - 1,
+		checklist:     append([]glue.ChecklistItem(nil), req.seed...),
 		cardIdx:       -1,
 	}
 	m.goal = g
@@ -123,13 +152,14 @@ func (m *Model) startGoal(objective string, seed []glue.ChecklistItem) (tea.Mode
 	send := m.send
 	agent := m.cfg.Agent
 	spec := glue.GoalSpec{
-		Objective:     objective,
-		SessionPrefix: "goal-" + shortID(),
-		Model:         m.cfg.Model,
-		MaxIterations: goalMaxIterations,
-		Checklist:     seed,
-		Permission:    m.perm,
-		Emit:          func(ev glue.GoalEvent) { send(goalEventMsg{Ev: ev}) },
+		Objective:      req.objective,
+		SessionPrefix:  req.id,
+		Model:          m.cfg.Model,
+		MaxIterations:  goalMaxIterations,
+		Checklist:      req.seed,
+		StartIteration: req.startIteration,
+		Permission:     m.perm,
+		Emit:           func(ev glue.GoalEvent) { send(goalEventMsg{Ev: ev}) },
 	}
 	go func() {
 		defer cancel()
@@ -138,12 +168,90 @@ func (m *Model) startGoal(objective string, seed []glue.ChecklistItem) (tea.Mode
 	}()
 
 	verb := "pursuing"
-	if len(seed) > 0 {
+	if len(req.seed) > 0 {
 		verb = "resuming"
 	}
-	m.appendSystem(fmt.Sprintf("%s goal: %s  (/goal status · pause · clear)", verb, objective))
+	m.appendSystem(fmt.Sprintf("%s goal: %s  (/goal status · pause · clear)", verb, req.objective))
 	m.rerender()
 	return m, m.spinner.Tick
+}
+
+// resumeStoredGoal continues the most recent unfinished goal record from
+// the session store — the across-restarts path. A stale "running" record is
+// fair game: nothing is running in this process (m.goal is nil), so its
+// owner is gone.
+func (m *Model) resumeStoredGoal() (tea.Model, tea.Cmd) {
+	recs, err := m.recentGoalRecords()
+	if err != nil {
+		m.appendSystem("/goal resume: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	for _, rec := range recs {
+		if (rec.Resumable() || rec.Status == glue.GoalRunning) && len(rec.Checklist) > 0 {
+			return m.startGoal(goalStart{
+				objective:      rec.Objective,
+				seed:           rec.Checklist,
+				id:             rec.ID,
+				startIteration: rec.Iterations + 1,
+			})
+		}
+	}
+	m.appendSystem("/goal resume: no unfinished goal found — start one with /goal <objective> (see /goal list)")
+	m.rerender()
+	return m, nil
+}
+
+// listStoredGoals renders the recent goal records as a block.
+func (m *Model) listStoredGoals() (tea.Model, tea.Cmd) {
+	recs, err := m.recentGoalRecords()
+	if err != nil {
+		m.appendSystem("/goal list: " + err.Error())
+		m.rerender()
+		return m, nil
+	}
+	if len(recs) == 0 {
+		m.appendSystem("/goal list: no goals on the store yet")
+		m.rerender()
+		return m, nil
+	}
+	lines := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		status := goalStatusStyle(rec.Status).Render(fmt.Sprintf("%-14s", rec.Status))
+		lines = append(lines, fmt.Sprintf("  %s %5s ✓  %8s  %s",
+			status, doneFraction(rec.Checklist), relAge(rec.UpdatedAt),
+			truncateGoalText(rec.Objective, 60)))
+	}
+	m.appendBlock("Goals", strings.Join(lines, "\n"))
+	m.rerender()
+	return m, nil
+}
+
+// recentGoalRecords loads the latest goal records for resume/list, fresh
+// ones first. Errors from stores without listing support read as a
+// friendly capability message.
+func (m *Model) recentGoalRecords() ([]glue.GoalRecord, error) {
+	if m.cfg.Agent == nil {
+		return nil, fmt.Errorf("no agent wired")
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	return m.cfg.Agent.ListGoals(ctx, glue.ListGoalsOptions{Prefix: "goal-", Limit: 10})
+}
+
+// relAge renders a coarse relative timestamp for the /goal list block.
+func relAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 // goalRunning reports whether a goal loop is in flight (keeps the spinner

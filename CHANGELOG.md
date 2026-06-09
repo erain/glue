@@ -15,6 +15,24 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Durable goal state + resume across restarts (goal loop Phase 3a).**
+  When the agent has a `Store`, `Agent.PursueGoal` checkpoints a `GoalRecord`
+  (objective, status, verified checklist, iterations, usage, summary) as
+  namespaced `glue/goal:*` metadata on the `SessionPrefix` session — after
+  planning, after every checker verdict, and at the terminal state. A context
+  cancellation persists as the new `GoalPaused` status (resumable); the new
+  `GoalRunning` status marks in-flight records. `Agent.LoadGoal` and
+  `Agent.ListGoals` (most recent first, via the optional `SessionLister`
+  capability) read records back, and `GoalRecord.Resumable()` says whether a
+  goal can continue from its checklist. `GoalSpec.StartIteration` lets a
+  resumed run continue iteration numbering (`iter-4`, `check-4`, …) so
+  maker/checker sessions stay fresh instead of appending to the previous
+  run's transcripts. In the TUI, `/goal resume` with no in-process goal now
+  continues the most recent unfinished record from the store — a goal
+  survives quitting `glue run` — and the new `/goal list` shows recent goals
+  with status, checklist fraction, and age. Checkpointing is best-effort and
+  storeless agents are unaffected. Closes #324.
+
 ## 1.11.0 — 2026-06-09
 
 - **TUI `/goal`: drive the goal loop from inside `glue run` (Phase 2).**

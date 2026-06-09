@@ -60,7 +60,7 @@ func slashSpecs() []slashSpec {
 		{Name: "clear", Aliases: []string{"new"}, Desc: "clear the transcript and start a fresh session id"},
 		{Name: "usage", Desc: "show this turn's token usage (when the provider reports it)"},
 		{Name: "tools", Desc: "list registered tools"},
-		{Name: "goal", Args: "<objective>", Desc: "pursue a goal autonomously (also: status · pause · resume · clear)"},
+		{Name: "goal", Args: "<objective>", Desc: "pursue a goal autonomously (also: status · pause · resume · list · clear)"},
 		{Name: "model", Args: "<id>", Desc: "switch model for subsequent turns"},
 		{Name: "session", Args: "[id]", Desc: "print current session id, or switch to <id>"},
 		{Name: "compact", Desc: "summarize older messages to free context window"},

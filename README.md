@@ -374,7 +374,9 @@ session), **`/tree`** (visualize the session lineage with
 plan → maker → independent checker per iteration, with a live `[x]/[ ]`
 checklist card in the transcript, a `◎ goal · iter 2/10 · 1/4 ✓` status-bar
 segment, and `/goal status` / `pause` / `resume` (continues from the verified
-checklist without re-planning) / `clear` subcommands — see
+checklist without re-planning — even in a new process, since progress is
+checkpointed to the session store) / `list` (recent goals with status and
+age) / `clear` subcommands — see
 [ADR-0016](docs/adr/0016-goal-loop.md)). Anywhere in a prompt,
 **`@<path>`** inlines that file's
 contents (`@"path with space"` for spaces, `@@literal` to escape — and
