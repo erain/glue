@@ -222,6 +222,7 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 			SessionID:    s.id,
 			Permission:   permission,
 			Hooks:        cloneHooks(s.agent.hooks),
+			AutoContinue: s.agent.autoContinue,
 			Emit: func(event Event) {
 				if config.emit != nil {
 					config.emit(event)

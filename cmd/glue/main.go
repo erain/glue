@@ -180,6 +180,12 @@ func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error)
 		Store:      filestore.New(cfg.StoreDir),
 		WorkDir:    cfg.WorkDir,
 		Permission: cfg.Permission,
+		// Gemini is prone to the narrate-then-stop stall ("I will now
+		// edit the file." with no tool call); the loop's bounded
+		// "Please continue." nudge recovers it. Other providers keep
+		// the default behavior until a capability registry makes this
+		// per-model (#345).
+		AutoContinue: cfg.Provider == "gemini" && len(cfg.Tools) > 0,
 	}), nil
 }
 

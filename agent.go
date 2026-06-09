@@ -46,6 +46,13 @@ type AgentOptions struct {
 	// persisted by the next save.
 	Compactor           Compactor
 	CompactionThreshold int
+
+	// AutoContinue opts every session into the loop's next-speaker
+	// stall check: an assistant turn that narrates a future action
+	// without calling a tool gets a bounded "Please continue." nudge.
+	// Most useful on Gemini, which is prone to the narrate-then-stop
+	// stall.
+	AutoContinue bool
 }
 
 // Agent owns shared configuration and an in-memory session map.
@@ -56,6 +63,7 @@ type Agent struct {
 	tools        []Tool
 	options      map[string]any
 	maxTurns     int
+	autoContinue bool
 	store        Store
 	workDir      string
 	role         string
@@ -85,6 +93,7 @@ func NewAgent(options AgentOptions) *Agent {
 		tools:               cloneTools(options.Tools),
 		options:             cloneMap(options.Options),
 		maxTurns:            options.MaxTurns,
+		autoContinue:        options.AutoContinue,
 		store:               options.Store,
 		workDir:             options.WorkDir,
 		skills:              cloneSkills(options.Skills),

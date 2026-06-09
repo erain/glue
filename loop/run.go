@@ -42,6 +42,13 @@ type RunRequest struct {
 	// dropped streams). The zero value enables retries with defaults;
 	// set Retry.Disabled for the pre-retry fail-fast behavior.
 	Retry RetryPolicy
+
+	// AutoContinue opts into the next-speaker stall check: when an
+	// assistant turn narrates a future action ("I will now …") without
+	// calling a tool, the loop injects a "Please continue." user
+	// message (at most twice per run) instead of ending the turn.
+	// Recovers the classic Gemini narrate-then-stop stall.
+	AutoContinue bool
 }
 
 // RunResult is returned by [Run]. Messages is the full transcript including
@@ -97,6 +104,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	lastAssistantMsg := -1
 	lastAssistantNew := -1
+	autoContinues := 0
 	for turn := 0; turn < maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return fail(err)
@@ -115,6 +123,15 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 		toolCalls := collectToolCalls(assistant)
 		if len(toolCalls) == 0 {
+			if req.AutoContinue && len(req.Tools) > 0 && autoContinues < maxAutoContinues && stallIntent(assistant) {
+				autoContinues++
+				nudge := autoContinueUserMessage()
+				messages = append(messages, nudge)
+				newMessages = append(newMessages, nudge)
+				emit(Event{Type: EventAutoContinue, Message: messagePtr(assistant)})
+				emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
+				continue
+			}
 			emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
 			return snapshot(), nil
 		}
