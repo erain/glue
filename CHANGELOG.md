@@ -15,6 +15,8 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+## 1.9.0 — 2026-06-09
+
 - **TUI: inline autocomplete for `/` slash commands (`cmd/glue/tui`).**
   Typing `/` now opens a filtering command popup (mirroring the `@`-file
   picker): `↑/↓` navigate, `Tab` completes, `Esc` closes (keeping what you
