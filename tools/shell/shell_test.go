@@ -238,3 +238,42 @@ func callTool(t *testing.T, tool glue.Tool, args string) glue.ToolResult {
 	}
 	return res
 }
+
+func TestExecOutputFormattingHeadTail(t *testing.T) {
+	res := callWithFakeResult(t, glue.ExecResult{
+		Stdout:        []byte("first error here\n"),
+		StdoutTail:    []byte("FAIL\texample\t1.2s\n"),
+		StdoutOmitted: 5000,
+		StdoutLines:   400,
+		StdoutSpool:   "/tmp/glue-exec-x-stdout.log",
+		ExitCode:      1,
+		Truncated:     true,
+	})
+	text := res.Content[0].Text
+	for _, want := range []string{
+		"stdout (400 lines total):",
+		"first error here",
+		"bytes (~398 lines) omitted; full output: /tmp/glue-exec-x-stdout.log",
+		"FAIL\texample",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output %q missing %q", text, want)
+		}
+	}
+}
+
+func TestExecOutputFormattingTimeout(t *testing.T) {
+	fake := &fakeExecutor{result: glue.ExecResult{Stdout: []byte("partial"), ExitCode: -1, TimedOut: true}}
+	tool, err := Exec(ExecOptions{Executor: fake, WorkDir: t.TempDir(), AllowedBinaries: []string{"go"}, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	res := callTool(t, tool, `{"argv":["go"]}`)
+	text := res.Content[0].Text
+	if !strings.Contains(text, "command timed out after 5s; partial output below") {
+		t.Fatalf("missing timeout notice: %q", text)
+	}
+	if !strings.Contains(text, "partial") {
+		t.Fatalf("partial output dropped: %q", text)
+	}
+}

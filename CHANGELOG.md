@@ -17,6 +17,23 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Structured output truncation (`glue`, `tools/shell`, `tools/fs`).**
+  `shell_exec` output is now captured head+tail instead of head-only —
+  a long build log keeps both the first error and the final status,
+  with an inline `[... N bytes (~M lines) omitted ...]` marker, a total
+  line count, and (in the coding bundle) the complete stream spooled to
+  a temp file named in the result so the model can read back what was
+  dropped. Timeouts now prepend "command timed out after Ns; partial
+  output below" to the kept output instead of replacing it.
+  `read_file` gains `offset` / `max_lines` paging with dual line+byte
+  caps; truncated reads end with `[Showing lines X-Y of Z. Use
+  offset=N to continue.]`, oversized single lines and >20MB files get
+  explicit shell-tool escape hatches. `ExecResult` gains additive
+  `StdoutTail`/`StderrTail`, `*Omitted`, `*Lines`, and `*Spool` fields;
+  `ExecCommand.SpoolDir` opts executors into spooling
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P0.2). Closes #339.
+
 - **`edit_file` repair ladder (`tools/fs`).** `old_string` no longer has
   to match byte-for-byte: a deterministic cascade absorbs the drift
   models introduce — trailing-whitespace differences, indentation drift

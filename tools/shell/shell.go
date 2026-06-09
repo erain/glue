@@ -45,6 +45,12 @@ type ExecOptions struct {
 	// MaxOutputBytes caps stdout and stderr independently. Zero falls
 	// back to glue.DefaultExecMaxOutputBytes.
 	MaxOutputBytes int
+
+	// SpoolDir, when non-empty, asks the executor to keep each
+	// truncated stream's complete output in a temp file under this
+	// directory; the tool result names the file so the model can read
+	// back what was dropped. Empty disables spooling.
+	SpoolDir string
 }
 
 type execArgs struct {
@@ -113,6 +119,7 @@ func Exec(opts ExecOptions) (glue.Tool, error) {
 			if err != nil {
 				return glue.ErrorResult(err), nil
 			}
+			cmd.SpoolDir = opts.SpoolDir
 			result, err := executor.Run(ctx, cmd)
 			if err != nil {
 				return glue.ErrorResult(err), nil
@@ -198,7 +205,7 @@ func permissionTarget(call glue.ToolCall) string {
 }
 
 func formatResult(cmd glue.ExecCommand, result glue.ExecResult) glue.ToolResult {
-	text := renderResult(result)
+	text := renderResult(cmd, result)
 	return glue.ToolResult{
 		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: text}},
 		IsError: result.ExitCode != 0 || result.TimedOut,
@@ -208,27 +215,50 @@ func formatResult(cmd glue.ExecCommand, result glue.ExecResult) glue.ToolResult 
 			"exit_code":    result.ExitCode,
 			"timed_out":    result.TimedOut,
 			"truncated":    result.Truncated,
-			"stdout_bytes": len(result.Stdout),
-			"stderr_bytes": len(result.Stderr),
+			"stdout_bytes": len(result.Stdout) + len(result.StdoutTail) + result.StdoutOmitted,
+			"stderr_bytes": len(result.Stderr) + len(result.StderrTail) + result.StderrOmitted,
 		},
 	}
 }
 
-func renderResult(result glue.ExecResult) string {
+func renderResult(cmd glue.ExecCommand, result glue.ExecResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "exit_code: %d\n", result.ExitCode)
 	fmt.Fprintf(&b, "timed_out: %t\n", result.TimedOut)
-	fmt.Fprintf(&b, "truncated: %t\n\n", result.Truncated)
-	writeStream(&b, "stdout", result.Stdout)
+	fmt.Fprintf(&b, "truncated: %t\n", result.Truncated)
+	if result.TimedOut {
+		fmt.Fprintf(&b, "command timed out after %s; partial output below\n", cmd.Timeout)
+	}
 	b.WriteByte('\n')
-	writeStream(&b, "stderr", result.Stderr)
+	writeStream(&b, "stdout", result.Stdout, result.StdoutTail, result.StdoutOmitted, result.StdoutLines, result.StdoutSpool)
+	b.WriteByte('\n')
+	writeStream(&b, "stderr", result.Stderr, result.StderrTail, result.StderrOmitted, result.StderrLines, result.StderrSpool)
 	return b.String()
 }
 
-func writeStream(b *strings.Builder, name string, data []byte) {
-	if len(data) == 0 {
+// writeStream renders one captured stream. A truncated stream shows the
+// head and tail with a marker counting what was dropped in between —
+// build logs need the first error and the final status, not just one
+// end — plus the spool file holding the complete output, when kept.
+func writeStream(b *strings.Builder, name string, head, tail []byte, omitted, lines int, spool string) {
+	if len(head) == 0 && len(tail) == 0 {
 		fmt.Fprintf(b, "%s: (empty)\n", name)
 		return
 	}
-	fmt.Fprintf(b, "%s:\n%s\n", name, string(data))
+	if omitted == 0 {
+		fmt.Fprintf(b, "%s:\n%s\n", name, string(head))
+		return
+	}
+	fmt.Fprintf(b, "%s (%d lines total):\n%s\n", name, lines, string(head))
+	keptLines := strings.Count(string(head), "\n") + strings.Count(string(tail), "\n")
+	omittedLines := lines - keptLines
+	if omittedLines < 0 {
+		omittedLines = 0
+	}
+	if spool != "" {
+		fmt.Fprintf(b, "[... %d bytes (~%d lines) omitted; full output: %s]\n", omitted, omittedLines, spool)
+	} else {
+		fmt.Fprintf(b, "[... %d bytes (~%d lines) omitted]\n", omitted, omittedLines)
+	}
+	fmt.Fprintf(b, "%s\n", string(tail))
 }
