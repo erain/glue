@@ -101,11 +101,22 @@ func TestLocalExecutorTruncatesEachStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got, want := string(res.Stdout), "aaaa"; got != want {
-		t.Fatalf("stdout = %q, want %q", got, want)
+	// The cap is split between a head and a rolling tail; the bytes
+	// dropped in between are counted.
+	if got, want := string(res.Stdout), "aa"; got != want {
+		t.Fatalf("stdout head = %q, want %q", got, want)
 	}
-	if got, want := string(res.Stderr), "bbbb"; got != want {
-		t.Fatalf("stderr = %q, want %q", got, want)
+	if got, want := string(res.StdoutTail), "aa"; got != want {
+		t.Fatalf("stdout tail = %q, want %q", got, want)
+	}
+	if res.StdoutOmitted <= 0 {
+		t.Fatalf("StdoutOmitted = %d, want > 0", res.StdoutOmitted)
+	}
+	if got, want := string(res.Stderr), "bb"; got != want {
+		t.Fatalf("stderr head = %q, want %q", got, want)
+	}
+	if got, want := string(res.StderrTail), "bb"; got != want {
+		t.Fatalf("stderr tail = %q, want %q", got, want)
 	}
 	if !res.Truncated {
 		t.Fatal("Truncated = false, want true")
@@ -234,4 +245,81 @@ func TestLocalExecutorHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func TestLimitedOutputHeadTailLinesAndMerge(t *testing.T) {
+	// Within budget: head and tail merge seamlessly.
+	w := newLimitedOutput(10, "", "stdout")
+	_, _ = w.Write([]byte("abcde"))
+	_, _ = w.Write([]byte("fgh\n"))
+	if got := string(w.Head()); got != "abcdefgh\n" {
+		t.Fatalf("merged head = %q", got)
+	}
+	if w.Tail() != nil || w.Truncated() {
+		t.Fatal("should not be truncated")
+	}
+	if w.Lines() != 1 {
+		t.Fatalf("lines = %d, want 1", w.Lines())
+	}
+
+	// Over budget: head keeps the start, tail the end, omitted counts.
+	w = newLimitedOutput(8, "", "stdout")
+	for i := 0; i < 10; i++ {
+		_, _ = w.Write([]byte("line\n"))
+	}
+	if got := string(w.Head()); got != "line" {
+		t.Fatalf("head = %q", got)
+	}
+	if got := string(w.Tail()); got != "ine\n" {
+		t.Fatalf("tail = %q", got)
+	}
+	if w.Omitted() != 50-8 {
+		t.Fatalf("omitted = %d, want %d", w.Omitted(), 50-8)
+	}
+	if w.Lines() != 10 {
+		t.Fatalf("lines = %d, want 10", w.Lines())
+	}
+}
+
+func TestLocalExecutorSpoolKeepsFullOutputWhenTruncated(t *testing.T) {
+	dir := t.TempDir()
+	res, err := LocalExecutor{}.Run(context.Background(), ExecCommand{
+		Argv:           helperArgv(t, "large-output"),
+		MaxOutputBytes: 4,
+		SpoolDir:       dir,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StdoutSpool == "" {
+		t.Fatal("StdoutSpool not set for truncated stream")
+	}
+	full, err := os.ReadFile(res.StdoutSpool)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	if string(full) != "aaaaaaaaaa" {
+		t.Fatalf("spool content = %q", full)
+	}
+}
+
+func TestLocalExecutorSpoolRemovedWhenNotTruncated(t *testing.T) {
+	dir := t.TempDir()
+	res, err := LocalExecutor{}.Run(context.Background(), ExecCommand{
+		Argv:     helperArgv(t, "large-output"),
+		SpoolDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StdoutSpool != "" || res.StderrSpool != "" {
+		t.Fatalf("spool paths should be empty: %q %q", res.StdoutSpool, res.StderrSpool)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("spool dir not cleaned: %d entries", len(entries))
+	}
 }

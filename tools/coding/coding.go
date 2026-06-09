@@ -127,6 +127,7 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 		AllowedBinaries: resolved.AllowedBinaries,
 		Timeout:         resolved.ShellTimeout,
 		MaxOutputBytes:  resolved.ShellMaxOutputBytes,
+		SpoolDir:        os.TempDir(),
 	})
 	if err != nil {
 		return nil, opts, err
