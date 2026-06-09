@@ -253,14 +253,14 @@ fallback (v1.8.0). What Gemini CLI additionally does that we don't:
 
 Filed as one-issue-one-PR items under tracker #110:
 
-1. P0.1 edit_file repair ladder + instructive errors (+ escape repair).
-2. P0.2 structured truncation for shell_exec / read_file.
-3. P0.3 history hardening before send/resume.
-4. P1.4 retry/overflow state machine.
-5. P1.6 compaction upgrade.
-6. P2.7 Gemini next-speaker check + invalid-turn retry.
-7. P2.8 loop & mistake guardrails.
-8. P1.5 per-model capability registry + tool-owned prompt snippets.
+1. P0.1 edit_file repair ladder + instructive errors (+ escape repair) — [#338](https://github.com/erain/glue/issues/338).
+2. P0.2 structured truncation for shell_exec / read_file — [#339](https://github.com/erain/glue/issues/339).
+3. P0.3 history hardening before send/resume — [#340](https://github.com/erain/glue/issues/340).
+4. P1.4 retry/overflow state machine — [#341](https://github.com/erain/glue/issues/341).
+5. P1.6 compaction upgrade — [#342](https://github.com/erain/glue/issues/342).
+6. P2.7 Gemini next-speaker check + stall recovery — [#343](https://github.com/erain/glue/issues/343).
+7. P2.8 loop & mistake guardrails — [#344](https://github.com/erain/glue/issues/344).
+8. P1.5 per-model capability registry + tool-owned prompt snippets — [#345](https://github.com/erain/glue/issues/345).
 
 Items 1–3 are pure-Go, dependency-free, and benefit every provider;
 they go first. Item 8 touches public API shape (registry), so it goes
