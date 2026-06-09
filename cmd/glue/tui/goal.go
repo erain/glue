@@ -36,6 +36,11 @@ type goalState struct {
 	usage         glue.Usage
 	summary       string // last checker verdict summary
 
+	// workDir and branch are set when the goal runs isolated in its own
+	// git worktree (/goal -w). Empty means it works the user's checkout.
+	workDir string
+	branch  string
+
 	// cardIdx is the transcript index of the live goal card, updated in
 	// place as events arrive. -1 means not created yet (or detached after
 	// a transcript reset — the next event re-appends it).
@@ -85,6 +90,7 @@ func (m *Model) handleSlashGoal(arg string) (tea.Model, tea.Cmd) {
 				seed:           m.goal.checklist,
 				id:             m.goal.id,
 				startIteration: m.goal.iteration + 1,
+				isolated:       m.goal.workDir != "",
 			})
 		}
 	case "list":
@@ -101,7 +107,18 @@ func (m *Model) handleSlashGoal(arg string) (tea.Model, tea.Cmd) {
 			m.appendSystem("goal cleared.")
 		}
 	default:
-		return m.startGoal(goalStart{objective: arg})
+		objective, isolated := arg, false
+		for _, flag := range []string{"-w", "--worktree"} {
+			if arg == flag || strings.HasPrefix(arg, flag+" ") {
+				objective, isolated = strings.TrimSpace(strings.TrimPrefix(arg, flag)), true
+				break
+			}
+		}
+		if objective == "" {
+			m.appendSystem("usage: /goal -w <objective> — run the goal in an isolated goal/<id> worktree")
+			break
+		}
+		return m.startGoal(goalStart{objective: objective, isolated: isolated})
 	}
 	m.rerender()
 	return m, nil
@@ -115,6 +132,7 @@ type goalStart struct {
 	seed           []glue.ChecklistItem
 	id             string // session prefix; empty starts a fresh goal-<id>
 	startIteration int    // 0 means 1
+	isolated       bool   // run in a dedicated goal/<id> git worktree
 }
 
 // startGoal launches Agent.PursueGoal in the background.
@@ -136,6 +154,31 @@ func (m *Model) startGoal(req goalStart) (tea.Model, tea.Cmd) {
 		req.startIteration = 1
 	}
 
+	// Isolated goals get their own worktree-rooted tool set; everything
+	// here is fail-fast so a setup error never leaves a half-started goal.
+	var isolatedTools []glue.Tool
+	workDir, branch := "", ""
+	if req.isolated {
+		if m.cfg.BuildTools == nil {
+			m.appendSystem("/goal -w: worktree isolation needs coding tools (run with --coding)")
+			m.rerender()
+			return m, nil
+		}
+		dir, err := ensureGoalWorktree(m.cfg.WorkDir, req.id)
+		if err != nil {
+			m.appendSystem("/goal -w: " + err.Error())
+			m.rerender()
+			return m, nil
+		}
+		tools, err := m.cfg.BuildTools(dir)
+		if err != nil {
+			m.appendSystem("/goal -w: build tools: " + err.Error())
+			m.rerender()
+			return m, nil
+		}
+		isolatedTools, workDir, branch = tools, dir, goalBranch(req.id)
+	}
+
 	ctx, cancel := context.WithCancel(m.ctx)
 	g := &goalState{
 		id:            req.id,
@@ -146,6 +189,8 @@ func (m *Model) startGoal(req goalStart) (tea.Model, tea.Cmd) {
 		maxIterations: req.startIteration + goalMaxIterations - 1,
 		checklist:     append([]glue.ChecklistItem(nil), req.seed...),
 		cardIdx:       -1,
+		workDir:       workDir,
+		branch:        branch,
 	}
 	m.goal = g
 
@@ -158,6 +203,9 @@ func (m *Model) startGoal(req goalStart) (tea.Model, tea.Cmd) {
 		MaxIterations:  goalMaxIterations,
 		Checklist:      req.seed,
 		StartIteration: req.startIteration,
+		Tools:          isolatedTools,
+		CheckerTools:   isolatedTools,
+		WorkDir:        workDir,
 		Permission:     m.perm,
 		Emit:           func(ev glue.GoalEvent) { send(goalEventMsg{Ev: ev}) },
 	}
@@ -194,6 +242,7 @@ func (m *Model) resumeStoredGoal() (tea.Model, tea.Cmd) {
 				seed:           rec.Checklist,
 				id:             rec.ID,
 				startIteration: rec.Iterations + 1,
+				isolated:       rec.WorkDir != "",
 			})
 		}
 	}
@@ -218,9 +267,12 @@ func (m *Model) listStoredGoals() (tea.Model, tea.Cmd) {
 	lines := make([]string, 0, len(recs))
 	for _, rec := range recs {
 		status := goalStatusStyle(rec.Status).Render(fmt.Sprintf("%-14s", rec.Status))
+		objective := truncateGoalText(rec.Objective, 60)
+		if rec.WorkDir != "" {
+			objective = "⎇ " + objective
+		}
 		lines = append(lines, fmt.Sprintf("  %s %5s ✓  %8s  %s",
-			status, doneFraction(rec.Checklist), relAge(rec.UpdatedAt),
-			truncateGoalText(rec.Objective, 60)))
+			status, doneFraction(rec.Checklist), relAge(rec.UpdatedAt), objective))
 	}
 	m.appendBlock("Goals", strings.Join(lines, "\n"))
 	m.rerender()
@@ -310,6 +362,9 @@ func (m *Model) handleGoalDone(msg goalDoneMsg) {
 		if g.summary != "" {
 			note += " — " + g.summary
 		}
+		if g.branch != "" {
+			note += fmt.Sprintf("  ·  changes on branch %s (%s) — review and merge", g.branch, g.workDir)
+		}
 		m.appendSystem(note)
 	}
 	m.updateGoalCard()
@@ -345,7 +400,11 @@ func (m *Model) detachGoalCard() {
 // cardBody renders the goal card / /goal status block.
 func (g *goalState) cardBody() string {
 	var b strings.Builder
-	b.WriteString("  " + g.objective + "\n\n")
+	b.WriteString("  " + g.objective + "\n")
+	if g.branch != "" {
+		b.WriteString("  " + keyHint.Render("⎇ "+g.branch+" · "+g.workDir) + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(renderGoalChecklist(g.checklist))
 	b.WriteString("\n\n  " + g.stateLine())
 	if g.summary != "" {

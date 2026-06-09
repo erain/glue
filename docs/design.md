@@ -291,7 +291,11 @@ lets a resumed run continue iteration numbering so maker/checker sessions stay
 fresh. The TUI surfaces all of this as `/goal <objective>` with `status` /
 `pause` / `resume` (continues the most recent unfinished record, even in a new
 process) / `list` / `clear` subcommands, a live checklist card in the
-transcript, and a `◎ goal` status-bar segment.
+transcript, and a `◎ goal` status-bar segment. `/goal -w` adds worktree
+isolation: cmd/glue (which owns the git plumbing per ADR-0012) creates
+`.glue/worktrees/<goal-id>` on branch `goal/<id>`, rebuilds the coding tool
+set rooted there via `tui.Config.BuildTools`, and records the root in
+`GoalSpec.WorkDir` so resume re-attaches the same worktree.
 
 ## Gemini Provider
 

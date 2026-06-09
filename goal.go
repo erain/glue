@@ -57,6 +57,12 @@ type GoalSpec struct {
 	// in this run.
 	StartIteration int
 
+	// WorkDir records where this goal's tools are rooted (e.g. an isolated
+	// git worktree). The loop itself never reads it — tools already carry
+	// their root — but it is persisted on the GoalRecord so a host can
+	// rebuild the right tool set when resuming.
+	WorkDir string
+
 	// Tools overrides the maker tool set. Empty uses the agent's tools.
 	Tools []Tool
 	// CheckerTools overrides the verifier tool set. Empty uses the agent's
@@ -190,6 +196,7 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 			Iterations: result.Iterations,
 			Usage:      result.Usage,
 			Summary:    result.Summary,
+			WorkDir:    spec.WorkDir,
 		})
 	}
 	// pauseOrErrored maps a run failure to its durable status: a cancelled

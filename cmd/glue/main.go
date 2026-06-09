@@ -474,6 +474,25 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	})
 
 	if interactive {
+		// buildToolsAt re-roots the run's coding tool set for /goal -w
+		// worktree isolation, honoring the same flags as the main set.
+		// Only offered when --coding is on: an isolated goal without
+		// coding tools could not touch its worktree anyway.
+		var buildToolsAt func(dir string) ([]glue.Tool, error)
+		if *coding {
+			buildToolsAt = func(dir string) ([]glue.Tool, error) {
+				wtTools, _, err := buildCodingTools(codingFlagConfig{
+					Enabled:         true,
+					WorkDir:         dir,
+					AllowedBinaries: append([]string(nil), allowedBinaries...),
+					AllowOverwrite:  effectiveAllowOverwrite,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return filterTools(wtTools, *toolsAllow, *noTools)
+			}
+		}
 		return tui.Run(ctx, tui.Config{
 			Agent:        agent,
 			SessionID:    *id,
@@ -484,6 +503,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			Store:        storeImpl,
 			ProviderImpl: providerImpl,
 			AlwaysAllow:  *yolo,
+			BuildTools:   buildToolsAt,
 		})
 	}
 	session, err := agent.Session(ctx, *id)
