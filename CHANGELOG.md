@@ -15,6 +15,19 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Headless `glue goal` subcommand — scheduled/CI goal runs (goal loop
+  Phase 3c).** `glue goal "<objective>"` runs a full plan→make→verify loop
+  without a TUI, streaming checklist-level progress to stdout and exiting
+  with a status-mapped code (0 achieved · 2 blocked · 3 max-iterations ·
+  4 budget-limited · 1 errored) so cron, CI, or a peggy schedule can branch
+  on the outcome. Shares `glue run`'s infrastructure flags plus
+  `--max-iterations`, `--budget`, and `--worktree` (same `.glue/worktrees/`
+  + `goal/<id>` isolation as the TUI's `/goal -w`); `--yolo` for unattended
+  runs. `glue goal --list` prints stored records and `glue goal --resume
+  [id]` continues from the verified checklist — the store is shared with the
+  TUI, so a goal started in `glue run` can be resumed headlessly and vice
+  versa. The worktree helper moved to a shared `cmd/glue/worktree` package.
+  Closes #328.
 - **Goal worktree isolation — `/goal -w` (goal loop Phase 3b).**
   `/goal -w <objective>` (or `--worktree`) runs the goal's maker and checker
   in a dedicated git worktree at `.glue/worktrees/<goal-id>` on branch

@@ -295,7 +295,11 @@ transcript, and a `◎ goal` status-bar segment. `/goal -w` adds worktree
 isolation: cmd/glue (which owns the git plumbing per ADR-0012) creates
 `.glue/worktrees/<goal-id>` on branch `goal/<id>`, rebuilds the coding tool
 set rooted there via `tui.Config.BuildTools`, and records the root in
-`GoalSpec.WorkDir` so resume re-attaches the same worktree.
+`GoalSpec.WorkDir` so resume re-attaches the same worktree. The headless
+`glue goal "<objective>"` subcommand runs the same loop without a TUI —
+`--list` / `--resume` / `--worktree` / `--max-iterations` / `--budget`, with
+the terminal status mapped to the exit code — which is what cron, CI, or a
+peggy schedule invokes for unattended goals.
 
 ## Gemini Provider
 

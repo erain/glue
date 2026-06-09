@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/worktree"
 )
 
 // goalMaxIterations mirrors the library default for GoalSpec.MaxIterations.
@@ -164,7 +165,7 @@ func (m *Model) startGoal(req goalStart) (tea.Model, tea.Cmd) {
 			m.rerender()
 			return m, nil
 		}
-		dir, err := ensureGoalWorktree(m.cfg.WorkDir, req.id)
+		dir, err := worktree.Ensure(m.cfg.WorkDir, req.id)
 		if err != nil {
 			m.appendSystem("/goal -w: " + err.Error())
 			m.rerender()
@@ -176,7 +177,7 @@ func (m *Model) startGoal(req goalStart) (tea.Model, tea.Cmd) {
 			m.rerender()
 			return m, nil
 		}
-		isolatedTools, workDir, branch = tools, dir, goalBranch(req.id)
+		isolatedTools, workDir, branch = tools, dir, worktree.Branch(req.id)
 	}
 
 	ctx, cancel := context.WithCancel(m.ctx)
