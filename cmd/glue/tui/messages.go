@@ -51,5 +51,15 @@ type sessionSwitchedMsg struct {
 	Messages []glue.Message
 }
 
+// goalEventMsg wraps one GoalSpec.Emit event from the background
+// Agent.PursueGoal goroutine started by /goal.
+type goalEventMsg struct{ Ev glue.GoalEvent }
+
+// goalDoneMsg fires when PursueGoal returns with its terminal result.
+type goalDoneMsg struct {
+	Res glue.GoalResult
+	Err error
+}
+
 // fatalErrMsg marks a setup error that should end the session.
 type fatalErrMsg struct{ Err error }

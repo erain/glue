@@ -44,6 +44,12 @@ type GoalSpec struct {
 	// Defaults to 2.
 	NoProgressLimit int
 
+	// Checklist seeds the loop with an existing plan instead of asking the
+	// model to decompose the objective; done flags and evidence are kept as
+	// given. This is how a paused or restarted goal resumes from its last
+	// verified state without re-planning.
+	Checklist []ChecklistItem
+
 	// Tools overrides the maker tool set. Empty uses the agent's tools.
 	Tools []Tool
 	// CheckerTools overrides the verifier tool set. Empty uses the agent's
@@ -56,8 +62,9 @@ type GoalSpec struct {
 	// built-in audit prompt.
 	CheckerSystemPrompt string
 
-	// Permission overrides the permission policy for the maker's
-	// side-effecting tools. Nil uses the agent's policy.
+	// Permission overrides the permission policy for side-effecting tools
+	// in the planner, maker, and checker sessions. Nil uses the agent's
+	// policy.
 	Permission Permission
 
 	// Emit, when set, receives progress events as the loop runs.
@@ -155,12 +162,19 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		}
 	}
 
-	// 1) Plan: decompose the objective into verifiable deliverables.
-	checklist, planUsage, err := a.planGoal(ctx, spec)
-	addUsage(&result.Usage, planUsage)
-	if err != nil || len(checklist) == 0 {
-		// A failed plan is recoverable: treat the whole objective as one item.
-		checklist = []ChecklistItem{{Title: spec.Objective}}
+	// 1) Plan: decompose the objective into verifiable deliverables — unless
+	// the caller seeded a checklist (a resumed goal keeps its verified state).
+	var checklist []ChecklistItem
+	if len(spec.Checklist) > 0 {
+		checklist = cloneChecklist(spec.Checklist)
+	} else {
+		planned, planUsage, err := a.planGoal(ctx, spec)
+		addUsage(&result.Usage, planUsage)
+		checklist = planned
+		if err != nil || len(checklist) == 0 {
+			// A failed plan is recoverable: treat the whole objective as one item.
+			checklist = []ChecklistItem{{Title: spec.Objective}}
+		}
 	}
 	emit(GoalEvent{Type: GoalEventPlan, Checklist: cloneChecklist(checklist), Usage: result.Usage})
 
@@ -275,6 +289,9 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	if spec.MaxTurns > 0 {
 		opts = append(opts, WithMaxTurns(spec.MaxTurns))
 	}
+	if spec.Permission != nil {
+		opts = append(opts, WithPermission(spec.Permission))
+	}
 	var plan goalPlan
 	res, err := sess.PromptJSON(ctx, planPrompt(spec.Objective), &plan, opts...)
 	var usage Usage
@@ -337,6 +354,9 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 	}
 	if spec.MaxTurns > 0 {
 		opts = append(opts, WithMaxTurns(spec.MaxTurns))
+	}
+	if spec.Permission != nil {
+		opts = append(opts, WithPermission(spec.Permission))
 	}
 	var verdict goalVerdict
 	res, err := sess.PromptJSON(ctx, checkerPrompt(spec.Objective, checklist), &verdict, opts...)

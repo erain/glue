@@ -367,9 +367,15 @@ past sessions; ↑/↓ navigate, Enter replays the chosen one into the
 transcript), **`/fork [N]`** (branch from message N — defaults to
 "just before my last user turn" — into a new session id, keeping the
 original intact), **`/clone`** (full duplicate of the current
-session), and **`/tree`** (visualize the session lineage with
-`├─ / └─` glyphs, current node marked `◉`; pick one to switch). See
-[ADR-0015](docs/adr/0015-session-tree.md). Anywhere in a prompt,
+session), **`/tree`** (visualize the session lineage with
+`├─ / └─` glyphs, current node marked `◉`; pick one to switch — see
+[ADR-0015](docs/adr/0015-session-tree.md)), and **`/goal <objective>`**
+(pursue a goal autonomously in the background via `Agent.PursueGoal` —
+plan → maker → independent checker per iteration, with a live `[x]/[ ]`
+checklist card in the transcript, a `◎ goal · iter 2/10 · 1/4 ✓` status-bar
+segment, and `/goal status` / `pause` / `resume` (continues from the verified
+checklist without re-planning) / `clear` subcommands — see
+[ADR-0016](docs/adr/0016-goal-loop.md)). Anywhere in a prompt,
 **`@<path>`** inlines that file's
 contents (`@"path with space"` for spaces, `@@literal` to escape — and
 the workspace blocklist refuses `.env` / `id_rsa` / etc.). Typing

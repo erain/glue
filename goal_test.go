@@ -164,6 +164,41 @@ func TestPursueGoalPlanFallbackToObjective(t *testing.T) {
 	}
 }
 
+func TestPursueGoalSeededChecklistSkipsPlanning(t *testing.T) {
+	t.Parallel()
+
+	// A seeded checklist (the resume path) must go straight to the maker —
+	// the scripted turns contain no plan response, so a planning call would
+	// desynchronize the provider script and fail the assertions below.
+	provider := &recordingProvider{turns: [][]ProviderEvent{
+		goalTurn("finished B", 0),
+		goalTurn(mustJSON(t, goalVerdict{Done: true, Items: []ChecklistItem{{Title: "A", Done: true, Evidence: "A.go"}, {Title: "B", Done: true}}, Summary: "done"}), 0),
+	}}
+
+	var planned []ChecklistItem
+	res, err := newGoalAgent(provider).PursueGoal(context.Background(), GoalSpec{
+		Objective: "ship A and B",
+		Checklist: []ChecklistItem{{Title: "A", Done: true, Evidence: "A.go"}, {Title: "B"}},
+		Emit: func(ev GoalEvent) {
+			if ev.Type == GoalEventPlan {
+				planned = ev.Checklist
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("PursueGoal: %v", err)
+	}
+	if res.Status != GoalAchieved {
+		t.Fatalf("status = %q, want achieved", res.Status)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (no planning call)", provider.calls)
+	}
+	if len(planned) != 2 || !planned[0].Done || planned[0].Evidence != "A.go" || planned[1].Done {
+		t.Fatalf("plan event checklist = %+v, want seeded state preserved", planned)
+	}
+}
+
 func TestPursueGoalValidation(t *testing.T) {
 	t.Parallel()
 

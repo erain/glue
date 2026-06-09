@@ -142,7 +142,15 @@ type Model struct {
 	turn     *turnState
 	turnNum  int
 	pending  *permPending
+	// permQueue holds permission requests that arrived while another was
+	// already on screen — a background /goal loop and a chat turn can ask
+	// concurrently, and a single slot would silently drop one (deadlocking
+	// its goroutine until cancel). FIFO: answered in arrival order.
+	permQueue []permPending
 	lastUsage *glue.Usage
+
+	// goal is the single in-TUI goal pursuit (/goal). Nil means none.
+	goal *goalState
 
 	// Input history (in-process; not persisted)
 	history    []string
@@ -304,9 +312,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, c
 
 	case spinner.TickMsg:
-		// Spinner only animates during an in-flight turn; once the turn
-		// ends, stop ticking instead of consuming Update cycles forever.
-		if m.turn == nil {
+		// Spinner only animates during an in-flight turn or goal loop; once
+		// both end, stop ticking instead of consuming Update cycles forever.
+		if m.turn == nil && !m.goalRunning() {
 			return m, nil
 		}
 		var c tea.Cmd
@@ -332,6 +340,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case permRequestMsg:
+		if m.pending != nil {
+			m.permQueue = append(m.permQueue, permPending{req: msg.Req, respond: msg.Respond})
+			return m, nil
+		}
 		m.pending = &permPending{req: msg.Req, respond: msg.Respond}
 		m.markPendingTool(msg.Req)
 		m.rerender()
@@ -339,6 +351,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnDoneMsg:
 		m.handleTurnDone(msg)
+		m.rerender()
+		return m, nil
+
+	case goalEventMsg:
+		m.handleGoalEvent(msg.Ev)
+		m.rerender()
+		return m, nil
+
+	case goalDoneMsg:
+		m.handleGoalDone(msg)
 		m.rerender()
 		return m, nil
 
@@ -350,6 +372,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionSwitchedMsg:
 		m.cfg.SessionID = msg.ID
 		m.transcript = nil
+		m.detachGoalCard()
 		m.appendSystem(msg.Note + ": " + msg.ID)
 		m.transcript = append(m.transcript, transcriptFromMessages(msg.Messages)...)
 		m.turnNum = 0
@@ -614,6 +637,9 @@ func (m *Model) statusView() string {
 			}
 		}
 		parts = append(parts, m.spinner.View()+" "+toolWarning.Render(state))
+	}
+	if m.goal != nil {
+		parts = append(parts, m.goal.statusSegment())
 	}
 	if m.pending != nil {
 		parts = append(parts, toolWarning.Render("permission needed"))
@@ -938,6 +964,7 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		// behavior (only switching session id) confused users who saw
 		// last turn's content under a fresh session.
 		m.transcript = nil
+		m.detachGoalCard()
 		m.cfg.SessionID = "tui:" + shortID()
 		m.appendWelcome()
 		m.appendSystem("transcript cleared. new session: " + m.cfg.SessionID)
@@ -985,6 +1012,8 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		}
 		m.rerender()
 		return m, nil
+	case "goal":
+		return m.handleSlashGoal(cmd.Arg)
 	case "compact":
 		return m.runSlashCompact()
 	case "resume":
@@ -1052,6 +1081,14 @@ func (m *Model) handlePermissionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	p.respond <- *decision
 	close(p.respond)
+	// Promote the next queued request, if any (e.g. a /goal tool call that
+	// arrived while this prompt was on screen).
+	if len(m.permQueue) > 0 {
+		next := m.permQueue[0]
+		m.permQueue = m.permQueue[1:]
+		m.pending = &next
+		m.markPendingTool(next.req)
+	}
 	m.rerender()
 	return m, nil
 }
@@ -1599,6 +1636,7 @@ func (m *Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.cfg.SessionID = s.ID
 		m.transcript = nil
+		m.detachGoalCard()
 		m.appendSystem("resumed: " + s.ID)
 		m.transcript = append(m.transcript, transcriptFromMessages(sess.Messages())...)
 		m.turnNum = 0
