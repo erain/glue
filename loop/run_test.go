@@ -271,6 +271,9 @@ func TestRunMaxTurnsDefaultIs32(t *testing.T) {
 	_, err := Run(context.Background(), RunRequest{
 		Provider: &fakeProvider{turns: turns},
 		Tools:    []Tool{noop},
+		// This test exercises the turn budget; the identical-call
+		// guardrail would halt these scripted repeats first.
+		Guardrails: GuardrailPolicy{Disabled: true},
 	})
 	if err == nil || !strings.Contains(err.Error(), "maximum turns exceeded (32)") {
 		t.Fatalf("err = %v, want default max turns 32", err)

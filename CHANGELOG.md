@@ -17,6 +17,21 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Loop guardrails (`loop`).** Two graduated detectors now watch every
+  tool round, on by default (`RunRequest.Guardrails`, zero value =
+  defaults; `Disabled` opts out): repeating the **same tool call with
+  identical arguments** draws a corrective user message at 3
+  consecutive occurrences and ends the run with the typed
+  `ErrRepeatedToolCalls` at 5; **consecutive all-error tool rounds**
+  draw a corrective message at 3 and end the run with
+  `ErrTooManyMistakes` at 6. Streaks reset on any change of arguments
+  or any successful result; injected messages are marked
+  `glue/guardrail` in metadata and `EventGuardrail` reports
+  kind/count/action. These are the failure shapes that waste tokens
+  fastest on open-weight models — and unattended `glue goal` runs
+  ([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+  P2.8). Closes #344.
+
 - **Next-speaker stall recovery (`loop`, `glue`, `cmd/glue`).** Gemini's
   classic stall — narrating "I will now update the file." and stopping
   without calling a tool — is now recovered: with the new opt-in
