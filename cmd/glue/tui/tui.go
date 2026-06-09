@@ -161,6 +161,11 @@ type Model struct {
 	// closed. Distinct from picker/tree because it's a popup ABOVE the
 	// input box, not a modal that replaces it.
 	atPicker *atPicker
+	// slashPicker is the inline `/command` autocomplete popup, opened when
+	// the input is a bare slash token. Like atPicker it sits above the
+	// input box; the two are mutually exclusive (slash needs a leading `/`
+	// with no space, @ needs a whitespace-bounded word).
+	slashPicker *slashPicker
 	// workspaceFiles is the cached file list for the @-autocomplete
 	// walker. Walked lazily on first @ trigger; never refreshed within
 	// a session (a follow-up could re-walk on /clear).
@@ -427,6 +432,19 @@ func (m *Model) layout() {
 		}
 		bottomH += rows + 4
 	}
+	// The /command popup occupies the same slot as the @-picker (they are
+	// never open together). Same height math: title(1) + matches + hint(1)
+	// + borders(2).
+	if m.slashPicker != nil {
+		rows := len(m.slashPicker.matches)
+		if rows > atPickerVisibleRows {
+			rows = atPickerVisibleRows
+		}
+		if rows == 0 {
+			rows = 1 // "(no matching command)" row
+		}
+		bottomH += rows + 4
+	}
 	bodyH := m.height - headerH - statusH - bottomH
 	if bodyH < 3 {
 		bodyH = 3
@@ -550,6 +568,11 @@ func (m *Model) bottomView() string {
 		pop := renderAtPicker(m.atPicker, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left, pop, input)
 	}
+	if m.slashPicker != nil {
+		input := m.renderInputBox()
+		pop := renderSlashPicker(m.slashPicker, m.width)
+		return lipgloss.JoinVertical(lipgloss.Left, pop, input)
+	}
 	return m.renderInputBox()
 }
 
@@ -620,6 +643,14 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	//   - turn in flight: cancel it
 	//   - otherwise: no-op
 	if msg.Type == tea.KeyEsc {
+		if m.slashPicker != nil {
+			// Just close the popup; leave the typed text so the user can
+			// finish or edit the command by hand.
+			m.slashPicker = nil
+			m.layout()
+			m.rerender()
+			return m, nil
+		}
 		if m.atPicker != nil {
 			m.input.SetValue(removeAtToken(m.input.Value()))
 			m.input.CursorEnd()
@@ -655,6 +686,45 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.armedQuit = false
+
+	// /command autocomplete intercepts navigation/complete keys BEFORE
+	// history scroll and Enter-submit. Tab completes the highlighted
+	// command; Enter runs the input as typed (so a fully-typed command
+	// fires on the first Enter), except when the command is only partly
+	// typed — then Enter completes it, matching the @-picker's feel.
+	if m.slashPicker != nil {
+		switch msg.Type {
+		case tea.KeyTab:
+			return m.slashPickerAccept()
+		case tea.KeyUp:
+			m.slashPicker.up()
+			m.rerender()
+			return m, nil
+		case tea.KeyDown:
+			m.slashPicker.down()
+			m.rerender()
+			return m, nil
+		case tea.KeyEnter:
+			if sel, ok := m.slashPicker.selected(); ok && !m.slashPicker.exactMatch() {
+				// Complete to the highlighted command. If it takes no
+				// argument, run it straight away; otherwise fill `/name `
+				// and wait for the user to type the argument.
+				m.slashPicker = nil
+				if sel.Args == "" {
+					m.input.SetValue("/" + sel.Name)
+					return m.submit()
+				}
+				m.input.SetValue(applySlashSelection(sel.Name))
+				m.input.CursorEnd()
+				m.layout()
+				m.rerender()
+				return m, nil
+			}
+			// Exact match (or no matches): run the input as typed.
+			m.slashPicker = nil
+			return m.submit()
+		}
+	}
 
 	// @-autocomplete commands intercept their keys BEFORE history scroll
 	// and Enter-submit, so the navigation/select/cancel UX works.
@@ -707,12 +777,48 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var c tea.Cmd
 	m.input, c = m.input.Update(msg)
-	// After the textarea has processed the keystroke, re-evaluate
-	// whether the input now ends in a fresh `@<query>` so we open,
-	// update, or close the autocomplete popup accordingly.
-	m.refreshAtPicker()
+	// After the textarea has processed the keystroke, re-evaluate which
+	// inline autocomplete (if any) should be open for the new input.
+	m.refreshPickers()
 	m.layout()
 	return m, c
+}
+
+// refreshPickers opens, updates, or closes the inline autocomplete popups
+// after a keystroke. A leading slash takes precedence (the input is a
+// command being typed); otherwise fall back to the @-file picker. The two
+// are mutually exclusive.
+func (m *Model) refreshPickers() {
+	if q, ok := detectSlashTrigger(m.input.Value()); ok {
+		m.atPicker = nil
+		if m.slashPicker == nil {
+			m.slashPicker = newSlashPicker()
+		}
+		m.slashPicker.refilter(q)
+		return
+	}
+	m.slashPicker = nil
+	m.refreshAtPicker()
+}
+
+// slashPickerAccept completes the input to the highlighted command
+// (`/name `, ready for an argument) and closes the popup.
+func (m *Model) slashPickerAccept() (tea.Model, tea.Cmd) {
+	if m.slashPicker == nil {
+		return m, nil
+	}
+	sel, ok := m.slashPicker.selected()
+	m.slashPicker = nil
+	if !ok {
+		m.layout()
+		m.rerender()
+		return m, nil
+	}
+	m.input.SetValue(applySlashSelection(sel.Name))
+	m.input.CursorEnd()
+	m.layout()
+	m.rerender()
+	return m, nil
 }
 
 // refreshAtPicker is called after every keystroke that flowed through
