@@ -15,6 +15,8 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+## 1.12.0 — 2026-06-09
+
 - **Headless `glue goal` subcommand — scheduled/CI goal runs (goal loop
   Phase 3c).** `glue goal "<objective>"` runs a full plan→make→verify loop
   without a TUI, streaming checklist-level progress to stdout and exiting
