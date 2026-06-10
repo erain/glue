@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,5 +178,61 @@ func TestAlwaysAllowPermission(t *testing.T) {
 	}
 	if got.RememberFor != glue.RememberSession {
 		t.Fatalf("RememberFor = %v, want RememberSession", got.RememberFor)
+	}
+}
+
+// TestAtPickerWindowIndicators verifies the "↑/↓ N more" lines that make
+// off-window matches discoverable, and that popupRows accounts for them
+// so the layout height math never truncates the popup frame.
+func TestAtPickerWindowIndicators(t *testing.T) {
+	t.Parallel()
+	files := make([]string, 12)
+	for i := range files {
+		files[i] = fmt.Sprintf("file%02d.go", i)
+	}
+	p := &atPicker{files: files}
+	p.refilter("")
+	if len(p.matches) != 12 {
+		t.Fatalf("matches = %d, want 12", len(p.matches))
+	}
+
+	// Cursor at top: window is [0, 8) → only a "↓ 4 more" tail.
+	out := renderAtPicker(p, 100)
+	if !strings.Contains(out, "↓ 4 more") || strings.Count(out, " more") != 1 {
+		t.Fatalf("top window indicators wrong:\n%s", out)
+	}
+	if got := p.popupRows(); got != atPickerVisibleRows+1 {
+		t.Fatalf("popupRows = %d, want %d (window + ↓ line)", got, atPickerVisibleRows+1)
+	}
+
+	// Cursor mid-list: both indicators.
+	for i := 0; i < 8; i++ {
+		p.down()
+	}
+	// cursor = 8 → window [1, 9): 1 above, 3 below.
+	out = renderAtPicker(p, 100)
+	if !strings.Contains(out, "↑ 1 more") || !strings.Contains(out, "↓ 3 more") {
+		t.Fatalf("mid window indicators wrong:\n%s", out)
+	}
+	if got := p.popupRows(); got != atPickerVisibleRows+2 {
+		t.Fatalf("popupRows = %d, want %d (window + both lines)", got, atPickerVisibleRows+2)
+	}
+
+	// Cursor at bottom: window is [4, 12) → only a "↑ 4 more" head.
+	for i := 0; i < 8; i++ {
+		p.down()
+	}
+	out = renderAtPicker(p, 100)
+	if !strings.Contains(out, "↑ 4 more") || strings.Count(out, " more") != 1 {
+		t.Fatalf("bottom window indicators wrong:\n%s", out)
+	}
+
+	// Few matches: no indicators, popupRows = match count.
+	p.refilter("file00")
+	if got := p.popupRows(); got != 1 {
+		t.Fatalf("popupRows = %d, want 1", got)
+	}
+	if out = renderAtPicker(p, 100); strings.Contains(out, " more") {
+		t.Fatalf("unexpected indicator with a single match:\n%s", out)
 	}
 }

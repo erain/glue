@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -141,6 +142,39 @@ func (p *atPicker) refilter(query string) {
 	}
 }
 
+// windowBounds returns the [start, end) slice of matches currently
+// visible: at most atPickerVisibleRows rows, scrolled to keep the
+// cursor in view.
+func (p *atPicker) windowBounds() (start, end int) {
+	if p.cursor >= atPickerVisibleRows {
+		start = p.cursor - atPickerVisibleRows + 1
+	}
+	end = start + atPickerVisibleRows
+	if end > len(p.matches) {
+		end = len(p.matches)
+	}
+	return start, end
+}
+
+// popupRows is the number of body rows the rendered popup occupies
+// between the title and the key hint — visible matches plus the
+// "↑/↓ N more" indicator lines when the window clips. Layout height
+// math in (*Model) must use this so the frame never truncates.
+func (p *atPicker) popupRows() int {
+	if len(p.matches) == 0 {
+		return 1 // "(no matches)" row
+	}
+	start, end := p.windowBounds()
+	rows := end - start
+	if start > 0 {
+		rows++
+	}
+	if end < len(p.matches) {
+		rows++
+	}
+	return rows
+}
+
 func (p *atPicker) up() {
 	if p == nil || len(p.matches) == 0 {
 		return
@@ -262,14 +296,12 @@ func renderAtPicker(p *atPicker, width int) string {
 		b.WriteString(atRow.Render("  (no matches)"))
 	} else {
 		// Scroll window: keep the cursor visible. Show at most
-		// atPickerVisibleRows rows.
-		start := 0
-		if p.cursor >= atPickerVisibleRows {
-			start = p.cursor - atPickerVisibleRows + 1
-		}
-		end := start + atPickerVisibleRows
-		if end > len(p.matches) {
-			end = len(p.matches)
+		// atPickerVisibleRows rows, with "N more" indicators so
+		// off-window matches are discoverable.
+		start, end := p.windowBounds()
+		if start > 0 {
+			b.WriteString(keyHint.Render(fmt.Sprintf("  ↑ %d more", start)))
+			b.WriteByte('\n')
 		}
 		for i := start; i < end; i++ {
 			row := p.files[p.matches[i]]
@@ -282,6 +314,10 @@ func renderAtPicker(p *atPicker, width int) string {
 			if i < end-1 {
 				b.WriteByte('\n')
 			}
+		}
+		if rest := len(p.matches) - end; rest > 0 {
+			b.WriteByte('\n')
+			b.WriteString(keyHint.Render(fmt.Sprintf("  ↓ %d more", rest)))
 		}
 	}
 	b.WriteByte('\n')

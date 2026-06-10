@@ -245,3 +245,23 @@ func TestDescribeCommandsAndPickerShareSpecs(t *testing.T) {
 		}
 	}
 }
+
+// TestSlashPickerShowsEveryCommandOnBareSlash pins the fix for #356: the
+// popup must list the entire (small, bounded) command set with no scroll
+// window — hiding entries made `/` look like incomplete autocomplete.
+func TestSlashPickerShowsEveryCommandOnBareSlash(t *testing.T) {
+	t.Parallel()
+	p := newSlashPicker()
+	if got := p.popupRows(); got != len(slashSpecs()) {
+		t.Fatalf("popupRows = %d, want %d (every command visible)", got, len(slashSpecs()))
+	}
+	out := renderSlashPicker(p, 120)
+	for _, s := range slashSpecs() {
+		if !strings.Contains(out, "/"+s.Name) {
+			t.Errorf("bare / popup missing /%s:\n%s", s.Name, out)
+		}
+	}
+	if strings.Contains(out, "more") {
+		t.Fatalf("slash popup should never show a scroll indicator:\n%s", out)
+	}
+}

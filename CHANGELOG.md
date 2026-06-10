@@ -17,6 +17,14 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **TUI: `/` picker shows every command; `@` picker gains scroll
+  indicators (`cmd/glue/tui`).** The slash-command popup previously
+  reused the file picker's 8-row scroll window with no indicator, so a
+  bare `/` silently hid 5 of the 13 commands. It now lists the whole
+  (bounded) command set, and the `@`-file picker — which keeps its
+  window because workspaces are unbounded — shows `↑/↓ N more` lines
+  when matches are clipped. (#356)
+
 ## 1.13.0 — 2026-06-09
 
 - **Per-model capability registry + tool-owned prompt assembly

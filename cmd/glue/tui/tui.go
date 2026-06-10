@@ -452,27 +452,13 @@ func (m *Model) layout() {
 	// viewport's vertical space while it's open. Height: title(1) +
 	// matches(<=visible) + hint(1) + borders(2).
 	if m.atPicker != nil {
-		rows := len(m.atPicker.matches)
-		if rows > atPickerVisibleRows {
-			rows = atPickerVisibleRows
-		}
-		if rows == 0 {
-			rows = 1 // "(no matches)" row
-		}
-		bottomH += rows + 4
+		bottomH += m.atPicker.popupRows() + 4
 	}
 	// The /command popup occupies the same slot as the @-picker (they are
-	// never open together). Same height math: title(1) + matches + hint(1)
+	// never open together). Same height math: title(1) + body rows + hint(1)
 	// + borders(2).
 	if m.slashPicker != nil {
-		rows := len(m.slashPicker.matches)
-		if rows > atPickerVisibleRows {
-			rows = atPickerVisibleRows
-		}
-		if rows == 0 {
-			rows = 1 // "(no matching command)" row
-		}
-		bottomH += rows + 4
+		bottomH += m.slashPicker.popupRows() + 4
 	}
 	bodyH := m.height - headerH - statusH - bottomH
 	if bodyH < 3 {
