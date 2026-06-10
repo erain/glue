@@ -387,6 +387,15 @@ and asserting on the `ToolResult` (including `IsError` for the recovery
 path). Keep live provider tests gated behind an env-var check and out of
 CI.
 
+Two loop defaults to know when scripting *failures* in tests: transient-
+looking provider errors ("rate limit", "503", dropped streams) are
+retried with backoff, and pathological tool patterns (the same call
+repeated, all-error rounds) trigger guardrails. When a fake provider
+should fail *fast*, use error text that classifies as fatal (e.g.
+"invalid request"); callers driving `loop.Run` directly can also pass
+`Retry: loop.RetryPolicy{Disabled: true}` or
+`Guardrails: loop.GuardrailPolicy{Disabled: true}`.
+
 ## Going further
 
 You now have the full shape of a Glue agent. The advanced surfaces, each

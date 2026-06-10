@@ -165,14 +165,19 @@ milestone).
   agent ships as its own product face with a homepage
   (<https://glue-coding-agent-site.vercel.app>, repo
   [glue-coding-agent-site](https://github.com/erain/glue-coding-agent-site)).
-  Next: **harness quality** — a source-verified analysis of pi, Cline,
-  Codex CLI, and Gemini CLI distilled into
-  [`coding-harness-roadmap.md`](coding-harness-roadmap.md) (edit-repair
-  ladder, structured truncation, history hardening, retry/overflow
-  recovery, compaction upgrades, Gemini loop polish), prioritized for
-  Gemini 3.x first and open-weight OpenRouter/NVIDIA models second.
-  Still planned beyond that: daemon goal endpoints, a sandboxed
-  `Executor` backend (container/VM), and TUI-on-`glue connect`.
+  The **harness-quality phase shipped as `v1.13.0`**: a source-verified
+  analysis of pi, Cline, Codex CLI, and Gemini CLI
+  ([`coding-harness-roadmap.md`](coding-harness-roadmap.md)) landed as
+  eight PRs — edit-repair ladder, structured truncation, history
+  hardening, retry/overflow recovery
+  ([ADR 0017](adr/0017-loop-retry-overflow-recovery.md)), compaction
+  upgrades, next-speaker stall recovery, loop guardrails, and the
+  per-model capability registry with tool-owned prompt assembly —
+  prioritized for Gemini 3.x first and open-weight OpenRouter/NVIDIA
+  models second. Still planned: daemon goal endpoints, a sandboxed
+  `Executor` backend (container/VM), TUI-on-`glue connect`, and the
+  roadmap's deferred P3 notes (XML tool-calling fallback, parallel-tool
+  read/write locking, goal-loop budget wind-down).
 - **Track B — Peggy.** Peggy v0.1–v0.5 plus dogfood hardening (M1–M6)
   shipped: single-prompt CLI, Telegram channel, durable sqlite+FTS5
   memory with curated recall, opt-in coding tools, MCP servers, the

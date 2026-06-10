@@ -175,6 +175,36 @@ for the `glue.Provider` implementation. Reference upstream
 open-source CLIs as the protocol spec rather than copying code, and
 quarantine all vendor-specific headers and base URLs in the package.
 
+## Registering with the driver registry
+
+Shipped providers register themselves in `init()` so callers can
+construct them by name through `providers.New("<name>")` (this is how
+the `glue` binary's `--provider` flag works). Registration also
+declares **capabilities** — harness-relevant facts the loop and CLIs
+query through `providers.CapabilitiesFor(name)` instead of switching
+on provider names:
+
+```go
+func init() {
+	providers.Register("acme", providers.Factory{
+		New:          func() loop.Provider { return New(Options{}) },
+		DefaultModel: DefaultModel,
+		EnvKey:       "ACME_API_KEY",
+		Capabilities: providers.Capabilities{
+			ContextWindow: 131_072, // default model's window; 0 = unknown
+			ParallelTools: false,   // safe to run tool calls concurrently?
+			PromptVariant: "",      // "" explicit (open-weight), "terse" frontier
+			AutoContinue:  false,   // prone to the narrate-then-stop stall?
+		},
+	})
+}
+```
+
+Declare conservatively: the zero value means "assume nothing", and
+consumers treat unknown capabilities as the safe default. Out-of-tree
+providers do not have to register at all — construct them directly and
+pass them to `glue.NewAgent`.
+
 ## Common mistakes
 
 - **Aliasing the same `Message` across `Start` and `Done`.** The loop
