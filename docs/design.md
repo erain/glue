@@ -179,12 +179,24 @@ until the provider stops or the context is canceled.
    tool-call IDs are normalized, and turns from a different model lose
    their thinking blocks and provider signatures — providers reject all
    of these with opaque 400s otherwise.
-2. Ask the provider to stream an assistant response.
+2. Ask the provider to stream an assistant response. Transient
+   failures (429/5xx, dropped streams) retry with classified backoff
+   under `RunRequest.Retry`; context overflow surfaces as a typed
+   `*loop.OverflowError` that the session layer answers by compacting
+   once and retrying once
+   ([ADR-0017](adr/0017-loop-retry-overflow-recovery.md)).
 3. Emit text/tool/lifecycle events as provider events arrive.
-4. Append the final assistant message to the transcript.
+4. Append the final assistant message to the transcript. A turn that
+   narrates a future action without calling a tool gets a bounded
+   "Please continue." nudge when `RunRequest.AutoContinue` is set
+   (the Gemini narrate-then-stop stall).
 5. If the assistant requested tools, execute the requested tools.
 6. Append tool result messages in deterministic order.
-7. Repeat from step 2 until no tool calls remain.
+7. Guardrails inspect the round: repeated identical calls or
+   consecutive all-error rounds first draw a corrective injected
+   message, then halt the run with a typed error
+   (`RunRequest.Guardrails`).
+8. Repeat from step 2 until no tool calls remain.
 
 The concrete P0 entry point is `loop.Run(ctx, loop.RunRequest)`. It returns a
 `loop.RunResult` containing both the full transcript and the messages produced by

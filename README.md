@@ -307,9 +307,49 @@ system prompts; unknown versions error with the available list.
 
 **Long context.** `AgentOptions.Compactor` + `CompactionThreshold`.
 `glue.KeepRecentMessages(n)` is the zero-dependency default;
-`SummarizingCompactor` is token-aware
+`SummarizingCompactor` is token-aware and produces a **structured
+state snapshot** (goal / constraints / progress / next steps, exact
+paths and errors preserved) with a prompt-injection firewall, a
+cumulative read/modified **file ledger** that survives repeated
+compactions, splits that never sever a tool-call/result pair, and an
+inflation guard; `KeepRecentTokens` keeps the recent tail by token
+budget instead of message count
 ([ADR-0002](docs/adr/0002-context-compaction.md),
 [ADR-0007](docs/adr/0007-memory-layer.md)).
+
+## Harness reliability
+
+The loop absorbs the failure shapes that waste agent turns — on by
+default, each with an opt-out
+([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
+records the analysis behind them):
+
+- **History hardening.** Every run repairs the transcript first:
+  dangling tool calls from an interrupted turn get synthesized error
+  results, orphaned results and empty turns are dropped, and turns
+  from a different model lose their thinking signatures — the things
+  providers reject with opaque 400s (`loop.HardenHistory`).
+- **Classified retries.** Transient provider failures (429/5xx,
+  dropped streams) retry with backoff, honoring `Retry-After` /
+  Gemini `RetryInfo` hints; auth and invalid-request errors fail
+  fast. Context overflow surfaces as a typed `*loop.OverflowError`
+  that sessions answer by compacting once and retrying once. Opt out
+  with `RunRequest.Retry.Disabled`
+  ([ADR-0017](docs/adr/0017-loop-retry-overflow-recovery.md)).
+- **Guardrails.** Repeating the same tool call with identical
+  arguments, or burning consecutive all-error tool rounds, first
+  draws a corrective message and then halts the run with a typed
+  error (`RunRequest.Guardrails`).
+- **Stall recovery.** `AgentOptions.AutoContinue` nudges a model that
+  narrates "I will now…" and stops without acting — bounded to twice
+  per run; the `glue` binary enables it for providers that declare
+  the stall in the capability registry.
+
+**Per-model capabilities.** Providers declare harness-relevant facts
+at registration — context window, parallel-tool safety, prompt
+variant, auto-continue proneness — queried via
+`providers.CapabilitiesFor(name)` instead of if-provider-name
+switches.
 
 ## Coding tools
 
@@ -323,6 +363,26 @@ bundle — `read_file`, `write_file`, `edit_file`, `list_dir`,
 go run ./cmd/glue run --provider codex --coding --work . \
   --prompt "Run the tests and fix the first failure."
 ```
+
+The bundle is built to tolerate model sloppiness instead of bouncing
+it back:
+
+- **`edit_file` repairs near-miss matches** — a deterministic ladder
+  (whitespace → indentation, with the replacement re-indented to the
+  file's real indentation → smart-quote/dash folding → block-anchor)
+  plus over-escape repair; non-exact matches are named in the result,
+  and success echoes the updated lines so the model doesn't re-read
+  the file. CRLF and BOMs are preserved.
+- **`shell_exec` keeps head *and* tail** of long output with an
+  omitted-bytes marker and the complete stream spooled to a named
+  temp file; timeouts keep the partial output. `read_file` pages by
+  line offset and says exactly how to continue.
+- **The system prompt is assembled from the active toolset**
+  (`coding.SystemPrompt`): one line per registered tool plus their
+  usage guidelines, in a terse variant for frontier models and an
+  explicit variant for open-weight ones — it cannot drift from the
+  tools actually available. Tools contribute their own text via
+  `ToolSpec.PromptSnippet` / `PromptGuidelines`.
 
 Side-effecting tools (`write_file`, `edit_file`, `shell_exec`) are
 permission-gated; reads and navigation are not. Execution defaults to
