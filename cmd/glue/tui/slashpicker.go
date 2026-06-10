@@ -75,6 +75,17 @@ func specMatches(s slashSpec, q string) bool {
 	return false
 }
 
+// popupRows is the number of body rows the rendered popup occupies
+// between the title and the key hint. Unlike the @-file picker there is
+// no scroll window — the command set is small and bounded, and hiding
+// entries made `/` look like it didn't list every command.
+func (p *slashPicker) popupRows() int {
+	if len(p.matches) == 0 {
+		return 1 // "(no matching command)" row
+	}
+	return len(p.matches)
+}
+
 func (p *slashPicker) up() {
 	if p == nil || len(p.matches) == 0 {
 		return
@@ -153,23 +164,18 @@ func renderSlashPicker(p *slashPicker, width int) string {
 	if len(p.matches) == 0 {
 		b.WriteString(atRow.Render("  (no matching command)"))
 	} else {
-		start := 0
-		if p.cursor >= atPickerVisibleRows {
-			start = p.cursor - atPickerVisibleRows + 1
-		}
-		end := start + atPickerVisibleRows
-		if end > len(p.matches) {
-			end = len(p.matches)
-		}
-		for i := start; i < end; i++ {
-			s := p.specs[p.matches[i]]
+		// No scroll window: the command set is small and bounded, so a
+		// bare `/` always shows every command. (The @-file picker keeps
+		// its window because workspaces are unbounded.)
+		for i, idx := range p.matches {
+			s := p.specs[idx]
 			row := truncate(s.display()+"  —  "+s.Desc, w-6)
 			if i == p.cursor {
 				b.WriteString(atSel.Render("› " + row))
 			} else {
 				b.WriteString(atRow.Render("  " + row))
 			}
-			if i < end-1 {
+			if i < len(p.matches)-1 {
 				b.WriteByte('\n')
 			}
 		}
