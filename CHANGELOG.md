@@ -17,6 +17,21 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Evals-as-gates harness (`evals`, `glue eval`).** A new Go-native eval
+  harness: define a `Suite` of `Case`s, run them against a `*glue.Agent`
+  with `Runner`, score each with `Scorer`s (built-ins: `Contains`,
+  `NotContains`, `Regex`, `Equals`, `Command` — the coding gate that runs
+  a build/test and scores on exit 0 — `Judge` LLM-as-judge, and
+  `ScorerFunc`), and gate CI with `Report.Gate(minPassRate)`. Suites can
+  also be declarative JSON (`SuiteSpec`, unknown fields/scorer-types
+  rejected) and run via `glue eval <suite.json> [--coding] [--min-pass-rate]
+  [--parallel] [--json]`, which builds the agent under test plus a
+  separate tool-less judge agent and exits non-zero when the gate fails.
+  This is the missing feedback loop for the v1.13.0 harness work.
+  Borrowed from Vercel's Eve framework; see
+  [ADR-0019](docs/adr/0019-evals-harness.md), [docs/evals.md](docs/evals.md),
+  and [examples/evals/smoke.json](examples/evals/smoke.json). (#360)
+
 - **TUI: `/` picker shows every command; `@` picker gains scroll
   indicators (`cmd/glue/tui`).** The slash-command popup previously
   reused the file picker's 8-row scroll window with no indicator, so a

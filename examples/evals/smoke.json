@@ -1,0 +1,31 @@
+{
+  "name": "smoke",
+  "threshold": 0.5,
+  "cases": [
+    {
+      "name": "greets-the-user",
+      "prompt": "Greet the user warmly in one sentence.",
+      "scorers": [
+        { "type": "regex", "pattern": "(?i)\\b(hi|hello|hey|welcome)\\b" },
+        { "type": "not_contains", "values": ["as an AI language model"] }
+      ]
+    },
+    {
+      "name": "answers-arithmetic",
+      "prompt": "What is 17 + 25? Reply with just the number.",
+      "scorers": [
+        { "type": "contains", "values": ["42"] }
+      ]
+    },
+    {
+      "name": "explains-recursion",
+      "prompt": "Explain recursion to a beginner in 2-3 sentences.",
+      "scorers": [
+        {
+          "type": "judge",
+          "rubric": "A good answer explains that a function calls itself, mentions a base case (or stopping condition), is correct, and is understandable to a beginner. Penalize jargon-heavy or incorrect answers."
+        }
+      ]
+    }
+  ]
+}
