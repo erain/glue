@@ -133,6 +133,12 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 			fmt.Fprintln(stderr, err)
 		}
 		return code
+	case "eval":
+		if err := evalCommand(ctx, args[1:], stdout, stderr, newProvider); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printUsage(stderr)
@@ -245,6 +251,7 @@ func printUsage(w io.Writer) {
   glue run --prompt <text> [--provider <name>] [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]
+  glue eval <suite.json> [--provider <name>] [--model <model>] [--judge-model <model>] [--coding] [--work <dir>] [--min-pass-rate <0..1>] [--parallel <n>] [--json] [--env <path>]
   glue serve [--provider <name>] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -267,6 +274,7 @@ func printUsage(w io.Writer) {
 Commands:
   run      Run a local agent on any registered provider, optionally with coding tools.
   goal     Run an autonomous goal loop headlessly (plan → make → verify until done or a guardrail trips); exit code reflects the outcome.
+  eval     Run a declarative eval suite (JSON) against an agent and gate on the pass rate; exits non-zero when the gate fails.
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
   connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
   version  Print the binary's version, git revision, and Go toolchain (also: --version, -v).
