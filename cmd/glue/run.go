@@ -20,6 +20,7 @@ import (
 	"github.com/erain/glue/cmd/glue/tui"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
+	"github.com/erain/glue/tracing"
 	// Register the shipped providers so they resolve through the
 	// providers registry by name (--provider). Importing for side
 )
@@ -242,6 +243,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		return err
 	}
+	defer session.Subscribe(tracing.NewSessionRecorder(session.ID()).Handle)()
 
 	if jsonMode {
 		return runOneShotJSON(ctx, session, effectivePrompt, *id, providerName, effectiveModel, stdout, *showUsage, usagePricing, stderr)

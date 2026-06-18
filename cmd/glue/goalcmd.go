@@ -12,6 +12,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/worktree"
 	filestore "github.com/erain/glue/stores/file"
+	"github.com/erain/glue/tracing"
 )
 
 // Exit codes for `glue goal`, so cron/CI schedulers can branch on the
@@ -172,6 +173,12 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 			spec.Tools, spec.CheckerTools, spec.WorkDir = wtTools, wtTools, dir
 			fmt.Fprintf(stdout, "isolated on branch %s (%s)\n", worktree.Branch(spec.SessionPrefix), dir)
 		}
+	}
+
+	// Trace every planner/maker/checker session so unattended goal runs
+	// are observable end-to-end. A no-op unless OTEL_* is configured.
+	spec.OnSession = func(s *glue.Session) {
+		s.Subscribe(tracing.NewSessionRecorder(s.ID()).Handle)
 	}
 
 	spec.Emit = func(ev glue.GoalEvent) {

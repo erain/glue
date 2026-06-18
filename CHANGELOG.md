@@ -17,6 +17,21 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **OpenTelemetry tracing for the agent loop (`tracing`).** Every run
+  now emits an OTLP trace — `glue.agent.run` → `glue.agent.turn` →
+  `glue.llm.generate` / `glue.tool.<name>` — with GenAI-convention
+  attributes (model, provider, finish reason, token usage) and tool
+  error flags. A `Recorder` translates the existing loop `Event` stream
+  into spans, so the `loop` and core `glue` packages stay free of
+  OpenTelemetry imports. Configured from the standard `OTEL_*`
+  environment and off by default (zero overhead until an exporter is
+  set); `OTEL_TRACES_EXPORTER=stdout` gives a zero-backend local view.
+  Wired into `glue run`, the TUI, and `glue goal` (which traces its
+  planner/maker/checker sessions via the new `GoalSpec.OnSession` seam).
+  Borrowed from Vercel's Eve framework; see
+  [ADR-0018](docs/adr/0018-otel-tracing.md) and
+  [docs/tracing.md](docs/tracing.md). (#358)
+
 - **TUI: `/` picker shows every command; `@` picker gains scroll
   indicators (`cmd/glue/tui`).** The slash-command popup previously
   reused the file picker's 8-row scroll window with no indicator, so a

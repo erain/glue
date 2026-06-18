@@ -28,6 +28,7 @@ import (
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
+	"github.com/erain/glue/tracing"
 
 	// Register the shipped providers so they resolve through the
 	// providers registry by name (--provider). Importing for side
@@ -106,6 +107,18 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if args[0] == "version" || args[0] == "-v" || args[0] == "--version" {
 		printVersion(stdout)
 		return 0
+	}
+
+	// Configure OpenTelemetry tracing from the OTEL_* environment. A no-op
+	// unless an exporter is configured, so it costs nothing by default.
+	if shutdown, err := tracing.Setup(ctx); err != nil {
+		fmt.Fprintf(stderr, "glue: tracing disabled: %v\n", err)
+	} else if shutdown != nil {
+		defer func() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdown(flushCtx)
+		}()
 	}
 
 	switch args[0] {
