@@ -82,6 +82,14 @@ type GoalSpec struct {
 
 	// Emit, when set, receives progress events as the loop runs.
 	Emit func(GoalEvent)
+
+	// OnSession, when set, is called once for each internal session the
+	// loop opens (planner, every maker, every checker) right after it is
+	// created and before its first prompt. Hosts use it to attach
+	// session-scoped event handlers — e.g. an OpenTelemetry span recorder
+	// (see github.com/erain/glue/tracing) — so unattended goal runs are
+	// observable without the loop depending on any tracing backend.
+	OnSession func(*Session)
 }
 
 // GoalStatus is the terminal state of a goal loop.
@@ -335,11 +343,20 @@ type goalVerdict struct {
 	Summary string          `json:"summary"`
 }
 
+// notifyOnSession invokes spec.OnSession for s when a host registered one,
+// so it can attach session-scoped observers (e.g. a tracing recorder).
+func (spec GoalSpec) notifyOnSession(s *Session) {
+	if spec.OnSession != nil {
+		spec.OnSession(s)
+	}
+}
+
 func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, Usage, error) {
 	sess, err := a.Session(ctx, spec.SessionPrefix+":plan")
 	if err != nil {
 		return nil, Usage{}, err
 	}
+	spec.notifyOnSession(sess)
 	opts := []PromptOption{WithJSONSchema(goalPlanSchema)}
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
@@ -373,6 +390,7 @@ func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, check
 	if err != nil {
 		return Usage{}, err
 	}
+	spec.notifyOnSession(sess)
 	var opts []PromptOption
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
@@ -400,6 +418,7 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 	if err != nil {
 		return goalVerdict{}, Usage{}, err
 	}
+	spec.notifyOnSession(sess)
 	opts := []PromptOption{
 		WithJSONSchema(goalVerdictSchema),
 		WithSystemPrompt(spec.CheckerSystemPrompt),

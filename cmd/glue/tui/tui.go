@@ -21,6 +21,7 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/atmentions"
+	"github.com/erain/glue/tracing"
 )
 
 // Config wires the TUI to a glue agent. Provider/Model/WorkDir are
@@ -1239,6 +1240,7 @@ func (m *Model) startTurn(prompt string) tea.Cmd {
 
 	go func() {
 		defer cancel()
+		defer session.Subscribe(tracing.NewSessionRecorder(session.ID()).Handle)()
 		unsubscribe := session.Subscribe(func(e glue.Event) {
 			switch e.Type {
 			case glue.EventTextDelta:
