@@ -77,12 +77,12 @@ func TestSlashRefilterPrefixMatch(t *testing.T) {
 func TestSlashMatchesStayAlphabetical(t *testing.T) {
 	t.Parallel()
 	p := newSlashPicker()
-	p.refilter("c") // clear, clone, compact
+	p.refilter("c") // clear, clone, compact, copy
 	var names []string
 	for _, idx := range p.matches {
 		names = append(names, p.specs[idx].Name)
 	}
-	want := []string{"clear", "clone", "compact"}
+	want := []string{"clear", "clone", "compact", "copy"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("/c matches = %v, want %v (alphabetical, stable)", names, want)
 	}

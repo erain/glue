@@ -255,7 +255,7 @@ func (m *Model) appendWelcome() {
 		welcomeAccent.Render("    › ") + "Run the tests and fix the first failure.",
 		welcomeAccent.Render("    › ") + "Summarize the changes in this branch vs main.",
 		"",
-		keyHint.Render("  Enter sends · Ctrl+J newline · / for commands · Esc cancels · Ctrl+C exits"),
+		keyHint.Render("  Enter sends · Ctrl+J newline · / for commands · Ctrl+Y copies last reply · Esc cancels · Ctrl+C exits"),
 		"",
 		keyHint.Render(fmt.Sprintf("  session %s · %s/%s · %s",
 			m.cfg.SessionID,
@@ -704,6 +704,13 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.armedQuit = false
 
+	// Ctrl+Y copies the most recent assistant reply's raw markdown to the
+	// system clipboard — the no-arg form of /copy. Handled here (before the
+	// pickers and the textarea) so it fires from any input state.
+	if msg.Type == tea.KeyCtrlY {
+		return m.runSlashCopy("")
+	}
+
 	// /command autocomplete intercepts navigation/complete keys BEFORE
 	// history scroll and Enter-submit. Tab completes the highlighted
 	// command; Enter runs the input as typed (so a fully-typed command
@@ -1005,6 +1012,8 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "goal":
 		return m.handleSlashGoal(cmd.Arg)
+	case "copy":
+		return m.runSlashCopy(cmd.Arg)
 	case "compact":
 		return m.runSlashCompact()
 	case "resume":

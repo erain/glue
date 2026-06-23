@@ -446,7 +446,12 @@ checkpointed to the session store) / `list` (recent goals with status and
 age) / `clear` subcommands; `/goal -w <objective>` isolates the run in its
 own git worktree at `.glue/worktrees/<goal-id>` on branch `goal/<id>`, so
 the loop never touches your checkout and the result is a reviewable
-branch — see [ADR-0016](docs/adr/0016-goal-loop.md)). Anywhere in a prompt,
+branch — see [ADR-0016](docs/adr/0016-goal-loop.md)), and **`/copy [N]`** (copy an
+assistant reply's **raw markdown** — not the glamour-styled, ANSI-laden form
+you see on screen — to the system clipboard via an OSC 52 sequence that works
+over SSH with no external binary; defaults to the last reply, `/copy 2`
+targets reply #2, and **Ctrl+Y** copies the last reply with no typing).
+Anywhere in a prompt,
 **`@<path>`** inlines that file's
 contents (`@"path with space"` for spaces, `@@literal` to escape — and
 the workspace blocklist refuses `.env` / `id_rsa` / etc.). Typing
@@ -456,6 +461,7 @@ insert. **Enter**
 sends; **Ctrl+J** inserts a newline (works on every terminal —
 Shift+Enter does not). **Esc** cancels the
 current turn; **Ctrl+C** once cancels (and a second press quits);
+**Ctrl+Y** copies the last assistant reply to the clipboard;
 mouse wheel scrolls the transcript; PgUp/PgDn does too. The TUI
 dependencies
 (`charmbracelet/{bubbletea,bubbles,lipgloss,glamour}`) live under
