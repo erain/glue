@@ -17,6 +17,14 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **TUI: `/copy [N]` + Ctrl+Y copy an assistant reply's raw markdown to
+  the system clipboard (`cmd/glue/tui`).** Selecting a reply out of the
+  terminal dragged in glamour styling (ANSI, box-drawing, wrapped lines),
+  so the paste was mangled. The transcript already keeps each reply's raw
+  markdown separate from its rendered form; `/copy` now sends that clean
+  text to the clipboard via an OSC 52 sequence — works locally and over
+  SSH with no external binary. Defaults to the last reply; `/copy 2`
+  targets reply #2; **Ctrl+Y** copies the last reply with no typing. (#362)
 - **TUI: `/` picker shows every command; `@` picker gains scroll
   indicators (`cmd/glue/tui`).** The slash-command popup previously
   reused the file picker's 8-row scroll window with no indicator, so a
