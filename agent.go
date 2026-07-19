@@ -53,6 +53,16 @@ type AgentOptions struct {
 	// Most useful on Gemini, which is prone to the narrate-then-stop
 	// stall.
 	AutoContinue bool
+
+	// EnvContext, when set, is called at the start of every prompt to
+	// render the current environment block (cwd, git state, date, …).
+	// If the rendered text differs from the last environment block in
+	// the transcript, the session appends it as a fresh user message —
+	// tagged via MetadataKeyEnvContext — just before the user's prompt.
+	// Appending (rather than rewriting the system prompt) keeps the
+	// transcript prefix stable so provider prompt caching survives.
+	// See tools/coding.EnvContext for the coding-run generator.
+	EnvContext func() string
 }
 
 // Agent owns shared configuration and an in-memory session map.
@@ -64,6 +74,7 @@ type Agent struct {
 	options      map[string]any
 	maxTurns     int
 	autoContinue bool
+	envContext   func() string
 	store        Store
 	workDir      string
 	role         string
@@ -94,6 +105,7 @@ func NewAgent(options AgentOptions) *Agent {
 		options:             cloneMap(options.Options),
 		maxTurns:            options.MaxTurns,
 		autoContinue:        options.AutoContinue,
+		envContext:          options.EnvContext,
 		store:               options.Store,
 		workDir:             options.WorkDir,
 		skills:              cloneSkills(options.Skills),

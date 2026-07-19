@@ -17,6 +17,16 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Refreshable environment context block for coding runs
+  (`AgentOptions.EnvContext`, `tools/coding.EnvContext`).** Coding
+  sessions now carry a tagged `<environment_context>` user message —
+  cwd, OS, date, git branch/dirty-state/head — injected before the
+  first prompt and re-injected only when it changes, so the transcript
+  prefix (and provider prompt caching) stays intact. The model stops
+  spending its opening turns on `pwd`/`git status`. Wired into
+  `glue run --coding` and `glue goal --coding`; the TUI's `/resume`
+  replay filters the blocks out of the visible transcript. (#364)
+
 - **TUI: `/` picker shows every command; `@` picker gains scroll
   indicators (`cmd/glue/tui`).** The slash-command popup previously
   reused the file picker's 8-row scroll window with no indicator, so a
