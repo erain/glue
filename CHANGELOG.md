@@ -17,6 +17,15 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **AGENTS.md is now a chain from repo root to workdir
+  (`LoadContext`).** Previously only `<workDir>/AGENTS.md` loaded;
+  in a monorepo, running from a subdirectory lost the repo-wide
+  instructions (or vice versa). Every AGENTS.md from the repository
+  root (nearest ancestor with `.git`) down to the workdir is
+  concatenated root-first, so nearer files read as refinements.
+  Outside a repository the old single-file behavior is unchanged.
+  (#369)
+
 - **Actionable model-unavailable errors
   (`providers.ModelUnavailableHint`, `Factory.ModelsListURL`).** A 404
   / model-not-found failure previously surfaced as a raw provider
