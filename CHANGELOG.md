@@ -17,6 +17,13 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **`glue run --continue` reopens the most recently updated session.**
+  Resume previously existed only inside the TUI (`/resume` picker);
+  from the CLI you had to remember the `--id` you used. `--continue`
+  asks the store for the newest session, prints which one it picked
+  (id, message count, last-updated), and works for both the TUI and
+  one-shot `--prompt` runs. Mutually exclusive with `--id`. (#366)
+
 - **`find_files`, `grep`, and the TUI `@`-picker respect `.gitignore`
   (`tools/fs.IgnoreMatcher`).** The recursive walkers previously
   skipped only `.git`, so real projects burned tokens walking

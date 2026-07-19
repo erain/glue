@@ -242,7 +242,7 @@ func printVersion(w io.Writer) {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  glue run --prompt <text> [--provider <name>] [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
+  glue run --prompt <text> [--provider <name>] [--id <id> | --continue] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]
   glue serve [--provider <name>] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]

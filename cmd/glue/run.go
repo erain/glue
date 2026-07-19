@@ -48,6 +48,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	flags.SetOutput(stderr)
 
 	id := flags.String("id", "default", "session id")
+	continueLast := flags.Bool("continue", false, "resume the most recently updated session in the store (mutually exclusive with --id)")
 	prompt := flags.String("prompt", "", "prompt text")
 	provider := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
@@ -72,6 +73,17 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	markUsagePricingFlagState(flags, usagePricing)
 	if err := validateUsagePricing(*usagePricing); err != nil {
 		return err
+	}
+	if *continueLast {
+		idExplicit := false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "id" {
+				idExplicit = true
+			}
+		})
+		if idExplicit {
+			return errors.New("--continue and --id are mutually exclusive (--continue picks the session for you)")
+		}
 	}
 
 	agentName := "default"
@@ -193,6 +205,21 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		return err
 	}
 	storeImpl := filestore.New(*storeDir)
+	// --continue resolves to the store's most recently updated session.
+	// The store orders by UpdatedAt descending, so the first row wins.
+	effectiveID := *id
+	if *continueLast {
+		summaries, err := storeImpl.ListSessions(ctx, glue.ListSessionsOptions{Limit: 1})
+		if err != nil {
+			return fmt.Errorf("--continue: list sessions: %w", err)
+		}
+		if len(summaries) == 0 {
+			return fmt.Errorf("--continue: no sessions found in %s", *storeDir)
+		}
+		effectiveID = summaries[0].ID
+		fmt.Fprintf(stderr, "glue run: continuing session %q (%d messages, last updated %s)\n",
+			effectiveID, summaries[0].Messages, summaries[0].UpdatedAt.Local().Format("2006-01-02 15:04"))
+	}
 	systemPrompt, autoContinue := capabilityDefaults(providerName, tools, *coding)
 	// Coding runs get the refreshable environment block (cwd, git
 	// state, date) so the model doesn't spend turns rediscovering it.
@@ -234,7 +261,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		}
 		return tui.Run(ctx, tui.Config{
 			Agent:        agent,
-			SessionID:    *id,
+			SessionID:    effectiveID,
 			Provider:     providerName,
 			Model:        effectiveModel,
 			WorkDir:      *workDir,
@@ -245,13 +272,13 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			BuildTools:   buildToolsAt,
 		})
 	}
-	session, err := agent.Session(ctx, *id)
+	session, err := agent.Session(ctx, effectiveID)
 	if err != nil {
 		return err
 	}
 
 	if jsonMode {
-		return runOneShotJSON(ctx, session, effectivePrompt, *id, providerName, effectiveModel, stdout, *showUsage, usagePricing, stderr)
+		return runOneShotJSON(ctx, session, effectivePrompt, effectiveID, providerName, effectiveModel, stdout, *showUsage, usagePricing, stderr)
 	}
 
 	wroteDelta := false
