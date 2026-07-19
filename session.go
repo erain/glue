@@ -13,6 +13,41 @@ import (
 	"github.com/erain/glue/loop"
 )
 
+// MetadataKeyEnvContext marks a user message as a harness-injected
+// environment context block (see [AgentOptions.EnvContext]). Hosts can
+// use [IsEnvContextMessage] to filter these out of user-facing
+// transcript views.
+const MetadataKeyEnvContext = "glue/env:context"
+
+// IsEnvContextMessage reports whether m is a harness-injected
+// environment context block.
+func IsEnvContextMessage(m Message) bool {
+	v, ok := m.Metadata[MetadataKeyEnvContext]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
+// lastEnvContextText returns the text of the most recent environment
+// context block in messages, or "" when none is present.
+func lastEnvContextText(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if !IsEnvContextMessage(messages[i]) {
+			continue
+		}
+		var b strings.Builder
+		for _, p := range messages[i].Content {
+			if p.Type == ContentTypeText {
+				b.WriteString(p.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
 // Session is an in-memory conversation with an [Agent]. Sessions are
 // goroutine-safe but a single session executes one [Session.Prompt] at a
 // time.
@@ -203,7 +238,30 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 		s.mu.Unlock()
 		base = compacted
 	}
-	runMessages := append(base, userMessage)
+	// Refresh the environment context block when the agent supplies a
+	// generator and the rendered block differs from the transcript's
+	// most recent one. The block rides as an appended, tagged user
+	// message so the transcript prefix — and provider prompt caching —
+	// stays intact.
+	var envMessage *Message
+	if s.agent.envContext != nil {
+		if block := strings.TrimSpace(s.agent.envContext()); block != "" && block != lastEnvContextText(base) {
+			envMessage = &Message{
+				Role:      MessageRoleUser,
+				Content:   []ContentPart{{Type: ContentTypeText, Text: block}},
+				CreatedAt: time.Now().UTC(),
+				Metadata:  map[string]any{MetadataKeyEnvContext: true},
+			}
+		}
+	}
+	withPrompt := func(history []Message) []Message {
+		out := cloneMessages(history)
+		if envMessage != nil {
+			out = append(out, *envMessage)
+		}
+		return append(out, userMessage)
+	}
+	runMessages := withPrompt(base)
 
 	permission := s.agent.permission
 	if config.permissionSet {
@@ -249,11 +307,14 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 			s.updatedAt = time.Now().UTC()
 			s.mu.Unlock()
 			base = compacted
-			result, runErr = run(append(base, userMessage))
+			result, runErr = run(withPrompt(base))
 		}
 	}
 
 	s.mu.Lock()
+	if envMessage != nil {
+		s.messages = append(s.messages, *envMessage)
+	}
 	s.messages = append(s.messages, userMessage)
 	s.messages = append(s.messages, result.NewMessages...)
 	s.updatedAt = time.Now().UTC()

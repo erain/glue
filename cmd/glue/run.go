@@ -194,6 +194,12 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 	storeImpl := filestore.New(*storeDir)
 	systemPrompt, autoContinue := capabilityDefaults(providerName, tools, *coding)
+	// Coding runs get the refreshable environment block (cwd, git
+	// state, date) so the model doesn't spend turns rediscovering it.
+	var envContext func() string
+	if *coding {
+		envContext = toolscoding.EnvContext(*workDir)
+	}
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     providerImpl,
 		Model:        normalizeModel(effectiveModel),
@@ -203,6 +209,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		Permission:   permission,
 		SystemPrompt: systemPrompt,
 		AutoContinue: autoContinue,
+		EnvContext:   envContext,
 	})
 
 	if interactive {

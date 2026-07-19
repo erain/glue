@@ -12,6 +12,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/worktree"
 	filestore "github.com/erain/glue/stores/file"
+	toolscoding "github.com/erain/glue/tools/coding"
 )
 
 // Exit codes for `glue goal`, so cron/CI schedulers can branch on the
@@ -108,6 +109,10 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		permission = newLocalPromptPermission(stdin, stderr)
 	}
 	systemPrompt, autoContinue := capabilityDefaults(resolvedProvider, tools, *coding)
+	var envContext func() string
+	if *coding {
+		envContext = toolscoding.EnvContext(*workDir)
+	}
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     providerImpl,
 		Model:        normalizeModel(effectiveModel),
@@ -117,6 +122,7 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		Permission:   permission,
 		SystemPrompt: systemPrompt,
 		AutoContinue: autoContinue,
+		EnvContext:   envContext,
 	})
 
 	spec := glue.GoalSpec{
