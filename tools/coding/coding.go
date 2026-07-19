@@ -90,11 +90,17 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 		return nil, opts, err
 	}
 
+	// One shared read-ledger per bundle: read_file records mtimes,
+	// edit_file refuses stale edits, and both mutators refresh entries
+	// after their own writes.
+	ledger := toolsfs.NewReadLedger()
+
 	write, err := toolsfs.FileWrite(toolsfs.FileWriteOptions{
 		WorkDir:        resolved.WorkDir,
 		AllowOverwrite: resolved.AllowOverwrite,
 		MaxBytes:       resolved.WriteMaxBytes,
 		Blocklist:      resolved.Blocklist,
+		Ledger:         ledger,
 	})
 	if err != nil {
 		return nil, opts, err
@@ -103,6 +109,7 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 		WorkDir:   resolved.WorkDir,
 		MaxBytes:  resolved.WriteMaxBytes,
 		Blocklist: resolved.Blocklist,
+		Ledger:    ledger,
 	})
 	if err != nil {
 		return nil, opts, err
@@ -138,6 +145,7 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 			WorkDir:   resolved.WorkDir,
 			Blocklist: resolved.Blocklist,
 			MaxBytes:  resolved.ReadMaxBytes,
+			Ledger:    ledger,
 		}),
 		write,
 		edit,

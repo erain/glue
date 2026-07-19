@@ -37,6 +37,10 @@ type ReadFileOptions struct {
 	// MaxBytes caps the returned content. Zero falls back to
 	// DefaultReadMaxBytes.
 	MaxBytes int
+
+	// Ledger, when non-nil, records each successfully read file's
+	// modification time so edit_file can flag external changes.
+	Ledger *ReadLedger
 }
 
 type readFileArgs struct {
@@ -111,6 +115,7 @@ func ReadFileTool(opts ReadFileOptions) glue.Tool {
 			if err != nil {
 				return glue.ErrorResult(err), nil
 			}
+			opts.Ledger.Record(resolved, info.ModTime())
 			return glue.TextResult(pageLines(string(data), offset, lineLimit, byteLimit)), nil
 		},
 	)
