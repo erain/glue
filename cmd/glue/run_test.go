@@ -391,3 +391,20 @@ func TestRunCLIContinueEmptyStoreErrors(t *testing.T) {
 		t.Fatalf("stderr = %q, want no sessions found", stderr.String())
 	}
 }
+
+func TestRunCLIModelNotFoundHint(t *testing.T) {
+	t.Parallel()
+	provider := &scriptedProvider{err: errors.New(`loop: provider stream: nvidia: http 404: {"status":404,"detail":"Function 'f': Not found for account 'a'"}`)}
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run", "--provider", "nvidia", "--prompt", "hi", "--store", t.TempDir(),
+	}, &stdout, &stderr, fakeFactory(provider))
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero")
+	}
+	for _, want := range []string{"may be unavailable", "--model", "integrate.api.nvidia.com/v1/models"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, want hint containing %q", stderr.String(), want)
+		}
+	}
+}

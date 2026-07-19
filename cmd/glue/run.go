@@ -18,6 +18,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/atmentions"
 	"github.com/erain/glue/cmd/glue/tui"
+	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
 	// Register the shipped providers so they resolve through the
@@ -291,6 +292,9 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		if wroteDelta {
 			fmt.Fprintln(stdout)
+		}
+		if hint := providers.ModelUnavailableHint(providerName, effectiveModel, err); hint != "" {
+			return fmt.Errorf("%w\nglue run: %s", err, hint)
 		}
 		return err
 	}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/atmentions"
+	"github.com/erain/glue/providers"
 )
 
 // Config wires the TUI to a glue agent. Provider/Model/WorkDir are
@@ -1198,6 +1199,9 @@ func (m *Model) handleTurnDone(msg turnDoneMsg) {
 	}
 	if msg.Err != nil {
 		m.appendSystem("error: " + msg.Err.Error())
+		if hint := providers.ModelUnavailableHint(m.cfg.Provider, m.cfg.Model, msg.Err); hint != "" {
+			m.appendSystem("hint: " + hint + " — switch with /model <id>")
+		}
 	}
 	// Re-render the final assistant item through glamour so code blocks,
 	// lists, headings, and inline code settle into proper formatting after

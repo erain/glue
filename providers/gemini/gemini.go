@@ -43,9 +43,10 @@ const providerName = "gemini"
 
 func init() {
 	providers.Register(providerName, providers.Factory{
-		New:          func() loop.Provider { return New(Options{}) },
-		DefaultModel: DefaultModel,
-		EnvKey:       EnvKey,
+		New:           func() loop.Provider { return New(Options{}) },
+		DefaultModel:  DefaultModel,
+		EnvKey:        EnvKey,
+		ModelsListURL: "https://generativelanguage.googleapis.com/v1beta/models",
 		Capabilities: providers.Capabilities{
 			// Gemini 3.x Pro: 1M-token window; frontier model that
 			// prefers terse steering; prone to the narrate-then-stop

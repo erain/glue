@@ -26,9 +26,10 @@ const (
 
 func init() {
 	providers.Register(providerName, providers.Factory{
-		New:          func() loop.Provider { return New(Options{}) },
-		DefaultModel: DefaultModel,
-		EnvKey:       EnvKey,
+		New:           func() loop.Provider { return New(Options{}) },
+		DefaultModel:  DefaultModel,
+		EnvKey:        EnvKey,
+		ModelsListURL: "https://integrate.api.nvidia.com/v1/models",
 		Capabilities: providers.Capabilities{
 			// Open-weight hosting; window varies by model — 128k is a
 			// safe floor. Default (explicit) prompt variant; sequential

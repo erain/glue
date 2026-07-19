@@ -17,6 +17,16 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Actionable model-unavailable errors
+  (`providers.ModelUnavailableHint`, `Factory.ModelsListURL`).** A 404
+  / model-not-found failure previously surfaced as a raw provider
+  error with no recovery path (live case: NVIDIA's catalog lists
+  `moonshotai/kimi-k2.6` but some accounts 404 on it). One-shot runs
+  and the TUI now append which model was requested, that the account
+  may lack access, and how to pick another — including the provider's
+  model-catalog URL declared in the registry (gemini, nvidia,
+  openrouter). The TUI hint points at `/model <id>`. (#367)
+
 - **`glue run --continue` reopens the most recently updated session.**
   Resume previously existed only inside the TUI (`/resume` picker);
   from the CLI you had to remember the `--id` you used. `--continue`
