@@ -33,6 +33,11 @@ type FileWriteOptions struct {
 	// fs.Default().Merge(extras...) to layer extras on top of the
 	// shipped defaults.
 	Blocklist Blocklist
+
+	// Ledger, when non-nil, is refreshed after successful writes so a
+	// write_file followed by edit_file doesn't read as an external
+	// change (see EditFileOptions.Ledger).
+	Ledger *ReadLedger
 }
 
 type fileWriteArgs struct {
@@ -95,6 +100,7 @@ func FileWrite(opts FileWriteOptions) (glue.Tool, error) {
 				allowOverwrite: opts.AllowOverwrite,
 				maxBytes:       max,
 				blocklist:      blocklist,
+				ledger:         opts.Ledger,
 			})
 			if err != nil {
 				return glue.ErrorResult(err), nil
@@ -108,6 +114,7 @@ type writePolicy struct {
 	allowOverwrite bool
 	maxBytes       int
 	blocklist      Blocklist
+	ledger         *ReadLedger
 }
 
 func writeFile(workDir string, args fileWriteArgs, policy writePolicy) (glue.ToolResult, error) {
@@ -150,6 +157,9 @@ func writeFile(workDir string, args fileWriteArgs, policy writePolicy) (glue.Too
 
 	if err := atomicWriteFile(parent, target, contentBytes, 0o644); err != nil {
 		return glue.ToolResult{}, err
+	}
+	if after, err := os.Stat(target); err == nil {
+		policy.ledger.Record(target, after.ModTime())
 	}
 
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))

@@ -17,6 +17,17 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Stale-file guard for `edit_file` (`tools/fs.ReadLedger`).** The
+  roadmap's #1 cause of edit-match failures: the file changed on disk
+  (user edit, formatter, git operation) after the model read it, and
+  the edit then mismatched or clobbered the newer content. The coding
+  bundle now shares a read-ledger: `read_file` records each file's
+  mtime, `edit_file` refuses to edit a file whose mtime moved since —
+  with a "re-read the file" instruction — and both mutators refresh
+  the ledger after their own writes so harness edits never
+  false-alarm. Files never read are not checked; a nil ledger keeps
+  the old behavior everywhere else. (#368)
+
 - **TUI usage display actually works, and can show dollars
   (`tui.Pricing`).** The status bar's token segment and `/usage` read
   a field no code ever populated — they were dead since they shipped.
