@@ -57,6 +57,10 @@ type Config struct {
 	// tools while honoring the run's tool flags. Nil disables worktree
 	// isolation with a friendly message.
 	BuildTools func(workDir string) ([]glue.Tool, error)
+
+	// Pricing enables dollar estimates in /usage and the status bar.
+	// The zero value keeps the display token-only.
+	Pricing Pricing
 }
 
 // Run launches the TUI and blocks until the user quits. It returns
@@ -148,7 +152,10 @@ type Model struct {
 	// Current turn
 	turn    *turnState
 	turnNum int
-	pending *permPending
+	// sessionUsage accumulates every turn's reported usage since the
+	// TUI started (reset with /clear); lastUsage is the newest turn's.
+	sessionUsage glue.Usage
+	pending      *permPending
 	// permQueue holds permission requests that arrived while another was
 	// already on screen — a background /goal loop and a chat turn can ask
 	// concurrently, and a single slot would silently drop one (deadlocking
@@ -384,6 +391,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.transcript = append(m.transcript, transcriptFromMessages(msg.Messages)...)
 		m.turnNum = 0
 		m.lastUsage = nil
+		m.sessionUsage = glue.Usage{}
 		m.rerender()
 		return m, nil
 
@@ -614,8 +622,12 @@ func (m *Model) statusView() string {
 		parts = append(parts, fmt.Sprintf("turn %d", m.turnNum+boolToInt(m.turn != nil)))
 	}
 	if m.lastUsage != nil {
-		parts = append(parts, fmt.Sprintf("%d in / %d out",
-			m.lastUsage.InputTokens, m.lastUsage.OutputTokens))
+		seg := fmt.Sprintf("%d in / %d out",
+			m.lastUsage.InputTokens, m.lastUsage.OutputTokens)
+		if m.cfg.Pricing.Enabled {
+			seg += fmt.Sprintf(" · $%.4f", m.cfg.Pricing.CostUSD(m.sessionUsage))
+		}
+		parts = append(parts, seg)
 	}
 	if m.turn != nil {
 		state := "thinking"
@@ -962,14 +974,20 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		m.appendSystem("transcript cleared. new session: " + m.cfg.SessionID)
 		m.turnNum = 0
 		m.lastUsage = nil
+		m.sessionUsage = glue.Usage{}
 		m.rerender()
 		return m, nil
 	case "usage":
 		if m.lastUsage == nil {
 			m.appendSystem("no usage reported yet.")
 		} else {
-			m.appendSystem(fmt.Sprintf("usage: %d in / %d out / %d total",
-				m.lastUsage.InputTokens, m.lastUsage.OutputTokens, m.lastUsage.TotalTokens))
+			lines := fmt.Sprintf("last turn: %d in / %d out / %d total\nsession:   %d in / %d out / %d total",
+				m.lastUsage.InputTokens, m.lastUsage.OutputTokens, m.lastUsage.TotalTokens,
+				m.sessionUsage.InputTokens, m.sessionUsage.OutputTokens, m.sessionUsage.TotalTokens)
+			if m.cfg.Pricing.Enabled {
+				lines += fmt.Sprintf("\nest. cost: $%.4f", m.cfg.Pricing.CostUSD(m.sessionUsage))
+			}
+			m.appendBlock("Usage", lines)
 		}
 		m.rerender()
 		return m, nil
@@ -1197,6 +1215,14 @@ func (m *Model) handleTurnDone(msg turnDoneMsg) {
 	if m.turn == nil {
 		return
 	}
+	if msg.Usage != nil {
+		m.lastUsage = msg.Usage
+		m.sessionUsage.InputTokens += msg.Usage.InputTokens
+		m.sessionUsage.OutputTokens += msg.Usage.OutputTokens
+		m.sessionUsage.CacheReadTokens += msg.Usage.CacheReadTokens
+		m.sessionUsage.CacheWriteTokens += msg.Usage.CacheWriteTokens
+		m.sessionUsage.TotalTokens += msg.Usage.TotalTokens
+	}
 	if msg.Err != nil {
 		m.appendSystem("error: " + msg.Err.Error())
 		if hint := providers.ModelUnavailableHint(m.cfg.Provider, m.cfg.Model, msg.Err); hint != "" {
@@ -1298,9 +1324,7 @@ func (m *Model) startTurn(prompt string) tea.Cmd {
 		if res.Text != "" {
 			finalText = res.Text
 		}
-		// Pull usage off the latest assistant message if present.
-		// (PromptResult exposes it via Usage on some surfaces; if not, leave nil.)
-		send(turnDoneMsg{Err: runErr, Text: finalText})
+		send(turnDoneMsg{Err: runErr, Text: finalText, Usage: sumTurnUsage(res.NewMessages)})
 	}()
 
 	// Kick the spinner. It re-arms itself in the Update loop until
@@ -1636,6 +1660,7 @@ func (m *Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.transcript = append(m.transcript, transcriptFromMessages(sess.Messages())...)
 		m.turnNum = 0
 		m.lastUsage = nil
+		m.sessionUsage = glue.Usage{}
 		m.rerender()
 		return m, nil
 	}
