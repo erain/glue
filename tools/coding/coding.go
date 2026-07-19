@@ -107,7 +107,7 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 	if err != nil {
 		return nil, opts, err
 	}
-	navOpts := toolsfs.NavOptions{WorkDir: resolved.WorkDir, Blocklist: resolved.Blocklist}
+	navOpts := toolsfs.NavOptions{WorkDir: resolved.WorkDir, Blocklist: resolved.Blocklist, RespectGitignore: true}
 	listDir, err := toolsfs.ListDirTool(navOpts)
 	if err != nil {
 		return nil, opts, err
