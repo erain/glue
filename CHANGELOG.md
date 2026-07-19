@@ -17,6 +17,15 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **TUI usage display actually works, and can show dollars
+  (`tui.Pricing`).** The status bar's token segment and `/usage` read
+  a field no code ever populated — they were dead since they shipped.
+  Turns now report their summed assistant-message usage; the status
+  bar shows the last turn's `N in / N out`, `/usage` adds session
+  totals, and both append a running cost estimate when the
+  `--usage-*-price` flags are set. Session totals reset with
+  `/clear`, `/resume`, and session switches. (#370)
+
 - **AGENTS.md is now a chain from repo root to workdir
   (`LoadContext`).** Previously only `<workDir>/AGENTS.md` loaded;
   in a monorepo, running from a subdirectory lost the repo-wide

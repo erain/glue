@@ -271,6 +271,13 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			ProviderImpl: providerImpl,
 			AlwaysAllow:  *yolo,
 			BuildTools:   buildToolsAt,
+			Pricing: tui.Pricing{
+				Enabled:                 usagePricingEnabled(*usagePricing),
+				InputUSDPerMillion:      usagePricing.InputUSDPerMillion,
+				OutputUSDPerMillion:     usagePricing.OutputUSDPerMillion,
+				CacheReadUSDPerMillion:  usagePricing.CacheReadUSDPerMillion,
+				CacheWriteUSDPerMillion: usagePricing.CacheWriteUSDPerMillion,
+			},
 		})
 	}
 	session, err := agent.Session(ctx, effectiveID)
