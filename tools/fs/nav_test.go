@@ -205,3 +205,64 @@ func TestNavToolsAreReadOnly(t *testing.T) {
 		}
 	}
 }
+
+func gitignoreTree(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mustWrite(t, dir, ".gitignore", "dist/\n*.log\n")
+	mustWrite(t, dir, "main.go", "package main // needle\n")
+	mustWrite(t, dir, "debug.log", "needle\n")
+	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, dir, filepath.Join("dist", "bundle.go"), "// needle in dist\n")
+	return dir
+}
+
+func TestFindFilesRespectsGitignore(t *testing.T) {
+	dir := gitignoreTree(t)
+	tool, err := FindTool(NavOptions{WorkDir: dir, RespectGitignore: true})
+	res := callTool(t, tool, err, `{"pattern":"*.go"}`)
+	text := resultText(res)
+	if strings.Contains(text, "dist/bundle.go") {
+		t.Fatalf("gitignored path returned: %s", text)
+	}
+	if !strings.Contains(text, "main.go") {
+		t.Fatalf("non-ignored path missing: %s", text)
+	}
+
+	res = callTool(t, tool, err, `{"pattern":"*.go","include_ignored":true}`)
+	if !strings.Contains(resultText(res), "dist/bundle.go") {
+		t.Fatalf("include_ignored did not surface ignored path: %s", resultText(res))
+	}
+
+	// Without RespectGitignore the old behavior is unchanged.
+	tool, err = FindTool(NavOptions{WorkDir: dir})
+	if !strings.Contains(resultText(callTool(t, tool, err, `{"pattern":"*.go"}`)), "dist/bundle.go") {
+		t.Fatal("RespectGitignore=false must not filter")
+	}
+}
+
+func TestGrepRespectsGitignore(t *testing.T) {
+	dir := gitignoreTree(t)
+	tool, err := GrepTool(NavOptions{WorkDir: dir, RespectGitignore: true})
+	text := resultText(callTool(t, tool, err, `{"pattern":"needle"}`))
+	if strings.Contains(text, "dist/") || strings.Contains(text, "debug.log") {
+		t.Fatalf("gitignored content searched: %s", text)
+	}
+	if !strings.Contains(text, "main.go") {
+		t.Fatalf("non-ignored match missing: %s", text)
+	}
+	text = resultText(callTool(t, tool, err, `{"pattern":"needle","include_ignored":true}`))
+	if !strings.Contains(text, "dist/bundle.go") || !strings.Contains(text, "debug.log") {
+		t.Fatalf("include_ignored did not surface ignored matches: %s", text)
+	}
+}
+
+func resultText(res glue.ToolResult) string {
+	var b strings.Builder
+	for _, p := range res.Content {
+		b.WriteString(p.Text)
+	}
+	return b.String()
+}

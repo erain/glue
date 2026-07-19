@@ -17,6 +17,17 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **`find_files`, `grep`, and the TUI `@`-picker respect `.gitignore`
+  (`tools/fs.IgnoreMatcher`).** The recursive walkers previously
+  skipped only `.git`, so real projects burned tokens walking
+  `node_modules` and build output. A dependency-free matcher covers
+  the gitignore core — negation with last-match-wins, `/` anchoring,
+  trailing-`/` dir-only patterns, `*`/`?`/`[...]`/`**`, nested
+  `.gitignore` files — and ignored directories prune the whole
+  subtree (git semantics: no re-inclusion below an excluded dir).
+  Coding-bundle tools set `NavOptions.RespectGitignore`; per-call
+  `include_ignored: true` reaches ignored paths when needed. (#365)
+
 - **Refreshable environment context block for coding runs
   (`AgentOptions.EnvContext`, `tools/coding.EnvContext`).** Coding
   sessions now carry a tagged `<environment_context>` user message —
