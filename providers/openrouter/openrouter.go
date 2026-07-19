@@ -35,9 +35,10 @@ const (
 
 func init() {
 	providers.Register(providerName, providers.Factory{
-		New:          func() loop.Provider { return New(Options{}) },
-		DefaultModel: DefaultModel,
-		EnvKey:       EnvKey,
+		New:           func() loop.Provider { return New(Options{}) },
+		DefaultModel:  DefaultModel,
+		EnvKey:        EnvKey,
+		ModelsListURL: "https://openrouter.ai/api/v1/models",
 		Capabilities: providers.Capabilities{
 			// Aggregator of mostly open-weight models; window varies —
 			// 128k is a safe floor. Default (explicit) prompt variant.
