@@ -224,3 +224,61 @@ func TestSessionSkillProgrammaticEntryWins(t *testing.T) {
 		t.Fatalf("user = %q, want programmatic 'from code' to win over disk", user)
 	}
 }
+
+func TestLoadContextAgentsMDChain(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "services", "api")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("repo-wide rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "AGENTS.md"), []byte("api-local rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, err := LoadContext(sub)
+	if err != nil {
+		t.Fatalf("LoadContext: %v", err)
+	}
+	if ctx.AgentsMD != "repo-wide rules\n\napi-local rules" {
+		t.Fatalf("AgentsMD = %q, want root-first concatenation", ctx.AgentsMD)
+	}
+
+	// Intermediate directory without AGENTS.md is skipped silently;
+	// a workDir at the repo root sees only the root file.
+	ctx, err = LoadContext(root)
+	if err != nil {
+		t.Fatalf("LoadContext(root): %v", err)
+	}
+	if ctx.AgentsMD != "repo-wide rules" {
+		t.Fatalf("AgentsMD at root = %q", ctx.AgentsMD)
+	}
+}
+
+func TestLoadContextAgentsMDNoRepo(t *testing.T) {
+	// No .git anywhere in the temp tree: chain is workDir alone, so a
+	// parent AGENTS.md must NOT leak in.
+	parent := t.TempDir()
+	work := filepath.Join(parent, "w")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "AGENTS.md"), []byte("parent rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "AGENTS.md"), []byte("local rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := LoadContext(work)
+	if err != nil {
+		t.Fatalf("LoadContext: %v", err)
+	}
+	if ctx.AgentsMD != "local rules" {
+		t.Fatalf("AgentsMD = %q, want only the local file outside a repo", ctx.AgentsMD)
+	}
+}
