@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/erain/glue/loop"
+	"github.com/erain/glue/providers"
 
 	"google.golang.org/genai"
 )
@@ -313,14 +314,16 @@ func buildGenerateConfig(req loop.ProviderRequest, model string) (*genai.Generat
 		switch key {
 		case "thinking_level":
 			level, ok := value.(string)
-			if !ok || !isModernGeminiModel(model) {
-				return nil, fmt.Errorf("gemini: thinking_level requires a string and a Gemini 3 or 4 model")
+			if !ok {
+				return nil, fmt.Errorf("gemini: thinking_level must be a string")
 			}
-			valid := level == "low" || level == "high" || (level == "medium" && (strings.HasPrefix(model, "gemini-4") || strings.Contains(model, "flash"))) || (level == "minimal" && strings.HasPrefix(model, "gemini-3") && strings.Contains(model, "flash"))
-			if !valid {
-				return nil, fmt.Errorf("gemini: thinking_level %q is unsupported for model %q", level, model)
+			options, err := providers.ThinkingOptions("gemini", model, level)
+			if err != nil {
+				return nil, err
 			}
-			config.ThinkingConfig.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(level))
+			if len(options) > 0 {
+				config.ThinkingConfig.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(level))
+			}
 		case "temperature":
 			temperature, ok := numberAsFloat32(value)
 			if !ok {
