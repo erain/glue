@@ -52,6 +52,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	id := flags.String("id", "default", "session id")
 	continueLast := flags.Bool("continue", false, "resume the most recently updated session in the store (mutually exclusive with --id)")
 	prompt := flags.String("prompt", "", "prompt text")
+	selectFlag := flags.Bool("select", false, "choose provider, model, and thinking level in terminal menus")
 	provider := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
 	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models); default preserves API defaults")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
@@ -95,6 +96,22 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 	if agentName != "default" && agentName != "gemini" {
 		return fmt.Errorf("unknown agent %q; only 'default' is available in this runner", agentName)
+	}
+
+	if *selectFlag {
+		if !isFileTTY(stdin) || !isFileTTY(stderr) {
+			return errors.New("--select requires terminal stdin and stderr; use glue models and --provider/--model/--thinking for scripts")
+		}
+		initialProvider, initialModel, err := resolveProvider(*provider, *model)
+		if err != nil {
+			return err
+		}
+		selected, err := selectModel(ctx, stdin, stderr, modelSelection{initialProvider, initialModel, *thinking})
+		if err != nil {
+			return err
+		}
+		*provider, *model, *thinking = selected.Provider, selected.Model, selected.Thinking
+		fmt.Fprintf(stderr, "Selected %s / %s / thinking %s\n", *provider, *model, *thinking)
 	}
 
 	// Resolve the prompt and the run mode:
