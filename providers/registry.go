@@ -45,6 +45,9 @@ type Capabilities struct {
 
 // Factory describes one registered provider.
 type Factory struct {
+	// Models lists curated choices and model-specific thinking controls.
+	Models []ModelInfo
+
 	// New returns a fresh provider configured with package defaults
 	// (no explicit API key — falls back to the provider's env var).
 	New func() loop.Provider
