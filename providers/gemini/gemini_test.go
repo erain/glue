@@ -732,3 +732,35 @@ func TestLiveSmoke(t *testing.T) {
 		t.Fatal("done message missing stop reason")
 	}
 }
+
+func TestThinkingLevelSelection(t *testing.T) {
+	for _, tc := range []struct {
+		model, level string
+		valid        bool
+	}{
+		{"gemini-4-argon", "low", true}, {"gemini-4-argon", "medium", true}, {"gemini-4-argon", "high", true},
+		{"gemini-4-argon", "minimal", false}, {"gemini-3.1-pro-preview", "medium", false},
+		{"gemini-3-flash-preview", "minimal", true}, {"gemini-2.5-flash", "low", false},
+		{"custom-gemini-4", "high", false}, {"gemini-4-argon", "typo", false},
+	} {
+		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
+			cfg, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"thinking_level": tc.level}}, tc.model)
+			if !tc.valid {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ThinkingConfig == nil || !cfg.ThinkingConfig.IncludeThoughts || string(cfg.ThinkingConfig.ThinkingLevel) != strings.ToUpper(tc.level) {
+				t.Fatalf("unexpected thinking config: %#v", cfg.ThinkingConfig)
+			}
+		})
+	}
+	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"thinking_level": 42}}, "gemini-4-argon")
+	if err == nil {
+		t.Fatal("expected type error")
+	}
+}
