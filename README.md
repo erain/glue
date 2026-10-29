@@ -561,3 +561,15 @@ canonical architecture reference is [`docs/design.md`](docs/design.md).
 The Gemini adapter accepts `ProviderRequest.Options["thinking_level"]` for
 Gemini 3 and 4 models. Gemini 4 Argon supports `low`, `medium`, and `high`;
 omitting the option preserves the API default.
+
+Discover provider and model choices without API credentials:
+
+```sh
+glue models
+glue models --provider gemini --json
+```
+
+The catalog is curated, includes each provider's default, and shows verified
+thinking levels. It does not check account access or fetch a live model list.
+Use `--model <id>` for models outside the catalog; JSON output includes each
+provider's credential variable and live catalog URL when available.
