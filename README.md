@@ -557,3 +557,7 @@ branch/PR conventions, and the active tracker are documented in
 [`docs/project-plan.md`](docs/project-plan.md), and durable design
 decisions are recorded as ADRs under [`docs/adr/`](docs/adr). The
 canonical architecture reference is [`docs/design.md`](docs/design.md).
+
+The Gemini adapter accepts `ProviderRequest.Options["thinking_level"]` for
+Gemini 3 and 4 models. Gemini 4 Argon supports `low`, `medium`, and `high`;
+omitting the option preserves the API default.
