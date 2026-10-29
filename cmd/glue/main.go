@@ -286,6 +286,7 @@ Flags:
   --skill    Connect mode: run one daemon skill instead of --prompt.
   --provider Run/serve provider: codex, deepseek, gemini, nvidia, or openrouter. Defaults to gemini.
              Use --provider codex for a ChatGPT-subscription coding agent (run "codex login" first).
+  --select   Run mode: choose provider, model, and thinking level in terminal menus.
   --thinking Run/serve/goal thinking level for the selected model; see glue models.
              Omit or use default to preserve API defaults.
   --model    Model id. Defaults to the selected provider's default model. gemini/<model> accepted.
