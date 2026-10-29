@@ -25,26 +25,30 @@ import (
 // APIKey is empty Stream consults this environment variable. Headers are
 // merged into every outgoing HTTP request.
 type Options struct {
-	Name         string
-	BaseURL      string
-	APIKey       string
-	APIKeyEnv    string
-	DefaultModel string
-	HTTPClient   *http.Client
-	Headers      map[string]string
+	// PreserveReasoning replays assistant reasoning_content when tools are present.
+	// Enable only for APIs that require it (such as DeepSeek).
+	PreserveReasoning bool
+	Name              string
+	BaseURL           string
+	APIKey            string
+	APIKeyEnv         string
+	DefaultModel      string
+	HTTPClient        *http.Client
+	Headers           map[string]string
 }
 
 // Provider streams chat-completion responses from any OpenAI-compatible
 // endpoint into Glue's normalized provider events. Vendor packages
 // configure it via [New] and re-export its alias type.
 type Provider struct {
-	name         string
-	baseURL      string
-	apiKey       string
-	apiKeyEnv    string
-	defaultModel string
-	httpClient   *http.Client
-	headers      map[string]string
+	preserveReasoning bool
+	name              string
+	baseURL           string
+	apiKey            string
+	apiKeyEnv         string
+	defaultModel      string
+	httpClient        *http.Client
+	headers           map[string]string
 }
 
 // New creates a Provider with the supplied vendor configuration.
@@ -56,13 +60,14 @@ func New(o Options) *Provider {
 		headers[k] = v
 	}
 	return &Provider{
-		name:         o.Name,
-		baseURL:      strings.TrimRight(o.BaseURL, "/"),
-		apiKey:       o.APIKey,
-		apiKeyEnv:    o.APIKeyEnv,
-		defaultModel: o.DefaultModel,
-		httpClient:   o.HTTPClient,
-		headers:      headers,
+		preserveReasoning: o.PreserveReasoning,
+		name:              o.Name,
+		baseURL:           strings.TrimRight(o.BaseURL, "/"),
+		apiKey:            o.APIKey,
+		apiKeyEnv:         o.APIKeyEnv,
+		defaultModel:      o.DefaultModel,
+		httpClient:        o.HTTPClient,
+		headers:           headers,
 	}
 }
 
@@ -83,7 +88,7 @@ func (p *Provider) Stream(ctx context.Context, req loop.ProviderRequest) (<-chan
 		return nil, fmt.Errorf("%s: model is required", p.name)
 	}
 
-	body, err := buildChatRequest(req)
+	body, err := buildChatRequest(req, p.preserveReasoning)
 	if err != nil {
 		return nil, err
 	}

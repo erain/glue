@@ -9,11 +9,12 @@ import (
 
 // chatMessage is the OpenAI-compatible request message shape.
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content,omitempty"`
-	Name       string         `json:"name,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	Role             string         `json:"role"`
+	Content          string         `json:"content,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatToolCall struct {
@@ -80,8 +81,8 @@ func (r chatRequest) MarshalJSON() ([]byte, error) {
 
 // buildChatRequest converts a Glue ProviderRequest into the OpenAI-compatible
 // request body. The caller fills in Model and Stream separately.
-func buildChatRequest(req loop.ProviderRequest) (chatRequest, error) {
-	messages, err := convertMessages(req.SystemPrompt, req.Messages)
+func buildChatRequest(req loop.ProviderRequest, preserveReasoning bool) (chatRequest, error) {
+	messages, err := convertMessages(req.SystemPrompt, req.Messages, preserveReasoning && len(req.Tools) > 0)
 	if err != nil {
 		return chatRequest{}, err
 	}
@@ -99,7 +100,7 @@ func buildChatRequest(req loop.ProviderRequest) (chatRequest, error) {
 	return body, nil
 }
 
-func convertMessages(systemPrompt string, messages []loop.Message) ([]chatMessage, error) {
+func convertMessages(systemPrompt string, messages []loop.Message, preserveReasoning bool) ([]chatMessage, error) {
 	out := make([]chatMessage, 0, len(messages)+1)
 	if systemPrompt != "" {
 		out = append(out, chatMessage{Role: "system", Content: systemPrompt})
@@ -110,6 +111,9 @@ func convertMessages(systemPrompt string, messages []loop.Message) ([]chatMessag
 			return nil, err
 		}
 		if converted != nil {
+			if !preserveReasoning {
+				converted.ReasoningContent = ""
+			}
 			out = append(out, *converted)
 		}
 	}
@@ -129,8 +133,7 @@ func convertMessage(message loop.Message) (*chatMessage, error) {
 			case loop.ContentTypeText:
 				text += part.Text
 			case loop.ContentTypeThinking:
-				// reasoning_content does not round-trip in OpenAI request
-				// schema; drop on replay rather than fail.
+				out.ReasoningContent += part.Thinking
 			case loop.ContentTypeToolCall:
 				if part.ToolCall == nil {
 					return nil, fmt.Errorf("openaicompat: tool call content missing payload")
