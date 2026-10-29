@@ -51,7 +51,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	id := flags.String("id", "default", "session id")
 	continueLast := flags.Bool("continue", false, "resume the most recently updated session in the store (mutually exclusive with --id)")
 	prompt := flags.String("prompt", "", "prompt text")
-	provider := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
+	provider := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")

@@ -33,6 +33,7 @@ import (
 	// providers registry by name (--provider). Importing for side
 	// effects only; the binary selects providers at runtime.
 	_ "github.com/erain/glue/providers/codex"
+	_ "github.com/erain/glue/providers/deepseek"
 	_ "github.com/erain/glue/providers/gemini"
 	_ "github.com/erain/glue/providers/nvidia"
 	_ "github.com/erain/glue/providers/openrouter"
@@ -282,7 +283,7 @@ Flags:
   --id       Session id. Defaults to "default".
   --prompt   Prompt text. Required unless --skill is set or connect is in an inspection mode.
   --skill    Connect mode: run one daemon skill instead of --prompt.
-  --provider Run/serve provider: codex, gemini, nvidia, or openrouter. Defaults to gemini.
+  --provider Run/serve provider: codex, deepseek, gemini, nvidia, or openrouter. Defaults to gemini.
              Use --provider codex for a ChatGPT-subscription coding agent (run "codex login" first).
   --model    Model id. Defaults to the selected provider's default model. gemini/<model> accepted.
   --store    File session store directory. Defaults to .glue/sessions.
