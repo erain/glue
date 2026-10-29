@@ -172,3 +172,44 @@ func TestPromptJSONInvalidStringSchemaErrors(t *testing.T) {
 		t.Fatalf("err = %v, want invalid JSON schema", err)
 	}
 }
+
+func TestPromptJSONInheritsProviderOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override bool
+		want     string
+	}{
+		{"inherit", false, "high"}, {"replace", true, "low"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &recordingProvider{turns: [][]ProviderEvent{jsonTurn(`{}`)}}
+			defaults := map[string]any{"thinking_level": "high", "temperature": 0.2}
+			override := map[string]any{"thinking_level": "low"}
+			agent := NewAgent(AgentOptions{Provider: provider, Options: defaults})
+			session, err := agent.Session(context.Background(), "options")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var options []PromptOption
+			if tc.override {
+				options = append(options, WithProviderOptions(override))
+			}
+			var out map[string]any
+			if _, err := session.PromptJSON(context.Background(), "json", &out, options...); err != nil {
+				t.Fatal(err)
+			}
+			got := provider.requests[0].Options
+			if got["thinking_level"] != tc.want || got["response_mime_type"] != "application/json" {
+				t.Fatal(got)
+			}
+			if tc.override {
+				if _, ok := got["temperature"]; ok {
+					t.Fatal("explicit replacement inherited defaults")
+				}
+			}
+			if len(defaults) != 2 || len(override) != 1 {
+				t.Fatal("caller options mutated")
+			}
+		})
+	}
+}

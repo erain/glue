@@ -391,7 +391,8 @@ func (s *Session) save(ctx context.Context, state SessionState) error {
 // outPtr, which must be a non-nil pointer. It augments the user prompt with
 // JSON-only instructions so non-Gemini providers can still produce
 // parseable output, and sets `response_mime_type: application/json` on the
-// provider request. When [WithJSONSchema] is provided, the schema is also
+// provider request. Agent provider options are inherited unless replaced
+// with [WithProviderOptions]. When [WithJSONSchema] is provided, the schema is also
 // forwarded as `response_json_schema`.
 //
 // V1 validation is intentionally limited to JSON decoding into the
@@ -402,6 +403,9 @@ func (s *Session) PromptJSON(ctx context.Context, text string, outPtr any, optio
 	}
 
 	var probe promptConfig
+	if s != nil && s.agent != nil {
+		probe.options = cloneMap(s.agent.options)
+	}
 	for _, opt := range options {
 		if opt != nil {
 			opt(&probe)
