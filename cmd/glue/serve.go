@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/erain/glue/daemon"
+	"github.com/erain/glue/providers"
 	// Register the shipped providers so they resolve through the
 	// providers registry by name (--provider). Importing for side
 )
@@ -39,7 +40,8 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	flags := flag.NewFlagSet("glue serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	provider := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
+	provider := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
+	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models)")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
@@ -69,6 +71,10 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err != nil {
 		return err
 	}
+	providerOptions, err := providers.ThinkingOptions(providerName, normalizeModel(effectiveModel), *thinking)
+	if err != nil {
+		return err
+	}
 	if err := loadEnvFiles(envs); err != nil {
 		return err
 	}
@@ -93,6 +99,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	}
 	agent, err := newAgent(newProvider, agentConfig{
 		Provider: providerName,
+		Options:  providerOptions,
 		Model:    effectiveModel,
 		StoreDir: *storeDir,
 		WorkDir:  *workDir,

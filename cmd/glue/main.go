@@ -184,6 +184,7 @@ func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error)
 	systemPrompt, autoContinue := capabilityDefaults(cfg.Provider, cfg.Tools, cfg.Coding)
 	return glue.NewAgent(glue.AgentOptions{
 		Provider:     provider,
+		Options:      cfg.Options,
 		Model:        normalizeModel(cfg.Model),
 		Tools:        append([]glue.Tool(nil), cfg.Tools...),
 		Store:        filestore.New(cfg.StoreDir),
@@ -285,6 +286,8 @@ Flags:
   --skill    Connect mode: run one daemon skill instead of --prompt.
   --provider Run/serve provider: codex, deepseek, gemini, nvidia, or openrouter. Defaults to gemini.
              Use --provider codex for a ChatGPT-subscription coding agent (run "codex login" first).
+  --thinking Run/serve/goal thinking level for the selected model; see glue models.
+             Omit or use default to preserve API defaults.
   --model    Model id. Defaults to the selected provider's default model. gemini/<model> accepted.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Workspace for AGENTS.md, skills, roles, and --coding tools. Defaults to ".".
