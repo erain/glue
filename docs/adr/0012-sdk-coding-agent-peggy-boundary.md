@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted historically. Peggy product direction superseded on 2026-11-07 by
+[ADR-0018](0018-framework-coding-and-ax-direction.md); reusable coding ownership
+and framework boundaries remain in effect.
 
 ## Context
 

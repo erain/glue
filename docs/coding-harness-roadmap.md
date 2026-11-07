@@ -1,11 +1,13 @@
 # Coding-Agent Harness Roadmap
 
-Date: 2026-06-09. Tracker: [#110](https://github.com/erain/glue/issues/110).
+Date: 2026-06-09. Historical tracker: [#110](https://github.com/erain/glue/issues/110).
 
 > **Status: shipped.** All eight queue items below landed the same day
 > as [v1.13.0](https://github.com/erain/glue/releases/tag/v1.13.0)
 > (PRs #346–#353). This document remains the record of the analysis
-> and of what was deliberately deferred (the P3 notes).
+> and of what was deliberately deferred (the P3 notes). Current direction and
+> backlog planning live in [project-plan.md](project-plan.md); deferred items
+> here are candidates to re-evaluate, not the active work queue.
 
 This is a source-verified analysis of four reference coding-agent
 harnesses — [pi](https://github.com/earendil-works/pi),
