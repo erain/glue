@@ -38,7 +38,7 @@ Module path: `github.com/erain/glue`. Key subpackages:
 |--------|---------|
 | `github.com/erain/glue` | Public API: `Agent`, `Session`, `Tool`, options. |
 | `.../loop` | The provider-agnostic agent loop. |
-| `.../providers/{gemini,codex,nvidia,openrouter}` | Model providers (+ shared `openaicompat` core, driver registry in `providers`). |
+| `.../providers/{gemini,codex,deepseek,nvidia,openrouter}` | Model providers (+ shared `openaicompat` core, driver registry in `providers`). |
 | `.../stores/{file,sqlite}` | Session persistence (sqlite adds FTS5 search). |
 | `.../tools/{fs,git,shell,coding,mcp}` | Reusable tool bundles. |
 | `.../prompts` | Versioned-prompt catalog. |
@@ -131,13 +131,14 @@ specifics.
 
 ## Providers
 
-Glue ships four providers and a driver-style registry. Construct one
+Glue ships five providers and a driver-style registry. Construct one
 directly, or select by name via `providers.New`.
 
 | Provider | Import | Auth | Notes |
 |----------|--------|------|-------|
 | **Gemini** | `providers/gemini` | `GEMINI_API_KEY` | Google `genai` SDK. |
 | **Codex** | `providers/codex` | ChatGPT subscription (`codex login`) | No per-token bill; reuses the upstream Codex CLI's `auth.json`. |
+| **DeepSeek** | `providers/deepseek` | `DEEPSEEK_API_KEY` | `deepseek-flash` (V4.1 Flash), with reasoning replay for tool calls. |
 | **NVIDIA build** | `providers/nvidia` | `NVIDIA_API_KEY` | OpenAI-compatible; Kimi K2, Llama, Qwen, etc. by `org/name`. |
 | **OpenRouter** | `providers/openrouter` | `OPENROUTER_API_KEY` | OpenAI-compatible aggregator; `openrouter/free` auto-picks a free model. |
 
@@ -156,10 +157,75 @@ Subscription-auth via third-party tools is not formally documented by
 OpenAI; the provider is intended for personal use. See
 [ADR-0006](docs/adr/0006-codex-provider.md).
 
-NVIDIA and OpenRouter share the `providers/openaicompat` core. Both can
+DeepSeek, NVIDIA, and OpenRouter share the `providers/openaicompat` core. NVIDIA and OpenRouter can
 have multi-second first-byte latency on cold routing. To add your own
 provider, see [docs/provider-guide.md](docs/provider-guide.md) and
 [`examples/echo-provider`](examples/echo-provider).
+
+### Choosing models and thinking levels
+
+The Gemini adapter accepts `ProviderRequest.Options["thinking_level"]` for
+Gemini 3 and 4 models. Gemini 4 Argon supports `low`, `medium`, and `high`;
+omitting the option preserves the API default.
+
+Discover provider and model choices without API credentials:
+
+```sh
+glue models
+glue models --provider gemini --json
+```
+
+The catalog is curated, includes each provider's default, and shows verified
+thinking levels. It does not check account access or fetch a live model list.
+Use `--model <id>` for models outside the catalog; JSON output includes each
+provider's credential variable and live catalog URL when available.
+
+DeepSeek is available directly with `--provider deepseek` and
+`DEEPSEEK_API_KEY`. Its default model, `deepseek-flash`, serves V4.1 Flash.
+The adapter preserves streamed reasoning when replaying tool conversations.
+Images are not yet supported by Glue's shared Chat Completions transport.
+
+```sh
+export DEEPSEEK_API_KEY=...
+glue run --provider deepseek --prompt 'Explain this repository' --coding
+```
+
+See the [DeepSeek thinking and tool replay requirements](https://api-docs.deepseek.com/guides/thinking_mode/).
+
+Select model-specific thinking effort in `run`, `serve`, and `goal`:
+
+```sh
+glue run --provider gemini --model gemini-4-argon --thinking high --prompt 'Review this design'
+glue run --provider deepseek --thinking low --coding --prompt 'Find the entry point'
+glue serve --provider deepseek --thinking max
+glue goal --provider gemini --model gemini-4-argon --thinking medium 'Explain the parser'
+```
+
+Omit `--thinking` or use `--thinking default` to preserve API defaults.
+Gemini Argon supports `low`, `medium`, and `high`; DeepSeek Flash supports
+`off`, `low`, `high`, and `max`. `glue models` lists each model's supported
+levels. Unsupported combinations fail before provider construction. Models
+without verified controls, including custom IDs, accept only the default.
+These settings apply to all prompts in the local run or goal and to daemon
+runs started through `connect`. They do not change provider defaults globally.
+
+For interactive selection, run:
+
+```sh
+glue run --select --coding
+glue run --select --prompt 'Explain this code'
+```
+
+Use the arrow keys and Enter to choose a provider, a model, and its supported
+thinking level. Esc or Ctrl+C cancels before provider construction. The menus
+include a custom model ID option. `--provider`, `--model`, and `--thinking`
+set initial choices; the confirmed menu choices take precedence. Changing
+providers resets the model choice to that provider's default. Unsupported
+thinking preselection resets to the API default. Choices apply to this run.
+Menus require terminal stdin and stderr and render on stderr, leaving stdout
+available for one-shot text or JSON output. In scripts, use `glue models`
+and the explicit flags instead. Account access is checked when the provider
+runs. Provider/model switching during an active TUI session is not included.
 
 ### Failover across providers
 
@@ -557,48 +623,3 @@ branch/PR conventions, and the active tracker are documented in
 [`docs/project-plan.md`](docs/project-plan.md), and durable design
 decisions are recorded as ADRs under [`docs/adr/`](docs/adr). The
 canonical architecture reference is [`docs/design.md`](docs/design.md).
-
-The Gemini adapter accepts `ProviderRequest.Options["thinking_level"]` for
-Gemini 3 and 4 models. Gemini 4 Argon supports `low`, `medium`, and `high`;
-omitting the option preserves the API default.
-
-Discover provider and model choices without API credentials:
-
-```sh
-glue models
-glue models --provider gemini --json
-```
-
-The catalog is curated, includes each provider's default, and shows verified
-thinking levels. It does not check account access or fetch a live model list.
-Use `--model <id>` for models outside the catalog; JSON output includes each
-provider's credential variable and live catalog URL when available.
-
-DeepSeek is available directly with `--provider deepseek` and
-`DEEPSEEK_API_KEY`. Its default model, `deepseek-flash`, serves V4.1 Flash.
-The adapter preserves streamed reasoning when replaying tool conversations.
-Images are not yet supported by Glue's shared Chat Completions transport.
-
-```sh
-export DEEPSEEK_API_KEY=...
-glue run --provider deepseek --prompt 'Explain this repository' --coding
-```
-
-See the [DeepSeek thinking and tool replay requirements](https://api-docs.deepseek.com/guides/thinking_mode/).
-
-Select model-specific thinking effort in `run`, `serve`, and `goal`:
-
-```sh
-glue run --provider gemini --model gemini-4-argon --thinking high --prompt 'Review this design'
-glue run --provider deepseek --thinking low --coding --prompt 'Find the entry point'
-glue serve --provider deepseek --thinking max
-glue goal --provider gemini --model gemini-4-argon --thinking medium 'Explain the parser'
-```
-
-Omit `--thinking` or use `--thinking default` to preserve API defaults.
-Gemini Argon supports `low`, `medium`, and `high`; DeepSeek Flash supports
-`off`, `low`, `high`, and `max`. `glue models` lists each model's supported
-levels. Unsupported combinations fail before provider construction. Models
-without verified controls, including custom IDs, accept only the default.
-These settings apply to all prompts in the local run or goal and to daemon
-runs started through `connect`. They do not change provider defaults globally.
