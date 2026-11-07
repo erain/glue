@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -104,5 +105,31 @@ func TestCapabilitiesForRegistered(t *testing.T) {
 	caps := CapabilitiesFor("caps-test")
 	if caps.ContextWindow != 42 || !caps.ParallelTools || caps.PromptVariant != "terse" || !caps.AutoContinue {
 		t.Fatalf("caps = %#v", caps)
+	}
+}
+
+func TestModelUnavailableHint(t *testing.T) {
+	Register("hinted", Factory{
+		DefaultModel:  "m-default",
+		ModelsListURL: "https://example.test/v1/models",
+	})
+
+	err := errors.New(`provider stream: hinted: http 404: {"status":404,"detail":"Function 'x': Not found for account 'y'"}`)
+	hint := ModelUnavailableHint("hinted", "some/model", err)
+	for _, want := range []string{`"some/model"`, "hinted", "--model", "https://example.test/v1/models"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint missing %q: %s", want, hint)
+		}
+	}
+
+	if got := ModelUnavailableHint("hinted", "m", errors.New("http 429: overloaded")); got != "" {
+		t.Errorf("non-404 error should give no hint, got %q", got)
+	}
+	if got := ModelUnavailableHint("hinted", "m", nil); got != "" {
+		t.Errorf("nil error should give no hint, got %q", got)
+	}
+	// Unknown provider still hints, just without a catalog URL.
+	if got := ModelUnavailableHint("mystery", "m", err); got == "" || strings.Contains(got, "http") {
+		t.Errorf("unknown-provider hint wrong: %q", got)
 	}
 }

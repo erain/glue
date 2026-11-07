@@ -45,6 +45,9 @@ type Capabilities struct {
 
 // Factory describes one registered provider.
 type Factory struct {
+	// Models lists curated choices and model-specific thinking controls.
+	Models []ModelInfo
+
 	// New returns a fresh provider configured with package defaults
 	// (no explicit API key — falls back to the provider's env var).
 	New func() loop.Provider
@@ -57,6 +60,11 @@ type Factory struct {
 	// EnvKey is the environment variable the provider reads when
 	// APIKey is empty. Used by KeyAvailable.
 	EnvKey string
+
+	// ModelsListURL is the provider's model-catalog endpoint, used in
+	// recovery hints when a request fails because the selected model is
+	// unavailable. Empty when the provider has no such endpoint.
+	ModelsListURL string
 
 	// Capabilities declares harness-relevant facts about the
 	// provider's models. Optional; the zero value means unknown.
@@ -118,6 +126,29 @@ func Known() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ModelUnavailableHint returns actionable advice when err looks like a
+// model-not-found failure from the named provider — the model id was
+// wrong, or the account does not have access to it (some catalogs list
+// models the account still 404s on). Returns "" when err does not look
+// model-shaped, so callers can append the hint unconditionally.
+func ModelUnavailableHint(providerName, model string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "404") &&
+		!strings.Contains(msg, "not found") &&
+		!strings.Contains(msg, "does not exist") &&
+		!strings.Contains(msg, "model_not_found") {
+		return ""
+	}
+	hint := fmt.Sprintf("model %q may be unavailable on your %s account; pick another with --model <id>", model, providerName)
+	if f, ok := Lookup(providerName); ok && f.ModelsListURL != "" {
+		hint += fmt.Sprintf(" (list models: %s)", f.ModelsListURL)
+	}
+	return hint
 }
 
 // KeyAvailable reports whether the registered provider's env var is

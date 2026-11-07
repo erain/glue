@@ -128,6 +128,11 @@ func transcriptFromMessages(msgs []glue.Message) []transcriptItem {
 	for _, m := range msgs {
 		switch m.Role {
 		case glue.MessageRoleUser:
+			// Harness-injected environment blocks are model plumbing,
+			// not conversation; keep them out of the replayed view.
+			if glue.IsEnvContextMessage(m) {
+				continue
+			}
 			out = append(out, transcriptItem{Kind: itemUser, Text: collectText(m.Content)})
 		case glue.MessageRoleAssistant:
 			text := collectText(m.Content)

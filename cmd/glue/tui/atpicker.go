@@ -45,8 +45,8 @@ func newAtPicker(workDir string) *atPicker {
 }
 
 // walkWorkspace returns the workspace-relative file paths under workDir,
-// skipping `.git`, secret-shaped paths from tools/fs.Default(), and
-// symlinks. Capped at atMaxFiles entries.
+// skipping `.git`, `.gitignore`'d paths, secret-shaped paths from
+// tools/fs.Default(), and symlinks. Capped at atMaxFiles entries.
 func walkWorkspace(workDir string) []string {
 	if workDir == "" {
 		return nil
@@ -56,6 +56,7 @@ func walkWorkspace(workDir string) []string {
 		return nil
 	}
 	bl := toolsfs.Default()
+	ignore := toolsfs.NewIgnoreMatcher(abs)
 	out := make([]string, 0, 1024)
 	_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -63,6 +64,9 @@ func walkWorkspace(workDir string) []string {
 		}
 		if d.IsDir() {
 			if d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".gstack" {
+				return filepath.SkipDir
+			}
+			if rel, err := filepath.Rel(abs, p); err == nil && rel != "." && ignore.Ignored(filepath.ToSlash(rel), true) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -76,6 +80,9 @@ func walkWorkspace(workDir string) []string {
 		}
 		rel = filepath.ToSlash(rel)
 		if blocked, _ := bl.Match(rel); blocked {
+			return nil
+		}
+		if ignore.Ignored(rel, false) {
 			return nil
 		}
 		out = append(out, rel)

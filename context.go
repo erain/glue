@@ -38,20 +38,28 @@ type ProjectContext struct {
 	Roles    map[string]Role
 }
 
-// LoadContext loads AGENTS.md (non-fatal if missing) and skills under
-// `<workDir>/.agents/skills/<name>/SKILL.md`. An empty workDir returns an
-// empty context.
+// LoadContext loads the AGENTS.md chain (non-fatal if missing) and
+// skills under `<workDir>/.agents/skills/<name>/SKILL.md`. An empty
+// workDir returns an empty context.
+//
+// AGENTS.md is a chain, not a single file: every AGENTS.md from the
+// repository root (the nearest ancestor containing `.git`, workDir
+// included) down to workDir is concatenated, root first and nearest
+// last — so in a monorepo a subdirectory can add local instructions on
+// top of the repo-wide ones, and later (nearer) files read naturally
+// as refinements. Outside a repository only `<workDir>/AGENTS.md` is
+// consulted, matching the old single-file behavior.
 func LoadContext(workDir string) (ProjectContext, error) {
 	var ctx ProjectContext
 	if strings.TrimSpace(workDir) == "" {
 		return ctx, nil
 	}
 
-	if data, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md")); err == nil {
-		ctx.AgentsMD = strings.TrimSpace(string(data))
-	} else if !errors.Is(err, os.ErrNotExist) {
+	agentsMD, err := loadAgentsMDChain(workDir)
+	if err != nil {
 		return ProjectContext{}, err
 	}
+	ctx.AgentsMD = agentsMD
 
 	skills, err := loadSkills(filepath.Join(workDir, ".agents", "skills"))
 	if err != nil {
@@ -65,6 +73,59 @@ func LoadContext(workDir string) (ProjectContext, error) {
 	}
 	ctx.Roles = roles
 	return ctx, nil
+}
+
+// loadAgentsMDChain concatenates every AGENTS.md from the repo root
+// down to workDir (root first). Missing files are skipped; read errors
+// other than not-exist propagate.
+func loadAgentsMDChain(workDir string) (string, error) {
+	abs, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", err
+	}
+
+	// The chain's top is the nearest ancestor (workDir included) that
+	// contains .git; without one the chain is workDir alone.
+	top := abs
+	for dir := abs; ; {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			top = dir
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	var chain []string
+	for dir := abs; ; {
+		chain = append([]string{dir}, chain...)
+		if dir == top {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	var parts []string
+	for _, dir := range chain {
+		data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if text := strings.TrimSpace(string(data)); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 func loadRoles(rolesDir string) (map[string]Role, error) {

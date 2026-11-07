@@ -236,3 +236,38 @@ func TestAtPickerWindowIndicators(t *testing.T) {
 		t.Fatalf("unexpected indicator with a single match:\n%s", out)
 	}
 }
+
+func TestWalkWorkspaceRespectsGitignore(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".gitignore", "dist/\n*.log\n")
+	write("main.go", "package main")
+	write("dist/bundle.js", "x")
+	write("debug.log", "x")
+
+	files := walkWorkspace(dir)
+	for _, f := range files {
+		if strings.HasPrefix(f, "dist/") || f == "debug.log" {
+			t.Errorf("gitignored path leaked into @-picker: %s", f)
+		}
+	}
+	found := false
+	for _, f := range files {
+		if f == "main.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("main.go missing from walk: %v", files)
+	}
+}

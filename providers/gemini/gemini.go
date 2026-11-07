@@ -45,7 +45,14 @@ func init() {
 	providers.Register(providerName, providers.Factory{
 		New:          func() loop.Provider { return New(Options{}) },
 		DefaultModel: DefaultModel,
-		EnvKey:       EnvKey,
+		Models: []providers.ModelInfo{
+			{ID: "gemini-4-argon", ThinkingLevels: []string{"low", "medium", "high"}},
+			{ID: "gemini-3.1-pro-preview", ThinkingLevels: []string{"low", "medium", "high"}},
+			{ID: "gemini-3-pro-preview", ThinkingLevels: []string{"low", "high"}},
+			{ID: "gemini-3-flash-preview", ThinkingLevels: []string{"minimal", "low", "medium", "high"}},
+		},
+		EnvKey:        EnvKey,
+		ModelsListURL: "https://generativelanguage.googleapis.com/v1beta/models",
 		Capabilities: providers.Capabilities{
 			// Gemini 3.x Pro: 1M-token window; frontier model that
 			// prefers terse steering; prone to the narrate-then-stop

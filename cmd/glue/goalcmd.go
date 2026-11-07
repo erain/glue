@@ -11,7 +11,9 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/worktree"
+	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
+	toolscoding "github.com/erain/glue/tools/coding"
 )
 
 // Exit codes for `glue goal`, so cron/CI schedulers can branch on the
@@ -30,7 +32,8 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	flags := flag.NewFlagSet("glue goal", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	providerName := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
+	providerName := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
+	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models)")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory (shared with glue run, so the TUI sees the same goals)")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md and coding tools")
@@ -81,6 +84,10 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if err != nil {
 		return goalExitErrored, err
 	}
+	providerOptions, err := providers.ThinkingOptions(resolvedProvider, normalizeModel(effectiveModel), *thinking)
+	if err != nil {
+		return goalExitErrored, err
+	}
 	providerImpl, err := newProvider(resolvedProvider)
 	if err != nil {
 		return goalExitErrored, err
@@ -108,8 +115,13 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		permission = newLocalPromptPermission(stdin, stderr)
 	}
 	systemPrompt, autoContinue := capabilityDefaults(resolvedProvider, tools, *coding)
+	var envContext func() string
+	if *coding {
+		envContext = toolscoding.EnvContext(*workDir)
+	}
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     providerImpl,
+		Options:      providerOptions,
 		Model:        normalizeModel(effectiveModel),
 		Tools:        tools,
 		Store:        store,
@@ -117,6 +129,7 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		Permission:   permission,
 		SystemPrompt: systemPrompt,
 		AutoContinue: autoContinue,
+		EnvContext:   envContext,
 	})
 
 	spec := glue.GoalSpec{

@@ -25,10 +25,12 @@ type toolEndMsg struct {
 
 // turnDoneMsg is emitted when session.Prompt returns. Err is non-nil on
 // failure; Text is the final assistant text (may be empty if streaming
-// already rendered it).
+// already rendered it). Usage sums the turn's assistant-message token
+// counts; nil when the provider reported none.
 type turnDoneMsg struct {
-	Err  error
-	Text string
+	Err   error
+	Text  string
+	Usage *glue.Usage
 }
 
 // permRequestMsg surfaces a permission request from the loop. The Respond

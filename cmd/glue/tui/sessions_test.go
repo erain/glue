@@ -101,3 +101,19 @@ func TestHumanAge(t *testing.T) {
 		}
 	}
 }
+
+func TestTranscriptFromMessagesSkipsEnvContext(t *testing.T) {
+	t.Parallel()
+	msgs := []glue.Message{
+		{
+			Role:     glue.MessageRoleUser,
+			Content:  []glue.ContentPart{{Type: glue.ContentTypeText, Text: "<environment_context>cwd: /x</environment_context>"}},
+			Metadata: map[string]any{glue.MetadataKeyEnvContext: true},
+		},
+		{Role: glue.MessageRoleUser, Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: "real prompt"}}},
+	}
+	out := transcriptFromMessages(msgs)
+	if len(out) != 1 || out[0].Text != "real prompt" {
+		t.Fatalf("env context block should be filtered from replay; got %+v", out)
+	}
+}

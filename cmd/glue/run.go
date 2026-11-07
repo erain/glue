@@ -18,6 +18,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/atmentions"
 	"github.com/erain/glue/cmd/glue/tui"
+	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
 	// Register the shipped providers so they resolve through the
@@ -32,6 +33,7 @@ type codingFlagConfig struct {
 }
 
 type agentConfig struct {
+	Options    map[string]any
 	Provider   string
 	Model      string
 	StoreDir   string
@@ -48,8 +50,11 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	flags.SetOutput(stderr)
 
 	id := flags.String("id", "default", "session id")
+	continueLast := flags.Bool("continue", false, "resume the most recently updated session in the store (mutually exclusive with --id)")
 	prompt := flags.String("prompt", "", "prompt text")
-	provider := flags.String("provider", defaultProvider, "provider name: codex, gemini, nvidia, or openrouter")
+	selectFlag := flags.Bool("select", false, "choose provider, model, and thinking level in terminal menus")
+	provider := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
+	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models); default preserves API defaults")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
@@ -73,6 +78,17 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err := validateUsagePricing(*usagePricing); err != nil {
 		return err
 	}
+	if *continueLast {
+		idExplicit := false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "id" {
+				idExplicit = true
+			}
+		})
+		if idExplicit {
+			return errors.New("--continue and --id are mutually exclusive (--continue picks the session for you)")
+		}
+	}
 
 	agentName := "default"
 	if flags.NArg() > 0 {
@@ -80,6 +96,22 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 	if agentName != "default" && agentName != "gemini" {
 		return fmt.Errorf("unknown agent %q; only 'default' is available in this runner", agentName)
+	}
+
+	if *selectFlag {
+		if !isFileTTY(stdin) || !isFileTTY(stderr) {
+			return errors.New("--select requires terminal stdin and stderr; use glue models and --provider/--model/--thinking for scripts")
+		}
+		initialProvider, initialModel, err := resolveProvider(*provider, *model)
+		if err != nil {
+			return err
+		}
+		selected, err := selectModel(ctx, stdin, stderr, modelSelection{initialProvider, initialModel, *thinking})
+		if err != nil {
+			return err
+		}
+		*provider, *model, *thinking = selected.Provider, selected.Model, selected.Thinking
+		fmt.Fprintf(stderr, "Selected %s / %s / thinking %s\n", *provider, *model, *thinking)
 	}
 
 	// Resolve the prompt and the run mode:
@@ -111,6 +143,10 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 
 	providerName, effectiveModel, err := resolveProvider(*provider, *model)
+	if err != nil {
+		return err
+	}
+	providerOptions, err := providers.ThinkingOptions(providerName, normalizeModel(effectiveModel), *thinking)
 	if err != nil {
 		return err
 	}
@@ -193,9 +229,31 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		return err
 	}
 	storeImpl := filestore.New(*storeDir)
+	// --continue resolves to the store's most recently updated session.
+	// The store orders by UpdatedAt descending, so the first row wins.
+	effectiveID := *id
+	if *continueLast {
+		summaries, err := storeImpl.ListSessions(ctx, glue.ListSessionsOptions{Limit: 1})
+		if err != nil {
+			return fmt.Errorf("--continue: list sessions: %w", err)
+		}
+		if len(summaries) == 0 {
+			return fmt.Errorf("--continue: no sessions found in %s", *storeDir)
+		}
+		effectiveID = summaries[0].ID
+		fmt.Fprintf(stderr, "glue run: continuing session %q (%d messages, last updated %s)\n",
+			effectiveID, summaries[0].Messages, summaries[0].UpdatedAt.Local().Format("2006-01-02 15:04"))
+	}
 	systemPrompt, autoContinue := capabilityDefaults(providerName, tools, *coding)
+	// Coding runs get the refreshable environment block (cwd, git
+	// state, date) so the model doesn't spend turns rediscovering it.
+	var envContext func() string
+	if *coding {
+		envContext = toolscoding.EnvContext(*workDir)
+	}
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     providerImpl,
+		Options:      providerOptions,
 		Model:        normalizeModel(effectiveModel),
 		Tools:        append([]glue.Tool(nil), tools...),
 		Store:        storeImpl,
@@ -203,6 +261,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		Permission:   permission,
 		SystemPrompt: systemPrompt,
 		AutoContinue: autoContinue,
+		EnvContext:   envContext,
 	})
 
 	if interactive {
@@ -227,7 +286,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		}
 		return tui.Run(ctx, tui.Config{
 			Agent:        agent,
-			SessionID:    *id,
+			SessionID:    effectiveID,
 			Provider:     providerName,
 			Model:        effectiveModel,
 			WorkDir:      *workDir,
@@ -236,15 +295,22 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			ProviderImpl: providerImpl,
 			AlwaysAllow:  *yolo,
 			BuildTools:   buildToolsAt,
+			Pricing: tui.Pricing{
+				Enabled:                 usagePricingEnabled(*usagePricing),
+				InputUSDPerMillion:      usagePricing.InputUSDPerMillion,
+				OutputUSDPerMillion:     usagePricing.OutputUSDPerMillion,
+				CacheReadUSDPerMillion:  usagePricing.CacheReadUSDPerMillion,
+				CacheWriteUSDPerMillion: usagePricing.CacheWriteUSDPerMillion,
+			},
 		})
 	}
-	session, err := agent.Session(ctx, *id)
+	session, err := agent.Session(ctx, effectiveID)
 	if err != nil {
 		return err
 	}
 
 	if jsonMode {
-		return runOneShotJSON(ctx, session, effectivePrompt, *id, providerName, effectiveModel, stdout, *showUsage, usagePricing, stderr)
+		return runOneShotJSON(ctx, session, effectivePrompt, effectiveID, providerName, effectiveModel, stdout, *showUsage, usagePricing, stderr)
 	}
 
 	wroteDelta := false
@@ -257,6 +323,9 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		if wroteDelta {
 			fmt.Fprintln(stdout)
+		}
+		if hint := providers.ModelUnavailableHint(providerName, effectiveModel, err); hint != "" {
+			return fmt.Errorf("%w\nglue run: %s", err, hint)
 		}
 		return err
 	}

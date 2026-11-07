@@ -33,6 +33,7 @@ import (
 	// providers registry by name (--provider). Importing for side
 	// effects only; the binary selects providers at runtime.
 	_ "github.com/erain/glue/providers/codex"
+	_ "github.com/erain/glue/providers/deepseek"
 	_ "github.com/erain/glue/providers/gemini"
 	_ "github.com/erain/glue/providers/nvidia"
 	_ "github.com/erain/glue/providers/openrouter"
@@ -109,6 +110,12 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 
 	switch args[0] {
+	case "models":
+		if err := modelsCommand(args[1:], stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "run":
 		if err := runCommand(ctx, args[1:], stdin, stdout, stderr, newProvider); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -177,6 +184,7 @@ func newAgent(newProvider providerFactory, cfg agentConfig) (*glue.Agent, error)
 	systemPrompt, autoContinue := capabilityDefaults(cfg.Provider, cfg.Tools, cfg.Coding)
 	return glue.NewAgent(glue.AgentOptions{
 		Provider:     provider,
+		Options:      cfg.Options,
 		Model:        normalizeModel(cfg.Model),
 		Tools:        append([]glue.Tool(nil), cfg.Tools...),
 		Store:        filestore.New(cfg.StoreDir),
@@ -242,7 +250,7 @@ func printVersion(w io.Writer) {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  glue run --prompt <text> [--provider <name>] [--id <id>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
+  glue run --prompt <text> [--provider <name>] [--id <id> | --continue] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]
   glue serve [--provider <name>] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
@@ -265,6 +273,7 @@ func printUsage(w io.Writer) {
   glue connect --forget-permission <id> [--forget-permission-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
+  models   List curated providers, models, and supported thinking levels (no credentials needed).
   run      Run a local agent on any registered provider, optionally with coding tools.
   goal     Run an autonomous goal loop headlessly (plan → make → verify until done or a guardrail trips); exit code reflects the outcome.
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
@@ -275,8 +284,11 @@ Flags:
   --id       Session id. Defaults to "default".
   --prompt   Prompt text. Required unless --skill is set or connect is in an inspection mode.
   --skill    Connect mode: run one daemon skill instead of --prompt.
-  --provider Run/serve provider: codex, gemini, nvidia, or openrouter. Defaults to gemini.
+  --provider Run/serve provider: codex, deepseek, gemini, nvidia, or openrouter. Defaults to gemini.
              Use --provider codex for a ChatGPT-subscription coding agent (run "codex login" first).
+  --select   Run mode: choose provider, model, and thinking level in terminal menus.
+  --thinking Run/serve/goal thinking level for the selected model; see glue models.
+             Omit or use default to preserve API defaults.
   --model    Model id. Defaults to the selected provider's default model. gemini/<model> accepted.
   --store    File session store directory. Defaults to .glue/sessions.
   --work     Workspace for AGENTS.md, skills, roles, and --coding tools. Defaults to ".".

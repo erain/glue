@@ -25,6 +25,12 @@ type EditFileOptions struct {
 	// fs.Default().Merge(extras...) to layer extras on top of the
 	// shipped defaults.
 	Blocklist Blocklist
+
+	// Ledger, when non-nil, refuses edits to files whose on-disk
+	// modification time differs from the one recorded at last read —
+	// the model must re-read before editing. Files never read are not
+	// checked. Successful edits refresh the ledger entry.
+	Ledger *ReadLedger
 }
 
 type fileEditArgs struct {
@@ -95,6 +101,7 @@ func FileEdit(opts EditFileOptions) (glue.Tool, error) {
 			result, err := editFile(absWorkDir, args, editPolicy{
 				maxBytes:  max,
 				blocklist: blocklist,
+				ledger:    opts.Ledger,
 			})
 			if err != nil {
 				return glue.ErrorResult(err), nil
@@ -107,6 +114,7 @@ func FileEdit(opts EditFileOptions) (glue.Tool, error) {
 type editPolicy struct {
 	maxBytes  int
 	blocklist Blocklist
+	ledger    *ReadLedger
 }
 
 func editFile(workDir string, args fileEditArgs, policy editPolicy) (glue.ToolResult, error) {
@@ -144,6 +152,9 @@ func editFile(workDir string, args fileEditArgs, policy editPolicy) (glue.ToolRe
 	}
 	if info.Size() > int64(policy.maxBytes) {
 		return glue.ToolResult{}, fmt.Errorf("fs: file %q is %d bytes, exceeds max %d", rel, info.Size(), policy.maxBytes)
+	}
+	if _, stale := policy.ledger.Stale(target, info.ModTime()); stale {
+		return glue.ToolResult{}, fmt.Errorf("fs: %q changed on disk after you last read it (external edit, formatter, or git operation); re-read the file and base the edit on its current content", rel)
 	}
 
 	if containsLazyPlaceholder(args.NewString) && !containsLazyPlaceholder(args.OldString) {
@@ -193,6 +204,11 @@ func editFile(workDir string, args fileEditArgs, policy editPolicy) (glue.ToolRe
 	}
 	if err := atomicWriteFile(filepath.Dir(target), target, updatedBytes, perm); err != nil {
 		return glue.ToolResult{}, err
+	}
+	// Refresh the ledger so our own write doesn't read as an external
+	// change on the next edit.
+	if after, err := os.Stat(target); err == nil {
+		policy.ledger.Record(target, after.ModTime())
 	}
 
 	cleanRel := filepath.ToSlash(filepath.Clean(rel))

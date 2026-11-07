@@ -25,6 +25,73 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
   text to the clipboard via an OSC 52 sequence — works locally and over
   SSH with no external binary. Defaults to the last reply; `/copy 2`
   targets reply #2; **Ctrl+Y** copies the last reply with no typing. (#362)
+- **Stale-file guard for `edit_file` (`tools/fs.ReadLedger`).** The
+  roadmap's #1 cause of edit-match failures: the file changed on disk
+  (user edit, formatter, git operation) after the model read it, and
+  the edit then mismatched or clobbered the newer content. The coding
+  bundle now shares a read-ledger: `read_file` records each file's
+  mtime, `edit_file` refuses to edit a file whose mtime moved since —
+  with a "re-read the file" instruction — and both mutators refresh
+  the ledger after their own writes so harness edits never
+  false-alarm. Files never read are not checked; a nil ledger keeps
+  the old behavior everywhere else. (#368)
+
+- **TUI usage display actually works, and can show dollars
+  (`tui.Pricing`).** The status bar's token segment and `/usage` read
+  a field no code ever populated — they were dead since they shipped.
+  Turns now report their summed assistant-message usage; the status
+  bar shows the last turn's `N in / N out`, `/usage` adds session
+  totals, and both append a running cost estimate when the
+  `--usage-*-price` flags are set. Session totals reset with
+  `/clear`, `/resume`, and session switches. (#370)
+
+- **AGENTS.md is now a chain from repo root to workdir
+  (`LoadContext`).** Previously only `<workDir>/AGENTS.md` loaded;
+  in a monorepo, running from a subdirectory lost the repo-wide
+  instructions (or vice versa). Every AGENTS.md from the repository
+  root (nearest ancestor with `.git`) down to the workdir is
+  concatenated root-first, so nearer files read as refinements.
+  Outside a repository the old single-file behavior is unchanged.
+  (#369)
+
+- **Actionable model-unavailable errors
+  (`providers.ModelUnavailableHint`, `Factory.ModelsListURL`).** A 404
+  / model-not-found failure previously surfaced as a raw provider
+  error with no recovery path (live case: NVIDIA's catalog lists
+  `moonshotai/kimi-k2.6` but some accounts 404 on it). One-shot runs
+  and the TUI now append which model was requested, that the account
+  may lack access, and how to pick another — including the provider's
+  model-catalog URL declared in the registry (gemini, nvidia,
+  openrouter). The TUI hint points at `/model <id>`. (#367)
+
+- **`glue run --continue` reopens the most recently updated session.**
+  Resume previously existed only inside the TUI (`/resume` picker);
+  from the CLI you had to remember the `--id` you used. `--continue`
+  asks the store for the newest session, prints which one it picked
+  (id, message count, last-updated), and works for both the TUI and
+  one-shot `--prompt` runs. Mutually exclusive with `--id`. (#366)
+
+- **`find_files`, `grep`, and the TUI `@`-picker respect `.gitignore`
+  (`tools/fs.IgnoreMatcher`).** The recursive walkers previously
+  skipped only `.git`, so real projects burned tokens walking
+  `node_modules` and build output. A dependency-free matcher covers
+  the gitignore core — negation with last-match-wins, `/` anchoring,
+  trailing-`/` dir-only patterns, `*`/`?`/`[...]`/`**`, nested
+  `.gitignore` files — and ignored directories prune the whole
+  subtree (git semantics: no re-inclusion below an excluded dir).
+  Coding-bundle tools set `NavOptions.RespectGitignore`; per-call
+  `include_ignored: true` reaches ignored paths when needed. (#365)
+
+- **Refreshable environment context block for coding runs
+  (`AgentOptions.EnvContext`, `tools/coding.EnvContext`).** Coding
+  sessions now carry a tagged `<environment_context>` user message —
+  cwd, OS, date, git branch/dirty-state/head — injected before the
+  first prompt and re-injected only when it changes, so the transcript
+  prefix (and provider prompt caching) stays intact. The model stops
+  spending its opening turns on `pwd`/`git status`. Wired into
+  `glue run --coding` and `glue goal --coding`; the TUI's `/resume`
+  replay filters the blocks out of the visible transcript. (#364)
+
 - **TUI: `/` picker shows every command; `@` picker gains scroll
   indicators (`cmd/glue/tui`).** The slash-command popup previously
   reused the file picker's 8-row scroll window with no indicator, so a

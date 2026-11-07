@@ -41,6 +41,12 @@ type NavOptions struct {
 	// GrepMaxFileBytes is the per-file size ceiling for grep. Zero falls
 	// back to DefaultGrepMaxFileBytes.
 	GrepMaxFileBytes int
+
+	// RespectGitignore makes find_files and grep skip paths matched by
+	// the workspace's .gitignore files (root and nested). Callers can
+	// still reach ignored paths per-call via the tools' include_ignored
+	// parameter.
+	RespectGitignore bool
 }
 
 func (o NavOptions) maxResults() int {
@@ -164,9 +170,10 @@ func ListDirTool(opts NavOptions) (glue.Tool, error) {
 }
 
 type findFilesArgs struct {
-	Pattern    string `json:"pattern"`
-	Path       string `json:"path"`
-	MaxResults int    `json:"max_results"`
+	Pattern        string `json:"pattern"`
+	Path           string `json:"path"`
+	MaxResults     int    `json:"max_results"`
+	IncludeIgnored bool   `json:"include_ignored"`
 }
 
 // FindTool returns a read-only "find_files" tool that recursively finds
@@ -178,18 +185,23 @@ func FindTool(opts NavOptions) (glue.Tool, error) {
 	}
 	blocklist := opts.Blocklist
 	defaultLimit := opts.maxResults()
+	var ignore *IgnoreMatcher
+	if opts.RespectGitignore {
+		ignore = NewIgnoreMatcher(workDir)
+	}
 
 	return glue.NewTool[findFilesArgs](
 		glue.ToolSpec{
 			Name:          "find_files",
-			Description:   "Recursively find files whose name matches a glob pattern (e.g. *.go) under a workspace directory. Returns workspace-relative paths. Read-only; skips .git.",
+			Description:   "Recursively find files whose name matches a glob pattern (e.g. *.go) under a workspace directory. Returns workspace-relative paths. Read-only; skips .git and .gitignore'd paths (set include_ignored to search those too).",
 			PromptSnippet: "Find files by name glob",
 			Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
     "pattern": { "type": "string", "description": "Glob matched against each file's basename, e.g. *.go or *_test.go." },
     "path": { "type": "string", "description": "Directory to search under, relative to the workspace. Defaults to the workspace root." },
-    "max_results": { "type": "integer", "description": "Cap on returned paths." }
+    "max_results": { "type": "integer", "description": "Cap on returned paths." },
+    "include_ignored": { "type": "boolean", "description": "Also search .gitignore'd paths. Default false.", "default": false }
   },
   "required": ["pattern"]
 }`),
@@ -211,6 +223,10 @@ func FindTool(opts NavOptions) (glue.Tool, error) {
 				limit = args.MaxResults
 			}
 
+			effectiveIgnore := ignore
+			if args.IncludeIgnored {
+				effectiveIgnore = nil
+			}
 			matches := []string{}
 			truncated := false
 			walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -219,6 +235,11 @@ func FindTool(opts NavOptions) (glue.Tool, error) {
 				}
 				if d.IsDir() {
 					if d.Name() == ".git" {
+						return filepath.SkipDir
+					}
+					// The walk root was requested explicitly; only
+					// prune ignored directories below it.
+					if p != root && effectiveIgnore.Ignored(relForDisplay(workDir, p), true) {
 						return filepath.SkipDir
 					}
 					return nil
@@ -232,6 +253,9 @@ func FindTool(opts NavOptions) (glue.Tool, error) {
 				}
 				rel := relForDisplay(workDir, p)
 				if blocked, _ := blocklist.Match(rel); blocked {
+					return nil
+				}
+				if effectiveIgnore.Ignored(rel, false) {
 					return nil
 				}
 				if len(matches) >= limit {
@@ -258,10 +282,11 @@ func FindTool(opts NavOptions) (glue.Tool, error) {
 }
 
 type grepArgs struct {
-	Pattern    string `json:"pattern"`
-	Path       string `json:"path"`
-	Glob       string `json:"glob"`
-	MaxResults int    `json:"max_results"`
+	Pattern        string `json:"pattern"`
+	Path           string `json:"path"`
+	Glob           string `json:"glob"`
+	MaxResults     int    `json:"max_results"`
+	IncludeIgnored bool   `json:"include_ignored"`
 }
 
 // GrepTool returns a read-only "grep" tool that recursively searches file
@@ -274,11 +299,15 @@ func GrepTool(opts NavOptions) (glue.Tool, error) {
 	blocklist := opts.Blocklist
 	defaultLimit := opts.maxResults()
 	maxFileBytes := opts.grepMaxFileBytes()
+	var ignore *IgnoreMatcher
+	if opts.RespectGitignore {
+		ignore = NewIgnoreMatcher(workDir)
+	}
 
 	return glue.NewTool[grepArgs](
 		glue.ToolSpec{
 			Name:          "grep",
-			Description:   "Recursively search file contents for a regular expression (RE2) under a workspace directory. Returns path:line:text matches. Read-only; skips .git, secret-shaped files, and files over the size ceiling.",
+			Description:   "Recursively search file contents for a regular expression (RE2) under a workspace directory. Returns path:line:text matches. Read-only; skips .git, .gitignore'd paths (set include_ignored to search those too), secret-shaped files, and files over the size ceiling.",
 			PromptSnippet: "Search file contents by regex",
 			PromptGuidelines: []string{
 				"Navigate with grep/find_files/list_dir instead of shell find or ls.",
@@ -289,7 +318,8 @@ func GrepTool(opts NavOptions) (glue.Tool, error) {
     "pattern": { "type": "string", "description": "RE2 regular expression matched against each line." },
     "path": { "type": "string", "description": "Directory to search under, relative to the workspace. Defaults to the workspace root." },
     "glob": { "type": "string", "description": "Optional glob to restrict matched files by basename, e.g. *.go." },
-    "max_results": { "type": "integer", "description": "Cap on returned match lines." }
+    "max_results": { "type": "integer", "description": "Cap on returned match lines." },
+    "include_ignored": { "type": "boolean", "description": "Also search .gitignore'd paths. Default false.", "default": false }
   },
   "required": ["pattern"]
 }`),
@@ -318,6 +348,10 @@ func GrepTool(opts NavOptions) (glue.Tool, error) {
 				limit = args.MaxResults
 			}
 
+			effectiveIgnore := ignore
+			if args.IncludeIgnored {
+				effectiveIgnore = nil
+			}
 			matches := []string{}
 			truncated := false
 			walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -326,6 +360,9 @@ func GrepTool(opts NavOptions) (glue.Tool, error) {
 				}
 				if d.IsDir() {
 					if d.Name() == ".git" {
+						return filepath.SkipDir
+					}
+					if p != root && effectiveIgnore.Ignored(relForDisplay(workDir, p), true) {
 						return filepath.SkipDir
 					}
 					return nil
@@ -340,6 +377,9 @@ func GrepTool(opts NavOptions) (glue.Tool, error) {
 				}
 				rel := relForDisplay(workDir, p)
 				if blocked, _ := blocklist.Match(rel); blocked {
+					return nil
+				}
+				if effectiveIgnore.Ignored(rel, false) {
 					return nil
 				}
 				info, err := d.Info()

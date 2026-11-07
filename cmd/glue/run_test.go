@@ -330,3 +330,81 @@ func TestRunCLIMissingPrompt(t *testing.T) {
 		t.Fatalf("stderr = %q, want missing prompt", stderr.String())
 	}
 }
+
+func TestRunCLIContinuePicksMostRecentSession(t *testing.T) {
+	t.Parallel()
+
+	storeDir := t.TempDir()
+
+	// Seed two sessions; "older" first so "newer" has the later UpdatedAt.
+	for _, id := range []string{"older", "newer"} {
+		p := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("seed " + id)}}
+		var stdout, stderr bytes.Buffer
+		if code := runCLI(context.Background(), []string{
+			"run", "--id", id, "--prompt", "seed", "--store", storeDir,
+		}, &stdout, &stderr, fakeFactory(p)); code != 0 {
+			t.Fatalf("seed %s code = %d stderr=%q", id, code, stderr.String())
+		}
+	}
+
+	cont := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("continued")}}
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run", "--continue", "--prompt", "and then", "--store", storeDir,
+	}, &stdout, &stderr, fakeFactory(cont))
+	if code != 0 {
+		t.Fatalf("continue code = %d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `continuing session "newer"`) {
+		t.Fatalf("stderr = %q, want continuing session \"newer\"", stderr.String())
+	}
+	// Resumed transcript (user+assistant) plus the new user message.
+	if got := len(cont.requests[0].Messages); got != 3 {
+		t.Fatalf("request msg count = %d, want 3", got)
+	}
+}
+
+func TestRunCLIContinueRejectsExplicitID(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run", "--continue", "--id", "x", "--prompt", "hi", "--store", t.TempDir(),
+	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}))
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero for --continue with --id")
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Fatalf("stderr = %q, want mutually exclusive error", stderr.String())
+	}
+}
+
+func TestRunCLIContinueEmptyStoreErrors(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run", "--continue", "--prompt", "hi", "--store", t.TempDir(),
+	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}))
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero for --continue with empty store")
+	}
+	if !strings.Contains(stderr.String(), "no sessions found") {
+		t.Fatalf("stderr = %q, want no sessions found", stderr.String())
+	}
+}
+
+func TestRunCLIModelNotFoundHint(t *testing.T) {
+	t.Parallel()
+	provider := &scriptedProvider{err: errors.New(`loop: provider stream: nvidia: http 404: {"status":404,"detail":"Function 'f': Not found for account 'a'"}`)}
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"run", "--provider", "nvidia", "--prompt", "hi", "--store", t.TempDir(),
+	}, &stdout, &stderr, fakeFactory(provider))
+	if code == 0 {
+		t.Fatal("code = 0, want nonzero")
+	}
+	for _, want := range []string{"may be unavailable", "--model", "integrate.api.nvidia.com/v1/models"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, want hint containing %q", stderr.String(), want)
+		}
+	}
+}
