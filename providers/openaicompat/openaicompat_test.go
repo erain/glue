@@ -411,3 +411,25 @@ func TestConvertToolMessageRequiresID(t *testing.T) {
 		t.Fatalf("converted tool message: %+v", got)
 	}
 }
+
+func TestReasoningReplayIsOptInAndRequiresTools(t *testing.T) {
+	for _, preserve := range []bool{false, true} {
+		for _, tools := range []bool{false, true} {
+			req := loop.ProviderRequest{Messages: []loop.Message{{Role: loop.MessageRoleAssistant, Content: []loop.ContentPart{{Type: loop.ContentTypeThinking, Thinking: "reason"}, {Type: loop.ContentTypeText, Text: "answer"}}}}}
+			if tools {
+				req.Tools = []loop.ToolSpec{{Name: "tool"}}
+			}
+			body, err := buildChatRequest(req, preserve)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ""
+			if preserve && tools {
+				want = "reason"
+			}
+			if body.Messages[0].ReasoningContent != want {
+				t.Fatalf("preserve=%v tools=%v reasoning=%q", preserve, tools, body.Messages[0].ReasoningContent)
+			}
+		}
+	}
+}

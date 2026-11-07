@@ -573,3 +573,15 @@ The catalog is curated, includes each provider's default, and shows verified
 thinking levels. It does not check account access or fetch a live model list.
 Use `--model <id>` for models outside the catalog; JSON output includes each
 provider's credential variable and live catalog URL when available.
+
+DeepSeek is available directly with `--provider deepseek` and
+`DEEPSEEK_API_KEY`. Its default model, `deepseek-flash`, serves V4.1 Flash.
+The adapter preserves streamed reasoning when replaying tool conversations.
+Images are not yet supported by Glue's shared Chat Completions transport.
+
+```sh
+export DEEPSEEK_API_KEY=...
+glue run --provider deepseek --prompt 'Explain this repository' --coding
+```
+
+See the [DeepSeek thinking and tool replay requirements](https://api-docs.deepseek.com/guides/thinking_mode/).
