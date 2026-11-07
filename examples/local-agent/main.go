@@ -36,7 +36,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 
 	prompt := flags.String("prompt", "", "prompt text")
 	id := flags.String("id", "example", "session id")
-	model := flags.String("model", "gemini-2.5-flash", "Gemini model id")
+	model := flags.String("model", gemini.DefaultModel, "Gemini model id")
 	storeDir := flags.String("store", ".glue/example-sessions", "session store directory")
 	if err := flags.Parse(args); err != nil {
 		return 1

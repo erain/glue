@@ -181,7 +181,7 @@ glue-review --provider nvidia
 
 # Gemini:
 export GEMINI_API_KEY=...
-glue-review --provider gemini --model gemini-2.5-flash
+glue-review --provider gemini --model gemini-3-flash-preview
 
 # Pick a base ref other than `main`:
 glue-review --base origin/release
@@ -193,7 +193,7 @@ glue-review --base origin/release
 |---|---|---|
 | `--base` | `main` | Base ref to diff against. |
 | `--provider` | `openrouter` | Provider name, or comma-separated failover chain (`openrouter,nvidia,gemini`). |
-| `--model` | provider-specific | OpenRouter: `openrouter/free` (meta-router); NVIDIA: `moonshotai/kimi-k2.6`; Gemini: `gemini-2.5-flash`. |
+| `--model` | provider-specific | OpenRouter: `openrouter/free` (meta-router); NVIDIA: `moonshotai/kimi-k2.6`; Gemini: `gemini-3-flash-preview`. |
 | `--max-turns` | `16` | Loop budget. |
 | `--paths` / `--paths-ignore` | (none) | Git pathspec globs to include / exclude. |
 | `--prompt` | (default) | Override the user message (one-off focused runs: "only check for SQL injection"). |

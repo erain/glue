@@ -261,7 +261,9 @@ func decodeSignature(s string) []byte {
 // neither. The id may carry suffixes (e.g. "gemini-3.1-pro-preview"), so match
 // on the family prefix.
 func isModernGeminiModel(model string) bool {
-	return strings.HasPrefix(model, "gemini-3") || strings.HasPrefix(model, "gemini-4")
+	// ListModels returns ids as "models/<id>"; the SDK accepts both forms.
+	id := strings.TrimPrefix(model, "models/")
+	return strings.HasPrefix(id, "gemini-3") || strings.HasPrefix(id, "gemini-4")
 }
 
 func rawObject(raw json.RawMessage) (map[string]any, error) {

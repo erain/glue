@@ -37,17 +37,16 @@ func TestStreamUsesAPIKeyEnv(t *testing.T) {
 	}
 }
 
-// TestLiveSmoke runs against the real NVIDIA endpoint when NVIDIA_API_KEY
-// is set. Defaults to moonshotai/kimi-k2.6 (the package's flagship target);
-// CI overrides to a faster, more stable model via NVIDIA_LIVE_MODEL.
+// TestLiveSmoke checks the NVIDIA wire protocol against the real endpoint.
+// It is opt-in: set NVIDIA_LIVE_MODEL to a model your account can serve,
+// as well as NVIDIA_API_KEY. NVIDIA model entitlements vary by account and
+// models are retired often, so an NVIDIA_API_KEY alone does not run it;
+// the always-on live coverage uses OpenRouter's openrouter/free instead.
 func TestLiveSmoke(t *testing.T) {
 	apiKey := os.Getenv("NVIDIA_API_KEY")
-	if apiKey == "" {
-		t.Skip("NVIDIA_API_KEY not set; skipping live smoke")
-	}
 	model := os.Getenv("NVIDIA_LIVE_MODEL")
-	if model == "" {
-		model = "moonshotai/kimi-k2.6"
+	if apiKey == "" || model == "" {
+		t.Skip("set NVIDIA_API_KEY and NVIDIA_LIVE_MODEL to run the NVIDIA live smoke")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)

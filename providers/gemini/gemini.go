@@ -48,7 +48,6 @@ func init() {
 		Models: []providers.ModelInfo{
 			{ID: "gemini-4-argon", ThinkingLevels: []string{"low", "medium", "high"}},
 			{ID: "gemini-3.1-pro-preview", ThinkingLevels: []string{"low", "medium", "high"}},
-			{ID: "gemini-3-pro-preview", ThinkingLevels: []string{"low", "high"}},
 			{ID: "gemini-3-flash-preview", ThinkingLevels: []string{"minimal", "low", "medium", "high"}},
 		},
 		EnvKey:        EnvKey,

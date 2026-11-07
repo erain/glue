@@ -368,8 +368,8 @@ func TestEncodeDecodeSignatureRoundTrip(t *testing.T) {
 func TestIsModernGeminiModel(t *testing.T) {
 	t.Parallel()
 
-	modern := []string{"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash"}
-	legacy := []string{"gemini-2.5-flash", "gemini-2.5-pro", "gemini-pro-latest", ""}
+	modern := []string{"gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash", "gemini-4-argon", "models/gemini-3.1-pro-preview", "models/gemini-4-argon"}
+	legacy := []string{"gemini-2.5-flash", "models/gemini-2.5-flash", "gemini-pro-latest", "custom-gemini-4", "models/", ""}
 	for _, m := range modern {
 		if !isModernGeminiModel(m) {
 			t.Errorf("isModernGeminiModel(%q) = false, want true", m)
@@ -743,6 +743,7 @@ func TestThinkingLevelSelection(t *testing.T) {
 		{"gemini-4-argon", "minimal", false}, {"gemini-3.1-pro-preview", "medium", true},
 		{"gemini-3-flash-preview", "minimal", true}, {"gemini-2.5-flash", "low", false},
 		{"custom-gemini-4", "high", false}, {"gemini-4-argon", "typo", false},
+		{"models/gemini-4-argon", "medium", true}, {"models/gemini-3-flash-preview", "minimal", true}, {"models/gemini-2.5-flash", "low", false},
 	} {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			cfg, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"thinking_level": tc.level}}, tc.model)

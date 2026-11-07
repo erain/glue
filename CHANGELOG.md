@@ -17,6 +17,18 @@ and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
 
 ## Unreleased
 
+- **Gemini ids with a `models/` prefix get Gemini 3/4 handling
+  (`providers/gemini`, `providers`).** Ids copied from ListModels, such as
+  `models/gemini-3.1-pro-preview`, again receive thought-signature replay,
+  includeThoughts, and `--thinking` validation. `gemini-3-pro-preview`,
+  which the API no longer serves, is removed from the model catalog.
+- **Live tests run on OpenRouter's `openrouter/free`.** The glue-review
+  smoke and fixture replay and the local-agent example now need only
+  `OPENROUTER_API_KEY`, and CI's always-on live job is `live (openrouter)`.
+  The `live (nvidia)` job is removed; the NVIDIA adapter smoke is opt-in
+  via `NVIDIA_LIVE_MODEL`. Retired defaults are replaced: glue-review's
+  Gemini model is `gemini-3-flash-preview`, and the local-agent example
+  uses the Gemini provider default. (#395, #390)
 - **TUI: `/copy [N]` + Ctrl+Y copy an assistant reply's raw markdown to
   the system clipboard (`cmd/glue/tui`).** Selecting a reply out of the
   terminal dragged in glamour styling (ANSI, box-drawing, wrapped lines),

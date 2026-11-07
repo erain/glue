@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // ModelInfo describes a curated model choice. An empty ThinkingLevels list
@@ -36,13 +37,15 @@ func Models(name string) []ModelInfo {
 }
 
 // ThinkingOptions validates an explicit thinking level against the selected
-// model. Empty or "default" preserves the provider's API default.
+// model. Empty or "default" preserves the provider's API default. A
+// "models/" resource prefix, as Gemini's ListModels returns, is ignored.
 func ThinkingOptions(provider, model, level string) (map[string]any, error) {
 	if level == "" || level == "default" {
 		return nil, nil
 	}
+	id := strings.TrimPrefix(model, "models/")
 	for _, m := range Models(provider) {
-		if m.ID == model && slices.Contains(m.ThinkingLevels, level) {
+		if m.ID == id && slices.Contains(m.ThinkingLevels, level) {
 			return map[string]any{"thinking_level": level}, nil
 		}
 	}
