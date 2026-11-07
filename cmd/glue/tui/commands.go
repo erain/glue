@@ -61,6 +61,7 @@ func slashSpecs() []slashSpec {
 		{Name: "usage", Desc: "show this turn's token usage (when the provider reports it)"},
 		{Name: "tools", Desc: "list registered tools"},
 		{Name: "goal", Args: "<objective>", Desc: "pursue a goal autonomously (also: status · pause · resume · list · clear)"},
+		{Name: "copy", Args: "[N]", Desc: "copy an assistant reply's raw markdown to the clipboard (Ctrl+Y = last)"},
 		{Name: "model", Args: "<id>", Desc: "switch model for subsequent turns"},
 		{Name: "session", Args: "[id]", Desc: "print current session id, or switch to <id>"},
 		{Name: "compact", Desc: "summarize older messages to free context window"},
