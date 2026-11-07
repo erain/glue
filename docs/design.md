@@ -16,38 +16,36 @@ of truth for implementation order and status after the initial bootstrap.
   Gemini, CLI code, stores, and filesystem conventions.
 - Support local CLI agents as a first-class use case without making the CLI the
   core abstraction.
-- Start with Gemini as the only built-in provider while keeping provider
-  integration pluggable.
-- Persist local sessions to files so CLI sessions can resume.
+- Keep model/provider integration pluggable across local and planned remote
+  execution modes.
+- Persist sessions through file or SQLite stores so coding work can resume.
 - Treat documentation and verification as required work for every issue.
 
 ## Non-Goals
 
-The non-goals list below was revised in
-[`adr/0005-foundation-expansion.md`](adr/0005-foundation-expansion.md)
-when work began on the Peggy long-running-agent milestone (tracker
-[#110](https://github.com/erain/glue/issues/110)). Items lifted by
-ADR-0005 are now in scope behind framework interfaces; items below are
-what remains firm.
+The current product direction is recorded in
+[ADR-0018](adr/0018-framework-coding-and-ax-direction.md): the reusable framework
+and coding agent remain active; Peggy is retired. Remote execution via AX is
+planned, not shipped. [project-plan.md](project-plan.md) defines the planning
+work required before implementation.
 
-- **Sandboxing / containerization.** No process, namespace, or
-  container isolation in glue. Hosts that need it implement the
-  `Executor` interface against docker / firecracker / their own
-  sandbox helper. Glue ships a local `Executor` only.
+- **No in-core sandbox orchestrator.** Glue currently ships a local `Executor`.
+  Future whole-job remote execution delegates orchestration to AX; a shell
+  executor alone does not move filesystem/git tools into a remote workspace.
 - **No dynamic Go plugin loading.**
-- **No deploy target.** `cmd/glue serve` (introduced under M3 of
-  tracker [#110](https://github.com/erain/glue/issues/110)) is a local
+- **No generic deployment platform.** `cmd/glue serve` (introduced under M3 of
+  historical tracker [#110](https://github.com/erain/glue/issues/110)) is a local
   daemon for channel adapters to attach to; it is not a hosted
   service abstraction.
 - **No implicit parallel tool execution.** `RunRequest.Parallel`
   remains opt-in and preserves transcript order (#17, shipped).
 - **No channel concepts in core `glue`.** Telegram, Slack, web,
-  IDE-attach, and similar live in product packages (e.g.
-  `agents/peggy`) and bind to glue Sessions through the daemon
+  IDE-attach, and similar belong in host applications
+  and bind to glue Sessions through the daemon
   protocol or in-process API. Glue does not learn about them.
 - **No default UI or default policy in core `glue`.** Every product
   concern enters glue only as an interface the host fills in. This is
-  the rule that protects glue's purity through the Peggy expansion;
+  the boundary between the framework and host applications;
   see ADR-0005 §1.
 
 For the historical "lifted" non-goals — shell execution, write-side
@@ -56,16 +54,11 @@ compaction — see ADR-0005 for which interface gates each one.
 
 ## Long-Running Agents
 
-Glue's original `0.x` shape targeted short-lived, single-purpose agents
-(see `agents/glue-review`: emit one PR comment and exit). The Peggy
-milestone (tracker [#110](https://github.com/erain/glue/issues/110))
-extends glue toward a different category: long-running, multi-channel,
-memory-bearing agents that may live for days. The framework expansions
-required to support that category — Codex provider, summarizing
-compactor + FTS5 session search, daemon mode, channel adapter pattern,
-Executor / Permission / Hook interfaces, and MCP client integration are
-designed in ADRs 0005-0011 and the milestone ADRs that follow them. The
-Executor / Permission / Hook trio is specified in
+The former Peggy milestone introduced reusable long-running capabilities:
+summarizing compaction, FTS5 session search, daemon mode, and MCP integration.
+These remain supported framework capabilities after Peggy retirement; assistant
+channels and scheduling are no longer roadmap goals.
+The Executor / Permission / Hook trio is specified in
 [`adr/0009-executor-permission-hook.md`](adr/0009-executor-permission-hook.md).
 The local daemon protocol is specified in
 [`adr/0010-daemon-protocol.md`](adr/0010-daemon-protocol.md).
@@ -316,8 +309,8 @@ set rooted there via `tui.Config.BuildTools`, and records the root in
 `GoalSpec.WorkDir` so resume re-attaches the same worktree. The headless
 `glue goal "<objective>"` subcommand runs the same loop without a TUI —
 `--list` / `--resume` / `--worktree` / `--max-iterations` / `--budget`, with
-the terminal status mapped to the exit code — which is what cron, CI, or a
-peggy schedule invokes for unattended goals.
+the terminal status mapped to the exit code, for unattended goals launched
+by cron, CI, or other external schedulers.
 
 ## Gemini Provider
 
