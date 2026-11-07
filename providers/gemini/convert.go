@@ -98,7 +98,7 @@ func convertMessage(message loop.Message) (*genai.Content, error) {
 				Args: args,
 			}}
 			// Echo the thought signature the model produced for this call.
-			// Gemini 3.x rejects a replayed function call that has lost it.
+			// Gemini 3.x and 4.x reject a replayed function call that has lost it.
 			if sig := decodeSignature(part.Signature); len(sig) > 0 {
 				call.ThoughtSignature = sig
 			}
@@ -171,12 +171,12 @@ func ConvertTools(tools []loop.ToolSpec) ([]*genai.Tool, error) {
 // Google's gemini-cli uses. We fall back to it only when a real signature is
 // absent (compacted history, transcripts written before signature
 // round-tripping landed, or a turn that genuinely arrived unsigned), so a
-// replayed Gemini 3.x function call does not 400 with "Function call is
+// replayed Gemini 3.x and 4.x function call does not 400 with "Function call is
 // missing a thought_signature". The SDK base64-encodes these bytes on the
 // wire and the backend recognizes the decoded value; verified accepted live.
 var syntheticThoughtSignature = []byte("skip_thought_signature_validator")
 
-// ensureActiveLoopSignatures guarantees that, for Gemini 3.x, every model turn
+// ensureActiveLoopSignatures guarantees that, for Gemini 3.x and 4.x, every model turn
 // in the active loop has a thought signature on its first function call — the
 // invariant the API enforces. The active loop begins at the most recent
 // genuine user turn (one carrying text or images, not just function
@@ -254,13 +254,13 @@ func decodeSignature(s string) []byte {
 	return sig
 }
 
-// isModernGeminiModel reports whether the model belongs to the Gemini 3.x
+// isModernGeminiModel reports whether the model belongs to the Gemini 3.x or 4.x
 // family. Those ids emit opaque thought signatures that the API requires
 // echoed back on replay and benefit from includeThoughts; 2.5 and earlier do
 // neither. The id may carry suffixes (e.g. "gemini-3.1-pro-preview"), so match
 // on the family prefix.
 func isModernGeminiModel(model string) bool {
-	return strings.Contains(model, "gemini-3")
+	return strings.HasPrefix(model, "gemini-3") || strings.HasPrefix(model, "gemini-4")
 }
 
 func rawObject(raw json.RawMessage) (map[string]any, error) {
@@ -299,7 +299,7 @@ func buildGenerateConfig(req loop.ProviderRequest, model string) (*genai.Generat
 	}
 	config.Tools = tools
 
-	// Surface the model's reasoning on Gemini 3.x: includeThoughts streams
+	// Surface the model's reasoning on Gemini 3.x and 4.x: includeThoughts streams
 	// thought parts (and the signatures attached to them) so callers can show
 	// thinking and so signed thoughts round-trip. The function-call signature
 	// the API requires on replay is returned regardless of this flag, so it is
@@ -311,6 +311,16 @@ func buildGenerateConfig(req loop.ProviderRequest, model string) (*genai.Generat
 
 	for key, value := range req.Options {
 		switch key {
+		case "thinking_level":
+			level, ok := value.(string)
+			if !ok || !isModernGeminiModel(model) {
+				return nil, fmt.Errorf("gemini: thinking_level requires a string and a Gemini 3 or 4 model")
+			}
+			valid := level == "low" || level == "high" || (level == "medium" && (strings.HasPrefix(model, "gemini-4") || strings.Contains(model, "flash"))) || (level == "minimal" && strings.HasPrefix(model, "gemini-3") && strings.Contains(model, "flash"))
+			if !valid {
+				return nil, fmt.Errorf("gemini: thinking_level %q is unsupported for model %q", level, model)
+			}
+			config.ThinkingConfig.ThinkingLevel = genai.ThinkingLevel(strings.ToUpper(level))
 		case "temperature":
 			temperature, ok := numberAsFloat32(value)
 			if !ok {
