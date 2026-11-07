@@ -23,7 +23,7 @@ inputs:
     description: |
       Model id. When empty, uses the provider-specific default
       (OpenRouter: openrouter/free meta-router, NVIDIA:
-      moonshotai/kimi-k2.6, Gemini: gemini-2.5-flash).
+      moonshotai/kimi-k2.6, Gemini: gemini-3-flash-preview).
     required: false
     default: ''
   base-ref:

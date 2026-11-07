@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
-	"github.com/erain/glue/providers/gemini"
+	"github.com/erain/glue/providers/openrouter"
 )
 
 func TestLocalTimeToolHappyPath(t *testing.T) {
@@ -69,23 +69,24 @@ func TestLocalTimeToolInvalidArgs(t *testing.T) {
 	}
 }
 
-// TestLiveLocalAgent exercises the example end-to-end against Gemini when
-// GEMINI_API_KEY is set. It is skipped in CI.
+// TestLiveLocalAgent exercises the example's tool loop end-to-end against
+// OpenRouter's openrouter/free meta-router when OPENROUTER_API_KEY is set.
+// OPENROUTER_LIVE_MODEL pins a specific model when determinism matters.
 func TestLiveLocalAgent(t *testing.T) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
-		t.Skip("GEMINI_API_KEY is not set; skipping live example test")
+		t.Skip("OPENROUTER_API_KEY is not set; skipping live example test")
 	}
-	model := os.Getenv("GEMINI_MODEL")
+	model := os.Getenv("OPENROUTER_LIVE_MODEL")
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = openrouter.DefaultModel
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	agent := glue.NewAgent(glue.AgentOptions{
-		Provider: gemini.New(gemini.Options{APIKey: apiKey}),
+		Provider: openrouter.New(openrouter.Options{APIKey: apiKey}),
 		Model:    model,
 		Tools:    []glue.Tool{localTimeTool()},
 	})
@@ -95,6 +96,9 @@ func TestLiveLocalAgent(t *testing.T) {
 	}
 	response, err := session.Prompt(ctx, "Use the local_time tool for America/Toronto, then reply with a short sentence.")
 	if err != nil {
+		if msg := err.Error(); strings.Contains(msg, "http 429") || strings.Contains(msg, "Rate limit exceeded") {
+			t.Skipf("upstream rate-limited (free tier): %v", err)
+		}
 		t.Fatalf("prompt: %v", err)
 	}
 	if response.Text == "" {

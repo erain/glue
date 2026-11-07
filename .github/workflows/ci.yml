@@ -77,50 +77,15 @@ jobs:
             exit 0
           fi
           go test ./providers/gemini -run Live -count=1
-          go test ./examples/local-agent -run Live -count=1
-
-  live-nvidia:
-    name: live (nvidia)
-    needs: test
-    # Always-on: build.nvidia.com is free for dev, so we exercise the live
-    # provider on every push/PR to catch wire-protocol regressions early.
-    # On a manual workflow_dispatch with run_live=false we still skip, so
-    # the dispatch toggle remains useful when you explicitly want the test
-    # job's other resources without hitting the API. Fork PRs without the
-    # secret skip quietly via the runtime guard below. Promote to a
-    # required status check once we have a few weeks of green history.
-    if: github.event_name != 'workflow_dispatch' || inputs.run_live
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: stable
-          cache: true
-
-      - name: Live NVIDIA smoke
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          # Use Llama 3.3 70B in CI: faster first-byte and more stable than
-          # Kimi K2.6, while exercising the same OpenAI-compatible wire
-          # protocol the provider implements. Local devs default to
-          # moonshotai/kimi-k2.6 unless they override NVIDIA_LIVE_MODEL.
-          NVIDIA_LIVE_MODEL: meta/llama-3.3-70b-instruct
-        run: |
-          if [ -z "$NVIDIA_API_KEY" ]; then
-            echo "NVIDIA_API_KEY not configured; skipping live tests."
-            exit 0
-          fi
-          go test ./providers/nvidia -run Live -count=1 -timeout 300s
 
   live-openrouter:
     name: live (openrouter)
     needs: test
     # Always-on (free): openrouter/free auto-routes to a free underlying
-    # model so we get real OpenAI-compat coverage on every push/PR.
+    # model so we get real OpenAI-compat and tool-loop coverage on every
+    # push/PR. This is the only always-on live job: NVIDIA model access
+    # varies by account and its models are retired often, so the NVIDIA
+    # smoke is opt-in locally (NVIDIA_LIVE_MODEL).
     # Skips quietly on fork PRs (no secret).
     if: github.event_name != 'workflow_dispatch' || inputs.run_live
     runs-on: ubuntu-latest
@@ -159,6 +124,7 @@ jobs:
             exit 0
           fi
           go test ./providers/openrouter -run Live -count=1 -timeout 300s
+          go test ./examples/local-agent -run Live -count=1 -timeout 300s
           # The fixture replay shares this job (and the same free model) but
           # only runs when GLUE_REVIEW_LIVE_FIXTURES is set (manual full-live
           # dispatch); otherwise it skips quickly.

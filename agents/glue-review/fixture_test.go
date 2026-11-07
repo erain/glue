@@ -361,16 +361,15 @@ func writeFile(t *testing.T, repo, name, body string) {
 	}
 }
 
-// pickLiveProvider returns the first provider name whose API key is
-// configured in env, in failover order.
+// pickLiveProvider returns the live-test provider. Live replays run only
+// on OpenRouter's openrouter/free meta-router, which stays available as
+// individual free upstreams churn.
 func pickLiveProvider(t *testing.T) (string, error) {
 	t.Helper()
-	for _, p := range []string{"openrouter", "nvidia", "gemini"} {
-		if providerKeyAvailable(p) {
-			return p, nil
-		}
+	if !providerKeyAvailable("openrouter") {
+		return "", fmt.Errorf("OPENROUTER_API_KEY not set")
 	}
-	return "", fmt.Errorf("none of OPENROUTER_API_KEY / NVIDIA_API_KEY / GEMINI_API_KEY set")
+	return "openrouter", nil
 }
 
 // runAgentInRepo invokes run() against a real free model. Returns the
@@ -388,14 +387,8 @@ func runAgentInRepo(t *testing.T, repo, provider, sessionID string) (string, err
 		"--id", sessionID,
 		"--max-turns", "8",
 	}
-	// OpenRouter resolves to openrouter/free (the meta-router) via
-	// the provider default — robust to free-tier churn. NVIDIA gets
-	// pinned to llama-3.3-70b for fixture-test perf (its registry
-	// default kimi-k2.6 is slower than the fixture call needs).
-	switch provider {
-	case "nvidia":
-		args = append(args, "--model", "meta/llama-3.3-70b-instruct")
-	}
+	// OpenRouter resolves to openrouter/free (the meta-router) via the
+	// provider default — robust to free-tier churn.
 
 	var out, errBuf bytes.Buffer
 	rc := run(ctx, args, &out, &errBuf)

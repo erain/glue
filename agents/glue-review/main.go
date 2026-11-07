@@ -15,7 +15,7 @@
 //	glue-review                              # review current branch vs main
 //	glue-review --base origin/main           # review vs a remote ref
 //	glue-review --provider nvidia            # use NVIDIA build.nvidia.com instead
-//	glue-review --provider gemini --model gemini-2.5-flash
+//	glue-review --provider gemini --model gemini-3-flash-preview
 package main
 
 import (
@@ -229,7 +229,7 @@ func newProvider(name string) (glue.Provider, string, error) {
 	case "openrouter":
 		return openrouter.New(openrouter.Options{}), openrouter.DefaultModel, nil
 	case "gemini":
-		return gemini.New(gemini.Options{}), "gemini-2.5-flash", nil
+		return gemini.New(gemini.Options{}), "gemini-3-flash-preview", nil
 	default:
 		return nil, "", fmt.Errorf("unknown provider %q (want nvidia, openrouter, or gemini)", name)
 	}

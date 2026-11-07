@@ -26,7 +26,7 @@ Flags:
 
 - `--prompt` (required) — prompt text
 - `--id` — session id (default `example`)
-- `--model` — Gemini model id (default `gemini-2.5-flash`)
+- `--model` — Gemini model id (default: the Gemini provider's default model)
 - `--store` — session store directory (default `.glue/example-sessions`)
 
 The session is persisted to disk, so re-running with the same `--id`
@@ -42,8 +42,9 @@ Three offline tests cover the `local_time` tool's happy path, missing
 timezone arg, and invalid JSON arg. Because the tool is built with
 `glue.NewTool[T]`, both failure cases surface as an error `ToolResult`
 (`IsError`) the model can recover from rather than a Go error that
-crashes the loop. The live test (`TestLiveLocalAgent`) is gated behind
-`GEMINI_API_KEY` and skipped in CI.
+crashes the loop. The live test (`TestLiveLocalAgent`) drives the same
+tool loop through OpenRouter's `openrouter/free` meta-router and runs
+only when `OPENROUTER_API_KEY` is set.
 
 ## Compare to `cmd/glue`
 

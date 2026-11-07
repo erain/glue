@@ -18,8 +18,8 @@ func TestRunThinkingSelection(t *testing.T) {
 		provider, model, level string
 		valid                  bool
 	}{
-		{"gemini", "gemini-4-argon", "high", true}, {"gemini", "gemini/gemini-4-argon", "medium", true},
-		{"gemini", "gemini-3.1-pro-preview", "medium", true}, {"gemini", "gemini-3-pro-preview", "medium", false},
+		{"gemini", "gemini-4-argon", "high", true}, {"gemini", "gemini/gemini-4-argon", "medium", true}, {"gemini", "models/gemini-4-argon", "high", true},
+		{"gemini", "gemini-3.1-pro-preview", "medium", true}, {"gemini", "gemini-3-flash-preview", "max", false},
 		{"deepseek", "", "off", true}, {"deepseek", "", "max", true}, {"deepseek", "", "medium", false},
 		{"gemini", "custom", "", true}, {"gemini", "custom", "default", true}, {"gemini", "custom", "high", false},
 		{"codex", "", "high", false},

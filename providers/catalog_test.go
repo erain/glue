@@ -17,7 +17,7 @@ func TestCatalog(t *testing.T) {
 		model, level string
 		valid        bool
 	}{
-		{"other", "low", true}, {"other", "high", true}, {"other", "medium", false}, {"unknown", "low", false}, {"unknown", "", true}, {"unknown", "default", true},
+		{"other", "low", true}, {"other", "high", true}, {"models/other", "high", true}, {"other", "medium", false}, {"unknown", "low", false}, {"unknown", "", true}, {"unknown", "default", true},
 	} {
 		t.Run(tc.model+"/"+tc.level, func(t *testing.T) {
 			opts, err := ThinkingOptions("catalog-test", tc.model, tc.level)

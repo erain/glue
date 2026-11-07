@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,7 +48,7 @@ func TestNewProviderSelectionAndDefaults(t *testing.T) {
 		"":           "moonshotai/kimi-k2.6",
 		"nvidia":     "moonshotai/kimi-k2.6",
 		"openrouter": openrouter.DefaultModel,
-		"gemini":     "gemini-2.5-flash",
+		"gemini":     "gemini-3-flash-preview",
 	}
 	for input, wantModel := range cases {
 		_, model, err := newProvider(input)
@@ -194,12 +195,14 @@ func TestRunRejectsBogusProvider(t *testing.T) {
 	}
 }
 
-// TestLiveReviewSmoke runs the example end-to-end against a real free
-// model when its key is available. Defaults to NVIDIA + Llama 3.3 70B
-// (faster than Kimi K2.6 for CI), with OpenRouter as a fallback. The
-// fake repo is exactly what the agent reviews — keeps the diff tiny so
-// the smoke completes in seconds.
+// TestLiveReviewSmoke runs the example end-to-end against OpenRouter's
+// openrouter/free meta-router when OPENROUTER_API_KEY is set. The fake
+// repo is exactly what the agent reviews — keeps the diff tiny so the
+// smoke completes in seconds.
 func TestLiveReviewSmoke(t *testing.T) {
+	if os.Getenv("OPENROUTER_API_KEY") == "" {
+		t.Skip("OPENROUTER_API_KEY not set; skipping live review smoke")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -240,17 +243,7 @@ func TestLiveReviewSmoke(t *testing.T) {
 		}
 	}
 
-	// Pick a provider that has a key in env. Prefer OpenRouter (fastest
-	// free path) and fall back to NVIDIA.
-	var args []string
-	switch {
-	case os.Getenv("OPENROUTER_API_KEY") != "":
-		args = []string{"--provider", "openrouter", "--model", openrouter.DefaultModel}
-	case os.Getenv("NVIDIA_API_KEY") != "":
-		args = []string{"--provider", "nvidia", "--model", "meta/llama-3.3-70b-instruct"}
-	default:
-		t.Skip("no provider key in env (set NVIDIA_API_KEY or OPENROUTER_API_KEY)")
-	}
+	args := []string{"--provider", "openrouter", "--model", openrouter.DefaultModel}
 
 	store := filepath.Join(repo, ".glue")
 	args = append(args,
@@ -268,6 +261,9 @@ func TestLiveReviewSmoke(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	rc := run(ctx, args, &out, &errBuf)
 	if rc != 0 {
+		if isUpstreamRateLimit(errors.New(errBuf.String())) {
+			t.Skipf("upstream rate-limited (free tier): %s", errBuf.String())
+		}
 		t.Fatalf("rc=%d stderr=%s", rc, errBuf.String())
 	}
 	// The model may legitimately read `func main() { panic("todo") }` as

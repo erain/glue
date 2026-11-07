@@ -12,7 +12,12 @@ import (
 	"github.com/erain/glue/providers/openaicompat"
 )
 
+// EnvKey is the environment variable that holds the API key.
 const EnvKey = "DEEPSEEK_API_KEY"
+
+// DefaultModel is DeepSeek's recommended id for its Flash model, currently
+// served by DeepSeek-V4.1-Flash. The thinking levels below (off, low, high,
+// max) follow https://api-docs.deepseek.com/guides/thinking_mode/.
 const DefaultModel = "deepseek-flash"
 
 func init() {
