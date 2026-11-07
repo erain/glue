@@ -94,7 +94,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		ID:        "sess-1",
 		CreatedAt: created,
 		UpdatedAt: updated,
-		Metadata:  map[string]any{"agent": "peggy"},
+		Metadata:  map[string]any{"agent": "glue"},
 		Messages: []glue.Message{
 			textMessage(glue.MessageRoleUser, "I love Australian Shepherds"),
 			textMessage(glue.MessageRoleAssistant, "they shed often"),
@@ -120,7 +120,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if !got.UpdatedAt.Equal(updated) {
 		t.Errorf("updated_at = %s want %s", got.UpdatedAt, updated)
 	}
-	if got.Metadata["agent"] != "peggy" {
+	if got.Metadata["agent"] != "glue" {
 		t.Errorf("metadata = %v", got.Metadata)
 	}
 	if len(got.Messages) != 2 {

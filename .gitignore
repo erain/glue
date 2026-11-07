@@ -39,6 +39,5 @@ go.work.sum
 /glue
 /glue-review
 /local-agent
-/peggy
 
 .gstack/

@@ -2,9 +2,10 @@
 
 The Glue project uses GitHub issues as its source of truth (see
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) and the active tracker
-[`#110`](https://github.com/erain/glue/issues/110); the closed
-[`#1`](https://github.com/erain/glue/issues/1) is the historical
-bootstrap tracker). This document covers
+[`#392`](https://github.com/erain/glue/issues/392); #110 preserves the retired
+Peggy milestone; the closed
+[`#1`](https://github.com/erain/glue/issues/1) preserves the bootstrap roadmap).
+This document covers
 the small amount of automation we ship to keep that source of truth
 honest, plus the `gh` cheatsheet for the common operations.
 
@@ -12,13 +13,13 @@ honest, plus the `gh` cheatsheet for the common operations.
 
 The contributor protocol's load-bearing invariant is:
 
-> **No issue is closed without a merged PR that references it.**
+> **No implementation is marked completed without a merged PR that references it.**
 
 `scripts/check-tracker.sh` audits that invariant by fetching every
 closed issue and checking that GitHub reports at least one merged PR in
-each issue's `closedByPullRequestsReferences`. Issues closed without a
-merged PR — whether by mistake, by human override, or by a prior agent
-that forgot to land code — are listed.
+each completed issue's `closedByPullRequestsReferences`. Owner-canceled or
+superseded issues closed as `NOT_PLANNED` are excluded; they are not delivered
+functionality. Completed issues without a merged PR are listed.
 
 ```sh
 # Dry-run report (default):
@@ -45,7 +46,11 @@ The script is intentionally read-only. It does not reopen issues, post
 comments, or modify labels — those steps are deliberate and should be
 done with the operator's own judgement.
 
-Requirements: `gh` (authenticated) and `jq`.
+Requirements: `gh` (authenticated) and `jq`. Offline regression fixtures run with
+`bash scripts/check-tracker-test.sh`; they cover cancellation and strict/report
+modes and API failure without contacting GitHub. The audit uses GraphQL for
+closure reason and PR linkage, including on older `gh` versions; a failed
+lookup exits nonzero instead of reporting a clean audit.
 
 ## When to run the script
 
@@ -71,17 +76,17 @@ gh issue reopen 17
 
 # Edit the body of the active tracker after a PR merges. Reads from a
 # file so the heredoc-formatted body survives shell quoting.
-gh issue edit 110 --body "$(cat tracker.md)"
+gh issue edit 392 --body-file tracker.md
 
 # Confirm linkage on an issue you just closed via Closes #N.
-gh issue view 17 --json closedByPullRequestsReferences
+gh api graphql -f query='query { repository(owner: "erain", name: "glue") { issue(number: 17) { closedByPullRequestsReferences(first: 100) { nodes { number state } } } } }'
 ```
 
 For PRs:
 
 ```sh
 # Open a PR with HEREDOC body.
-gh pr create --title "Add foo (closes #N)" --body "$(cat <<'EOF'
+gh pr create --draft --title "Add foo (closes #N)" --body "$(cat <<'EOF'
 ## Summary
 ...
 Closes #N.
@@ -91,7 +96,7 @@ EOF
 # Watch CI on a PR and exit when it finishes.
 gh pr checks <num>
 
-# Squash-merge and delete the branch.
+# Only after the user explicitly asks: squash-merge and delete the branch.
 gh pr merge <num> --squash --delete-branch
 ```
 

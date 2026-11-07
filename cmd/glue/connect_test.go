@@ -1533,6 +1533,32 @@ func TestRunCLIConnectShowsStatusJSON(t *testing.T) {
 	}
 }
 
+func TestDiagnoseDaemonRecoveryGuidance(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "daemon unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ts.Close)
+	for _, tt := range []struct {
+		name  string
+		cfg   connectConfig
+		state string
+	}{
+		{"missing metadata", connectConfig{MetadataPath: filepath.Join(t.TempDir(), "missing.json")}, "no_metadata"},
+		{"missing URL", connectConfig{}, "missing_base_url"},
+		{"unhealthy daemon", connectConfig{BaseURL: ts.URL, Token: "test-token"}, "unhealthy"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			diagnosis := diagnoseDaemon(context.Background(), tt.cfg, http.DefaultClient)
+			if diagnosis.State != tt.state {
+				t.Fatalf("state = %q, want %q", diagnosis.State, tt.state)
+			}
+			if !strings.Contains(strings.Join(diagnosis.Suggestions, " "), "`glue serve`") {
+				t.Fatalf("suggestions = %q, want Glue daemon recovery command", diagnosis.Suggestions)
+			}
+		})
+	}
+}
+
 func TestRunCLIConnectDiagnoseHealthyDaemon(t *testing.T) {
 	var sawDiagnostics bool
 	var sawRun bool
@@ -1553,14 +1579,14 @@ func TestRunCLIConnectDiagnoseHealthyDaemon(t *testing.T) {
 				ToolsCount:   5,
 				Capabilities: []string{"runs", "status", "diagnostics"},
 				Runtime: daemon.DiagnosticInfo{
-					Name:         "peggy",
+					Name:         "glue",
 					ListenAddr:   "127.0.0.1:0",
 					MetadataPath: "/tmp/daemon.json",
 					TokenSource:  "generated",
 					Provider:     "codex",
 					Model:        "codex/default",
 					StoreType:    "sqlite",
-					StorePath:    "/tmp/peggy.db",
+					StorePath:    "/tmp/glue.db",
 				},
 				RecentErrors: []daemon.DiagnosticError{{
 					Time:      time.Date(2026, 5, 25, 14, 0, 0, 0, time.UTC),
@@ -1605,7 +1631,7 @@ func TestRunCLIConnectDiagnoseHealthyDaemon(t *testing.T) {
 		"metadata: " + metadataPath + " (found) pid=123",
 		"token: metadata",
 		"provider: codex",
-		"store: sqlite /tmp/peggy.db",
+		"store: sqlite /tmp/glue.db",
 		"recent_errors:",
 		"provider failed run=run_1 session=default client=cli:test",
 	} {
@@ -1680,6 +1706,9 @@ func TestRunCLIConnectDiagnoseStaleMetadata(t *testing.T) {
 	}
 	if diagnosis.OK || diagnosis.State != "stale_metadata" || !diagnosis.MetadataFound || diagnosis.BaseURL != staleURL {
 		t.Fatalf("diagnosis = %+v", diagnosis)
+	}
+	if !strings.Contains(strings.Join(diagnosis.Suggestions, " "), "`glue serve`") {
+		t.Fatalf("suggestions = %q, want Glue daemon recovery command", diagnosis.Suggestions)
 	}
 }
 

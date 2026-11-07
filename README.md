@@ -25,6 +25,7 @@ fmt.Println(result.Text)
 - **New here and want to build an agent?** → [docs/building-agents.md](docs/building-agents.md)
 - **Just want to send a prompt?** → [Quickstart](#quickstart)
 - **Want the architecture?** → [Concepts](#concepts) · [docs/design.md](docs/design.md)
+- **Want the direction?** → [Local coding + planned AX execution](docs/project-plan.md)
 
 ## Install
 
@@ -568,19 +569,6 @@ harness), not `examples/` (tutorial demos only).
   Runs as a CLI or a GitHub Action. Defaults to `openrouter/free` with
   automatic provider failover.
 
-- **[`agents/peggy`](agents/peggy)** — a long-running personal-assistant
-  agent: CLI + Telegram + a shared HTTP+SSE daemon, durable
-  sqlite+FTS5 memory with curated recall, opt-in coding tools, MCP
-  servers, scheduled/proactive runs, and per-channel permission tiers.
-  The best reference for a feature-rich agent. Tracker:
-  [#110](https://github.com/erain/glue/issues/110).
-
-  ```sh
-  go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
-  codex login
-  peggy "Hello — what should I be working on today?"
-  ```
-
 ## Testing without API keys
 
 The `Provider` interface is tiny, so tests drive sessions with a fake —
@@ -607,12 +595,14 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 
 ## Project status & contributing
 
-The project advances on three fronts: the **framework** (the library
-you `go get` — feature-complete and stable in practice), the **`glue`
-binary as a coding agent** (interactive TUI, coding tools, and the
-autonomous goal loop, [ADR-0016](docs/adr/0016-goal-loop.md)), and
-**Peggy**, the long-running personal assistant built on top
-([`agents/peggy`](agents/peggy)). Releases are tagged on a `1.x` line
+Glue focuses on the **agent framework** and the **coding agent** (interactive
+TUI, coding tools, and autonomous goals). Peggy is retired. Local coding is
+available today; asynchronous remote execution through
+[AX](https://github.com/google/ax) is in planning. Execution mode is independent
+of model/provider selection. The [project plan](docs/project-plan.md) defines
+the work needed to produce the detailed roadmap under
+[tracker #392](https://github.com/erain/glue/issues/392). Releases are tagged on
+a `1.x` line
 (currently well past `v1.10`), but the stability stance is still the
 pre-stability one recorded in
 [ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md) (see its
