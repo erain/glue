@@ -39,8 +39,6 @@ CHANGELOG entry.
 -->
 
 <!--
-Co-Authored-By trailer (drop if not applicable). The repo convention is
-to credit AI pair-programmers like:
-
-  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Disclose AI assistance in one plain sentence in the PR description when used.
+Do not add AI attribution, co-author trailers, or generated-by footers to commits.
 -->

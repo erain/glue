@@ -41,6 +41,9 @@ jobs:
             exit 1
           fi
 
+      - name: Tracker audit fixtures
+        run: bash scripts/check-tracker-test.sh
+
       - name: Vet
         run: go vet ./...
 
