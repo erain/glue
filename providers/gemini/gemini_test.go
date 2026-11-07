@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/erain/glue/loop"
+	"github.com/erain/glue/providers"
 
 	"google.golang.org/genai"
 )
@@ -739,7 +740,7 @@ func TestThinkingLevelSelection(t *testing.T) {
 		valid        bool
 	}{
 		{"gemini-4-argon", "low", true}, {"gemini-4-argon", "medium", true}, {"gemini-4-argon", "high", true},
-		{"gemini-4-argon", "minimal", false}, {"gemini-3.1-pro-preview", "medium", false},
+		{"gemini-4-argon", "minimal", false}, {"gemini-3.1-pro-preview", "medium", true},
 		{"gemini-3-flash-preview", "minimal", true}, {"gemini-2.5-flash", "low", false},
 		{"custom-gemini-4", "high", false}, {"gemini-4-argon", "typo", false},
 	} {
@@ -762,5 +763,34 @@ func TestThinkingLevelSelection(t *testing.T) {
 	_, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"thinking_level": 42}}, "gemini-4-argon")
 	if err == nil {
 		t.Fatal("expected type error")
+	}
+}
+
+func TestThinkingDefaultsAndCatalogAgreement(t *testing.T) {
+	for _, model := range []string{"gemini-4-argon", "gemini-3.1-pro-preview", "custom"} {
+		baseline, err := buildGenerateConfig(loop.ProviderRequest{}, model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		explicit, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"thinking_level": "default"}}, model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, _ := json.Marshal(baseline)
+		b, _ := json.Marshal(explicit)
+		if string(a) != string(b) {
+			t.Fatalf("default changed config for %s", model)
+		}
+	}
+	for _, model := range providers.Models("gemini") {
+		for _, level := range model.ThinkingLevels {
+			cfg, err := buildGenerateConfig(loop.ProviderRequest{Options: map[string]any{"thinking_level": level}}, model.ID)
+			if err != nil {
+				t.Fatalf("%s/%s: %v", model.ID, level, err)
+			}
+			if string(cfg.ThinkingConfig.ThinkingLevel) != strings.ToUpper(level) {
+				t.Fatal(cfg.ThinkingConfig)
+			}
+		}
 	}
 }

@@ -585,3 +585,20 @@ glue run --provider deepseek --prompt 'Explain this repository' --coding
 ```
 
 See the [DeepSeek thinking and tool replay requirements](https://api-docs.deepseek.com/guides/thinking_mode/).
+
+Select model-specific thinking effort in `run`, `serve`, and `goal`:
+
+```sh
+glue run --provider gemini --model gemini-4-argon --thinking high --prompt 'Review this design'
+glue run --provider deepseek --thinking low --coding --prompt 'Find the entry point'
+glue serve --provider deepseek --thinking max
+glue goal --provider gemini --model gemini-4-argon --thinking medium 'Explain the parser'
+```
+
+Omit `--thinking` or use `--thinking default` to preserve API defaults.
+Gemini Argon supports `low`, `medium`, and `high`; DeepSeek Flash supports
+`off`, `low`, `high`, and `max`. `glue models` lists each model's supported
+levels. Unsupported combinations fail before provider construction. Models
+without verified controls, including custom IDs, accept only the default.
+These settings apply to all prompts in the local run or goal and to daemon
+runs started through `connect`. They do not change provider defaults globally.

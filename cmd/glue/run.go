@@ -33,6 +33,7 @@ type codingFlagConfig struct {
 }
 
 type agentConfig struct {
+	Options    map[string]any
 	Provider   string
 	Model      string
 	StoreDir   string
@@ -52,6 +53,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	continueLast := flags.Bool("continue", false, "resume the most recently updated session in the store (mutually exclusive with --id)")
 	prompt := flags.String("prompt", "", "prompt text")
 	provider := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
+	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models); default preserves API defaults")
 	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
@@ -124,6 +126,10 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 
 	providerName, effectiveModel, err := resolveProvider(*provider, *model)
+	if err != nil {
+		return err
+	}
+	providerOptions, err := providers.ThinkingOptions(providerName, normalizeModel(effectiveModel), *thinking)
 	if err != nil {
 		return err
 	}
@@ -230,6 +236,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider:     providerImpl,
+		Options:      providerOptions,
 		Model:        normalizeModel(effectiveModel),
 		Tools:        append([]glue.Tool(nil), tools...),
 		Store:        storeImpl,

@@ -16,6 +16,7 @@
 package gemini
 
 // Thinking levels can be selected with ProviderRequest.Options["thinking_level"].
-// Gemini 4 Argon accepts low, medium, and high. Gemini 3 Pro accepts low and
-// high; Gemini 3 Flash also accepts minimal and medium. Omitting the option
-// preserves the API default. Unsupported values fail before an API request.
+// Gemini 4 Argon and Gemini 3.1 Pro accept low, medium, and high.
+// Gemini 3 Pro accepts low and high; Gemini 3 Flash also accepts minimal
+// and medium. Omitting the option preserves the API default. Unsupported
+// values fail before an API request.
