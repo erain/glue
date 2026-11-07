@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- **Remote mode is planned (`docs/remote-mode-roadmap.md`, ADR-0019).**
+  Fire a coding job, disconnect, and pick it up from any terminal or a
+  browser, with jobs running locally or as AX tasks. The plan is a tracker
+  (#402) with one verifiable issue per step; nothing is implemented yet.
 - **Gemini ids with a `models/` prefix get Gemini 3/4 handling
   (`providers/gemini`, `providers`).** Ids copied from ListModels, such as
   `models/gemini-3.1-pro-preview`, again receive thought-signature replay,
