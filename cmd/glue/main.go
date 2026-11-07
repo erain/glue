@@ -109,6 +109,12 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 
 	switch args[0] {
+	case "models":
+		if err := modelsCommand(args[1:], stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "run":
 		if err := runCommand(ctx, args[1:], stdin, stdout, stderr, newProvider); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -265,6 +271,7 @@ func printUsage(w io.Writer) {
   glue connect --forget-permission <id> [--forget-permission-json] [--metadata <path>] [--base-url <url>] [--token <token>]
 
 Commands:
+  models   List curated providers, models, and supported thinking levels (no credentials needed).
   run      Run a local agent on any registered provider, optionally with coding tools.
   goal     Run an autonomous goal loop headlessly (plan → make → verify until done or a guardrail trips); exit code reflects the outcome.
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.

@@ -43,8 +43,14 @@ const providerName = "gemini"
 
 func init() {
 	providers.Register(providerName, providers.Factory{
-		New:           func() loop.Provider { return New(Options{}) },
-		DefaultModel:  DefaultModel,
+		New:          func() loop.Provider { return New(Options{}) },
+		DefaultModel: DefaultModel,
+		Models: []providers.ModelInfo{
+			{ID: "gemini-4-argon", ThinkingLevels: []string{"low", "medium", "high"}},
+			{ID: "gemini-3.1-pro-preview", ThinkingLevels: []string{"low", "medium", "high"}},
+			{ID: "gemini-3-pro-preview", ThinkingLevels: []string{"low", "high"}},
+			{ID: "gemini-3-flash-preview", ThinkingLevels: []string{"minimal", "low", "medium", "high"}},
+		},
 		EnvKey:        EnvKey,
 		ModelsListURL: "https://generativelanguage.googleapis.com/v1beta/models",
 		Capabilities: providers.Capabilities{
