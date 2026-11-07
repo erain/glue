@@ -6,9 +6,9 @@ Reference: https://github.com/withastro/flue#readme
 > **Historical snapshot.** This is a point-in-time analysis from
 > 2026-05-05, kept for context. Several gaps it lists have since
 > shipped — subagent orchestration (`glue.SubagentTool`), MCP tooling
-> (`tools/mcp`), the local daemon/serve mode (`cmd/glue serve`,
-> `agents/peggy serve`), and cross-session search (`stores/sqlite`
-> FTS5). For current status see
+> (`tools/mcp`), the local daemon/serve mode (`cmd/glue serve`; the
+> `agents/peggy serve` variant was later retired), and cross-session
+> search (`stores/sqlite` FTS5). For current status see
 > [`project-plan.md`](project-plan.md); for getting started see
 > [`building-agents.md`](building-agents.md).
 
