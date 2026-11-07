@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# scripts/check-tracker.sh — verify every closed issue has a merged PR.
+# scripts/check-tracker.sh — verify every completed issue has a merged PR.
 #
 # The Glue contributor protocol (CONTRIBUTING.md) requires "no issue is
-# closed without a merged PR that references it." This script audits
+# marked completed without a merged PR that references it." This script audits
 # that invariant: for each closed issue in the repo, it queries GitHub
-# for the closing-PR linkage and reports any closed issue whose
-# closedByPullRequestsReferences does not include a merged PR.
+# for closure reason and closing-PR linkage, and reports any issue whose
+# closedByPullRequestsReferences does not include a merged PR. Intentional
+# NOT_PLANNED cancellations are excluded and are not delivered functionality.
 #
 # By default the script is dry-run only — it prints a report and exits 0
 # even when violations are found. Pass --strict to make violations exit
@@ -43,21 +44,38 @@ if ! command -v jq >/dev/null; then
   exit 2
 fi
 
-# 1. List closed issue numbers (not PRs).
+# 1. Resolve the repository and list closed issue numbers (not PRs).
+repository="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+owner="${repository%%/*}"
+name="${repository#*/}"
 numbers="$(gh issue list --state closed --limit "$limit" --json number --jq '.[].number')"
 
-# 2. For each one, fetch the closing-PR linkage. The
-#    closedByPullRequestsReferences field is on `gh issue view`, not
-#    `gh issue list`.
+# 2. Fetch closure reason and PR linkage directly through GraphQL; older
+#    gh versions do not expose these fields through `gh issue view --json`.
 violations=()
 total=0
 for n in $numbers; do
   total=$((total + 1))
-  view="$(gh issue view "$n" --json number,title,closedByPullRequestsReferences 2>/dev/null || true)"
-  [[ -z "$view" ]] && continue
+  # GraphQL variables must reach the API without shell expansion.
+  # shellcheck disable=SC2016
+  if ! view="$(gh api graphql -F owner="$owner" -F name="$name" -F number="$n" \
+    -f query='query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          number title stateReason
+          closedByPullRequestsReferences(first: 100) { nodes { state } }
+        }
+      }
+    }' --jq '.data.repository.issue')" || [[ "$view" == null || -z "$view" ]]; then
+    echo "error: could not inspect issue #$n; audit incomplete" >&2
+    exit 2
+  fi
+  if [[ "$(jq -r '.stateReason // ""' <<<"$view")" == "NOT_PLANNED" ]]; then
+    continue
+  fi
 
   merged_count="$(jq '
-    (.closedByPullRequestsReferences // []) | map(select(.state == "MERGED")) | length
+    (.closedByPullRequestsReferences.nodes // []) | map(select(.state == "MERGED")) | length
   ' <<<"$view")"
   if [[ "$merged_count" -eq 0 ]]; then
     title="$(jq -r '.title' <<<"$view")"
