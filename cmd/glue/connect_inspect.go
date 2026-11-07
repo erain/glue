@@ -456,12 +456,12 @@ func diagnoseDaemon(ctx context.Context, cfg connectConfig, client httpDoer) dae
 		if metadataErr != nil {
 			diagnosis.State = "no_metadata"
 			diagnosis.Summary = "daemon metadata is missing or unreadable"
-			diagnosis.Suggestions = []string{"Start Peggy with `peggy serve` or pass --base-url and --token explicitly."}
+			diagnosis.Suggestions = []string{"Start the daemon with `glue serve` or pass --base-url and --token explicitly."}
 			return diagnosis
 		}
 		diagnosis.State = "missing_base_url"
 		diagnosis.Summary = "daemon base URL is not configured"
-		diagnosis.Suggestions = []string{"Start Peggy with `peggy serve` or pass --base-url."}
+		diagnosis.Suggestions = []string{"Start the daemon with `glue serve` or pass --base-url."}
 		return diagnosis
 	}
 	if token == "" {
@@ -481,10 +481,10 @@ func diagnoseDaemon(ctx context.Context, cfg connectConfig, client httpDoer) dae
 			diagnosis.Suggestions = []string{"Use the token from the active metadata file or restart the daemon to refresh metadata."}
 		case httpStatus > 0:
 			diagnosis.State = "unhealthy"
-			diagnosis.Suggestions = []string{"Check daemon logs and restart `peggy serve` if the error persists."}
+			diagnosis.Suggestions = []string{"Check daemon logs and restart `glue serve` if the error persists."}
 		case diagnosis.MetadataFound && strings.TrimSpace(cfg.BaseURL) == "":
 			diagnosis.State = "stale_metadata"
-			diagnosis.Suggestions = []string{"The metadata file points at an unreachable daemon; restart `peggy serve` to refresh it."}
+			diagnosis.Suggestions = []string{"The metadata file points at an unreachable daemon; restart `glue serve` to refresh it."}
 		default:
 			diagnosis.State = "unreachable"
 			diagnosis.Suggestions = []string{"Check that the daemon is running and the --base-url value is correct."}

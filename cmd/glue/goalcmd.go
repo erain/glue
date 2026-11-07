@@ -27,7 +27,7 @@ const (
 )
 
 // goalCommand implements `glue goal`: the headless goal runner —
-// the unit cron, CI, or a peggy schedule invokes for unattended goals.
+// the unit cron, CI, or other external schedulers invoke for unattended goals.
 func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, newProvider providerFactory) (int, error) {
 	flags := flag.NewFlagSet("glue goal", flag.ContinueOnError)
 	flags.SetOutput(stderr)

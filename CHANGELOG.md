@@ -9,13 +9,18 @@ tag in your `go.mod` if you need stability. Breaking changes always
 land with a `**Breaking:**` entry under a minor-bump section — never
 on a patch release.
 
-This file tracks library-level changes. The reference agents version
-independently:
-[`agents/glue-review`](agents/glue-review/README.md) (release notes in
-its [GitHub Releases](https://github.com/erain/glue/releases?q=agents%2Fglue-review)),
-and [`agents/peggy/CHANGELOG.md`](agents/peggy/CHANGELOG.md).
+This file tracks library-level changes. The maintained reference agent
+[`agents/glue-review`](agents/glue-review/README.md) versions independently
+(release notes in its [GitHub Releases](https://github.com/erain/glue/releases?q=agents%2Fglue-review)).
+Peggy is retired; its [historical release notes](https://github.com/erain/glue/blob/6c502a4d69b680d05fd373d3809bcc6c47e1b2ed/agents/peggy/CHANGELOG.md) remain in Git history.
 
 ## Unreleased
+
+- **Breaking:** Removed the retired `agents/peggy` personal-assistant product,
+  including its CLI, Telegram adapter, dashboard, and scheduling. Shared Glue
+  framework, daemon, stores, providers, and coding tools remain supported.
+  Current direction: framework and coding agent, with local execution today
+  and AX-backed remote execution in planning.
 
 - **TUI: `/copy [N]` + Ctrl+Y copy an assistant reply's raw markdown to
   the system clipboard (`cmd/glue/tui`).** Selecting a reply out of the

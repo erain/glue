@@ -257,14 +257,14 @@ func TestServerDiagnostics(t *testing.T) {
 		Token: "token",
 		Now:   func() time.Time { return startedAt },
 		Diagnostics: DiagnosticInfo{
-			Name:         "peggy",
+			Name:         "glue",
 			ListenAddr:   "127.0.0.1:0",
 			MetadataPath: "/tmp/daemon.json",
 			TokenSource:  "generated",
 			Provider:     "codex",
 			Model:        "codex/default",
 			StoreType:    "sqlite",
-			StorePath:    "/tmp/peggy.db",
+			StorePath:    "/tmp/glue.db",
 		},
 	})
 	if err != nil {
@@ -291,7 +291,7 @@ func TestServerDiagnostics(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&diag); err != nil {
 		t.Fatal(err)
 	}
-	if !diag.OK || diag.Version != protocolVersion || diag.Runtime.Provider != "codex" || diag.Runtime.StorePath != "/tmp/peggy.db" {
+	if !diag.OK || diag.Version != protocolVersion || diag.Runtime.Provider != "codex" || diag.Runtime.StorePath != "/tmp/glue.db" {
 		t.Fatalf("diagnostics = %+v", diag)
 	}
 	if !contains(diag.Capabilities, "diagnostics") {
