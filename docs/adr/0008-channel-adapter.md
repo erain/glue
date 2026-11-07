@@ -1,5 +1,10 @@
 # ADR 0008: Channel Adapter Pattern
 
+> Historical Peggy product context: Peggy is retired as of 2026-11-07.
+> The reusable framework boundaries remain relevant; product paths and planned
+> channel integrations below are historical. See
+> [ADR-0018](0018-framework-coding-and-ax-direction.md).
+
 ## Status
 
 Accepted. Implementation issues that follow:

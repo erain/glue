@@ -12,7 +12,7 @@ Quickstart is shorter. Come here when you want to *build something*.
 - New to the concepts? Start with [Mental model](#mental-model).
 - Want runnable code? [`examples/local-agent`](../examples/local-agent)
   is the smallest complete agent; [`agents/glue-review`](../agents/glue-review)
-  and [`agents/peggy`](../agents/peggy) are real ones.
+  is a maintained reference agent.
 
 ## Mental model
 
@@ -44,7 +44,7 @@ Two rules worth internalizing:
   execution works the same whichever provider you pick.
 - **Product concerns enter as interfaces.** Glue ships a local
   executor, a file/sqlite store, and so on — but sandboxing, channels,
-  scheduling, and policy live in *your* code (or in `agents/peggy`),
+  scheduling, and policy live in *your* code,
   not in core glue. See [ADR-0005](adr/0005-foundation-expansion.md).
 
 ## Step 1 — A minimal agent
@@ -416,12 +416,13 @@ opt-in behind an interface:
 - **MCP servers** — `tools/mcp` consumes Model Context Protocol servers
   (stdio / Streamable HTTP) as glue tools. See
   [ADR-0011](adr/0011-mcp-client-integration.md).
-- **Daemon + channels** — `cmd/glue serve` (and `agents/peggy`) expose
-  an agent over a local HTTP+SSE protocol so terminal, Telegram, or
-  custom channels share one process. See
+- **Daemon + channels** — `cmd/glue serve` exposes
+  an agent over a local HTTP+SSE protocol so terminal or
+  custom clients share one process. See
   [ADR-0010](adr/0010-daemon-protocol.md) /
   [ADR-0008](adr/0008-channel-adapter.md).
 
-For a fully worked, long-running agent that uses most of these — memory,
-channels, permissions, scheduling — read [`agents/peggy`](../agents/peggy).
+Peggy, the former personal-assistant reference product, is retired.
+For current local coding and planned AX execution, see the
+[project plan](project-plan.md).
 The canonical architecture reference is [`docs/design.md`](design.md).

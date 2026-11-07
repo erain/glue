@@ -569,19 +569,6 @@ harness), not `examples/` (tutorial demos only).
   Runs as a CLI or a GitHub Action. Defaults to `openrouter/free` with
   automatic provider failover.
 
-- **[`agents/peggy`](agents/peggy)** — a long-running personal-assistant
-  agent: CLI + Telegram + a shared HTTP+SSE daemon, durable
-  sqlite+FTS5 memory with curated recall, opt-in coding tools, MCP
-  servers, scheduled/proactive runs, and per-channel permission tiers.
-  The best reference for a feature-rich agent. Tracker:
-  [#110](https://github.com/erain/glue/issues/110).
-
-  ```sh
-  go install github.com/erain/glue/agents/peggy/cmd/peggy@latest
-  codex login
-  peggy "Hello — what should I be working on today?"
-  ```
-
 ## Testing without API keys
 
 The `Provider` interface is tiny, so tests drive sessions with a fake —
