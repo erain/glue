@@ -449,3 +449,9 @@ IDs are sequence numbers; `Last-Event-ID` or `?after=` resumes replay and
 live output. Disconnect leaves execution running; DELETE cancels it.
 Keepalive comments default to 15 seconds. Finished events survive daemon
 restart; in-flight recovery is tracked separately in #405.
+
+Daemon run metadata is stored beside events in SQLite. Authenticated clients
+can list `/v1/runs` and inspect `/v1/runs/{id}` after restart. Terminal status
+commits with its event; startup marks previously running prompts interrupted
+and closes their replay with `run_interrupted`. Permission persistence and
+retention are subsequent steps in #405.

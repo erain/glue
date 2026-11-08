@@ -629,6 +629,10 @@ func New(opts Options) (*Server, error) {
 		}
 		s.loadPermissionGrants(grants)
 	}
+	if err := s.recoverRuns(); err != nil {
+		s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -800,7 +804,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/runs" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleRunList(w, r)
+		return
+	}
 	if runID, ok := parseRunPath(r.URL.Path); ok {
+		if r.Method == http.MethodGet {
+			s.handleRunGet(w, r, runID)
+			return
+		}
 		if r.Method != http.MethodDelete {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
 			return
@@ -912,6 +928,11 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionI
 
 	ctx, cancel := context.WithCancel(context.Background())
 	run := s.newRun(sessionID, req.ClientID, cancel)
+	if run.persistErr != nil {
+		cancel()
+		writeError(w, 500, "internal", run.persistErr.Error(), false)
+		return
+	}
 	go s.executeRun(ctx, run, session, req)
 
 	writeJSON(w, http.StatusCreated, startRunResponse{
@@ -1385,6 +1406,10 @@ func (s *Server) newRun(sessionID, clientID string, cancel context.CancelFunc) *
 			newID:     s.newID,
 			notify:    make(chan struct{}),
 			pending:   map[string]*pendingPermission{},
+		}
+		if err := s.log.createRun(id, sessionID, clientID, s.now()); err != nil {
+			r.persistErr = err
+			return r
 		}
 		s.runs[id] = r
 		return r

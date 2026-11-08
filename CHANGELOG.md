@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Inspect persisted daemon runs through list/get APIs; restarted daemons
+  report interrupted prompts with a terminal replay event.
+
 - **Breaking:** daemon protocol v2 persists events, resumes streams by sequence,
   and keeps runs alive after disconnect. `glue serve --state-dir` controls storage.
 

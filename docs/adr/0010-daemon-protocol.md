@@ -614,3 +614,18 @@ remain readable after restart. Recovering in-flight runs and pending
 permissions is a separate step. Library hosts can supply `Options.StateDir`
 and must close the server after stopping handlers and runs; omitting the
 directory uses an isolated in-memory database.
+
+### Run registry and interruption
+
+`GET /v1/runs` returns `{ "runs": [...] }`, newest first by creation time
+and ID. Optional `session_id` and `status` filters combine; `limit` defaults
+to 50 (1–1000). `before` is the ID of a preceding row, used as an exclusive
+cursor over that order. Invalid filters/cursors return 400.
+`GET /v1/runs/{id}` returns the persisted row or 404, including client,
+session, timestamps, last sequence, status, error, and pending permissions.
+Permission persistence is added separately; the pending list is empty here.
+
+Statuses are `running`, `done`, `error`, `canceled`, and `interrupted`.
+Registry changes commit with their events. Startup marks running rows
+interrupted and appends one `run_interrupted` event in the same transaction;
+repeating startup does not append another. Prompt runs are not resumed.
