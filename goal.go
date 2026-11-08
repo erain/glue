@@ -18,6 +18,12 @@ import (
 // from the durable checklist (a Ralph-style loop) rather than an ever-growing
 // transcript. See docs/adr/0016-goal-loop.md.
 type GoalSpec struct {
+	// OnSession runs before a planner, maker, or checker session is prompted.
+	// Phases are "planner", "maker", and "checker". Planning uses iteration 0;
+	// makers and checkers use the actual iteration, including StartIteration.
+	// Observers own the unsubscribe functions returned by Session.Subscribe.
+	OnSession func(phase string, iteration int, s *Session)
+
 	// Objective is the natural-language goal. Required.
 	Objective string
 
@@ -340,6 +346,9 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	if err != nil {
 		return nil, Usage{}, err
 	}
+	if spec.OnSession != nil {
+		spec.OnSession("planner", 0, sess)
+	}
 	opts := []PromptOption{WithJSONSchema(goalPlanSchema)}
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
@@ -373,6 +382,9 @@ func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, check
 	if err != nil {
 		return Usage{}, err
 	}
+	if spec.OnSession != nil {
+		spec.OnSession("maker", iter, sess)
+	}
 	var opts []PromptOption
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
@@ -399,6 +411,9 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 	sess, err := a.Session(ctx, fmt.Sprintf("%s:check-%d", spec.SessionPrefix, iter))
 	if err != nil {
 		return goalVerdict{}, Usage{}, err
+	}
+	if spec.OnSession != nil {
+		spec.OnSession("checker", iter, sess)
 	}
 	opts := []PromptOption{
 		WithJSONSchema(goalVerdictSchema),

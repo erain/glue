@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Observe goal planner, maker, and checker sessions before prompts through
+  `GoalSpec.OnSession`, including phase and iteration for event transcripts.
+
 - Retain terminal daemon runs for 720 hours by default (`--retain-runs`),
   delete associated history atomically, and record shutdown interruptions.
 
