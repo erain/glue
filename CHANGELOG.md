@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Persist validated coding job specs and creation events without starting
+  execution; inspect them after manager restart.
+
 - Share durable event storage between daemon and job hosts while preserving
   daemon registry/permission transactions and resumable replay.
 
