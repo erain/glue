@@ -1582,6 +1582,7 @@ func newTestServerWithPolicy(t *testing.T, host Host, policy PermissionPolicy) *
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	return srv
 }
 
@@ -1599,6 +1600,7 @@ func newTestServerWithPermissionStore(t *testing.T, host Host, path string) *Ser
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	return srv
 }
 
@@ -1615,6 +1617,7 @@ func newTestServerWithTimeout(t *testing.T, host Host, timeout time.Duration) *S
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { srv.Close() })
 	return srv
 }
 

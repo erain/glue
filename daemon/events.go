@@ -63,6 +63,3 @@ func (l *eventLog) read(id string, after int64) ([]EventEnvelope, error) {
 	}
 	return events, rows.Err()
 }
-
-// Close releases the event database. Call after stopping handlers and runs.
-func (s *Server) Close() error { return s.log.db.Close() }

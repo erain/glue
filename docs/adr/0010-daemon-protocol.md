@@ -642,3 +642,14 @@ Unknown, already decided, and expired decisions return 409. Timeout and
 cancellation expire pending records. Startup expires requests belonging to
 interrupted runs in the same transaction as interruption. Storage errors
 return errors without releasing an unrecorded approval.
+
+### Run retention and shutdown
+
+`glue serve --retain-runs` defaults to `720h`. A background sweep removes
+terminal runs older than that duration, along with their events and
+permissions, in one transaction. Running runs and terminal rows exactly
+at the cutoff remain. Deleted runs also leave the live index.
+Library hosts can set `Options.RetainRuns` and `Options.SweepInterval`;
+negative durations are invalid. Closing the server stops the sweep,
+cancels and joins executions, and then closes SQLite. Executions stopped
+by daemon shutdown are interrupted; explicit DELETE remains cancellation.

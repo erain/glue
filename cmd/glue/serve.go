@@ -43,6 +43,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	provider := flags.String("provider", "", "provider name: codex, deepseek, gemini, nvidia, or openrouter")
 	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models)")
 	model := flags.String("model", "", "model id (default: selected activity or explicit provider default); gemini/<model> accepted")
+	retainRuns := flags.Duration("retain-runs", 720*time.Hour, "how long to retain terminal daemon runs")
 	stateDir := flags.String("state-dir", ".glue/state", "durable daemon state directory")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
@@ -111,9 +112,10 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		return err
 	}
 	handler, err := daemon.New(daemon.Options{
-		StateDir: *stateDir,
-		Host:     agent,
-		Token:    token,
+		RetainRuns: *retainRuns,
+		StateDir:   *stateDir,
+		Host:       agent,
+		Token:      token,
 		Diagnostics: daemon.DiagnosticInfo{
 			Name:         "glue",
 			ListenAddr:   *listenAddr,
