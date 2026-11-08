@@ -481,3 +481,10 @@ selection prefers cached `origin/HEAD`, then a sole local branch, then local
 `main`/`master`; ambiguous repositories require an explicit base reference.
 URL clones use the remote default branch or a requested revision. Git errors
 omit command arguments and output so credential-bearing URLs are not logged.
+
+`internal/eventlog` provides the common SQLite event envelope and ordered
+replay for daemon and job hosts, using the existing `events.sqlite` file.
+Hosts insert events inside the same transaction as their own metadata and
+publish only after commit. Optional phase and iteration metadata supports
+goal session transcripts, including planner iteration zero. Daemon JSON
+and transaction behavior remain unchanged when this metadata is absent.

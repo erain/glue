@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/eventlog"
 )
 
 const protocolVersion = 2
@@ -492,16 +493,7 @@ type Server struct {
 }
 
 // EventEnvelope is the JSON payload sent in each SSE data frame.
-type EventEnvelope struct {
-	Version   int       `json:"version"`
-	ID        string    `json:"id"`
-	Seq       int64     `json:"seq"`
-	RunID     string    `json:"run_id"`
-	SessionID string    `json:"session_id"`
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	Payload   any       `json:"payload,omitempty"`
-}
+type EventEnvelope eventlog.Envelope
 
 type protocolError struct {
 	Code      string `json:"code"`
