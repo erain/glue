@@ -24,7 +24,7 @@ import (
 	"github.com/erain/glue"
 )
 
-const protocolVersion = 1
+const protocolVersion = 2
 
 const defaultPermissionTimeout = 10 * time.Minute
 
@@ -372,6 +372,11 @@ func (s filePermissionStore) SavePermissionGrants(grants []PermissionGrant) erro
 
 // Options configures [New].
 type Options struct {
+	// StateDir stores durable daemon events. Empty uses an isolated in-memory database.
+	StateDir string
+	// KeepaliveInterval defaults to 15 seconds.
+	KeepaliveInterval time.Duration
+
 	// Host is required. A *glue.Agent satisfies this interface.
 	Host Host
 
@@ -450,6 +455,9 @@ type PermissionPolicyDecision struct {
 
 // Server is an http.Handler for the local daemon protocol.
 type Server struct {
+	log               *eventLog
+	keepaliveInterval time.Duration
+
 	host              Host
 	token             string
 	permissionPolicy  PermissionPolicy
@@ -589,7 +597,17 @@ func New(opts Options) (*Server, error) {
 	if diagnostics.StartedAt.IsZero() {
 		diagnostics.StartedAt = now().UTC()
 	}
+	log, err := openEventLog(opts.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	interval := opts.KeepaliveInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
 	s := &Server{
+		log:               log,
+		keepaliveInterval: interval,
 		host:              opts.Host,
 		token:             token,
 		permissionPolicy:  opts.PermissionPolicy,
@@ -606,6 +624,7 @@ func New(opts Options) (*Server, error) {
 	if opts.PermissionStore != nil {
 		grants, err := opts.PermissionStore.LoadPermissionGrants()
 		if err != nil {
+			log.db.Close()
 			return nil, err
 		}
 		s.loadPermissionGrants(grants)
@@ -1228,30 +1247,63 @@ func (s *Server) recordError(entry DiagnosticError) {
 }
 
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	afterText := r.Header.Get("Last-Event-ID")
+	if values, ok := r.URL.Query()["after"]; ok {
+		afterText = values[0]
+	}
+	var after int64
+	if afterText != "" {
+		var err error
+		after, err = strconv.ParseInt(afterText, 10, 64)
+		if err != nil || after < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid event sequence", false)
+			return
+		}
+	}
 	run := s.getRun(runID)
-	if run == nil {
-		writeError(w, http.StatusNotFound, "not_found", "run not found", false)
+	events, err := s.log.read(runID, after)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
 		return
+	}
+	if run == nil && len(events) == 0 {
+		all, err := s.log.read(runID, 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+			return
+		}
+		if len(all) == 0 {
+			writeError(w, http.StatusNotFound, "not_found", "run not found", false)
+			return
+		}
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "internal", "streaming unsupported", false)
 		return
 	}
-
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	next := 0
+	ticker := time.NewTicker(s.keepaliveInterval)
+	defer ticker.Stop()
 	for {
-		events, done, notify := run.eventsFrom(next)
+		var notify <-chan struct{}
+		done := run == nil
+		if run != nil {
+			run.mu.Lock()
+			notify = run.notify
+			done = run.done
+			run.mu.Unlock()
+		}
+		events, err = s.log.read(runID, after)
+		if err != nil {
+			return
+		}
 		for _, event := range events {
 			if err := writeSSE(w, event); err != nil {
-				run.cancel()
 				return
 			}
-			next++
+			after = event.Seq
 			flusher.Flush()
 		}
 		if done {
@@ -1259,8 +1311,12 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 		}
 		select {
 		case <-notify:
+		case <-ticker.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-r.Context().Done():
-			run.cancel()
 			return
 		}
 	}
@@ -1320,6 +1376,7 @@ func (s *Server) newRun(sessionID, clientID string, cancel context.CancelFunc) *
 			continue
 		}
 		r := &run{
+			log:       s.log,
 			id:        id,
 			sessionID: sessionID,
 			clientID:  clientID,
@@ -1469,7 +1526,7 @@ func writeSSE(w http.ResponseWriter, event EventEnvelope) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "id: %s\n", event.ID); err != nil {
+	if _, err := fmt.Fprintf(w, "id: %d\n", event.Seq); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "event: %s\n", event.Type); err != nil {

@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- **Breaking:** daemon protocol v2 persists events, resumes streams by sequence,
+  and keeps runs alive after disconnect. `glue serve --state-dir` controls storage.
+
 - CLI chat defaults to OpenRouter free; coding and goals default to Gemini 3.8 Flash.
 
 - **Remote mode is planned (`docs/remote-mode-roadmap.md`, ADR-0019).**

@@ -93,7 +93,7 @@ func TestServeThinkingReachesDaemonRun(t *testing.T) {
 		return nil
 	}
 	var errs bytes.Buffer
-	code := runCLIWithServe(context.Background(), []string{"serve", "--provider", "deepseek", "--thinking", "max", "--token", "fixture-token", "--metadata", "", "--store", t.TempDir()}, io.Discard, &errs, fakeFactory(p), serve)
+	code := runCLIWithServe(context.Background(), []string{"serve", "--state-dir", t.TempDir(), "--provider", "deepseek", "--thinking", "max", "--token", "fixture-token", "--metadata", "", "--store", t.TempDir()}, io.Discard, &errs, fakeFactory(p), serve)
 	if code != 0 || len(p.requests) != 1 {
 		t.Fatalf("code=%d requests=%d err=%s", code, len(p.requests), errs.String())
 	}

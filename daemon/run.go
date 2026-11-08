@@ -15,11 +15,14 @@ type run struct {
 	now       func() time.Time
 	newID     func(prefix string) string
 
-	mu     sync.Mutex
-	seq    int64
-	events []EventEnvelope
-	done   bool
-	notify chan struct{}
+	emitMu     sync.Mutex
+	log        *eventLog
+	persistErr error
+	mu         sync.Mutex
+	seq        int64
+	events     []EventEnvelope
+	done       bool
+	notify     chan struct{}
 
 	pending map[string]*pendingPermission
 }
@@ -30,20 +33,32 @@ type pendingPermission struct {
 }
 
 func (r *run) emit(typ string, payload any) {
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.seq++
-	r.events = append(r.events, EventEnvelope{
-		Version:   protocolVersion,
-		ID:        r.newID("evt"),
-		Seq:       r.seq,
-		RunID:     r.id,
-		SessionID: r.sessionID,
-		Time:      r.now().UTC(),
-		Type:      typ,
-		Payload:   payload,
-	})
+	if r.persistErr != nil {
+		r.mu.Unlock()
+		return
+	}
+	seq := r.seq + 1
+	r.mu.Unlock()
+	event := EventEnvelope{Version: protocolVersion, ID: r.newID("evt"), Seq: seq, RunID: r.id, SessionID: r.sessionID, Time: r.now().UTC(), Type: typ, Payload: payload}
+	if r.log != nil {
+		if err := r.log.append(event); err != nil {
+			r.mu.Lock()
+			r.persistErr = err
+			r.done = true
+			r.signalLocked()
+			r.mu.Unlock()
+			r.cancel()
+			return
+		}
+	}
+	r.mu.Lock()
+	r.seq = seq
+	r.events = append(r.events, event)
 	r.signalLocked()
+	r.mu.Unlock()
 }
 
 func (r *run) finish() {

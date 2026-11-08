@@ -596,3 +596,21 @@ follow-up; v1 may support exact session id filters first.
 - No detached background runs or event replay in v1.
 - No persistent permission policy in this ADR.
 - No MCP client support in this ADR.
+
+## Amendment: Protocol v2: durable, resumable, detached runs
+
+Protocol v2 replaces v1. Section 8's disconnect cancellation rule no longer
+applies: disconnecting a stream leaves its run running. Explicit DELETE
+cancels it; `glue connect` sends DELETE on Ctrl-C.
+
+Events are committed to SQLite before publication. SSE `id:` is the decimal
+sequence; the envelope retains its random `id`. Reconnect with
+`Last-Event-ID: <seq>` or `?after=<seq>` (query takes precedence) to replay
+strictly later events and then follow live output. Invalid or negative
+cursors return HTTP 400. Quiet streams send `: ping` every 15 seconds.
+
+`glue serve --state-dir` defaults to `.glue/state`. Finished-run events
+remain readable after restart. Recovering in-flight runs and pending
+permissions is a separate step. Library hosts can supply `Options.StateDir`
+and must close the server after stopping handlers and runs; omitting the
+directory uses an isolated in-memory database.
