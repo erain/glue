@@ -32,9 +32,9 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	flags := flag.NewFlagSet("glue goal", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	providerName := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
+	providerName := flags.String("provider", "", "provider name: codex, deepseek, gemini, nvidia, or openrouter")
 	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models)")
-	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
+	model := flags.String("model", "", "model id (default: selected activity or explicit provider default); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory (shared with glue run, so the TUI sees the same goals)")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md and coding tools")
 	coding := flags.Bool("coding", false, "enable local coding tools for the goal")
@@ -80,7 +80,7 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 		return goalExitAchieved, nil
 	}
 
-	resolvedProvider, effectiveModel, err := resolveProvider(*providerName, *model)
+	resolvedProvider, effectiveModel, err := resolveSelection(true, *providerName, *model)
 	if err != nil {
 		return goalExitErrored, err
 	}

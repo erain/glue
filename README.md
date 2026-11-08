@@ -143,6 +143,11 @@ directly, or select by name via `providers.New`.
 | **NVIDIA build** | `providers/nvidia` | `NVIDIA_API_KEY` | OpenAI-compatible; Kimi K2, Llama, Qwen, etc. by `org/name`. |
 | **OpenRouter** | `providers/openrouter` | `OPENROUTER_API_KEY` | OpenAI-compatible aggregator; `openrouter/free` auto-picks a free model. |
 
+CLI defaults depend on activity: `glue run` and `glue serve` use
+`openrouter` / `openrouter/free`; `--coding` and `glue goal` use
+`gemini` / `gemini-3.8-flash`. Explicit `--provider` and `--model`
+override these choices. `glue models` labels the chat and coding defaults.
+
 ```go
 // Codex — bill against your ChatGPT subscription instead of an API key:
 agent := glue.NewAgent(glue.AgentOptions{
@@ -467,7 +472,7 @@ a `main.go` — and a full terminal coding agent in its own right
 # Interactive TUI (default when stdin/stdout are a terminal and no --prompt):
 go run ./cmd/glue run --provider codex --coding --work .
 
-# One-shot run (any registered provider; default gemini):
+# One-shot run (any registered provider; default openrouter/free):
 go run ./cmd/glue run --prompt "Say hi" --id demo --store .glue/sessions
 go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the failing test."
 

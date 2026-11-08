@@ -51,8 +51,14 @@ func modelsCommand(args []string, stdout, stderr io.Writer) error {
 	for _, p := range catalog {
 		for _, m := range p.Models {
 			marker := ""
-			if m.ID == p.DefaultModel {
-				marker = "*"
+			for _, coding := range []bool{false, true} {
+				dp, dm := defaultSelection(coding)
+				if p.Provider == dp && m.ID == dm {
+					marker = "chat"
+					if coding {
+						marker = "coding"
+					}
+				}
 			}
 			levels := strings.Join(m.ThinkingLevels, ", ")
 			if levels == "" {

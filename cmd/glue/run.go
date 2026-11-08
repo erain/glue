@@ -53,9 +53,9 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	continueLast := flags.Bool("continue", false, "resume the most recently updated session in the store (mutually exclusive with --id)")
 	prompt := flags.String("prompt", "", "prompt text")
 	selectFlag := flags.Bool("select", false, "choose provider, model, and thinking level in terminal menus")
-	provider := flags.String("provider", defaultProvider, "provider name: codex, deepseek, gemini, nvidia, or openrouter")
+	provider := flags.String("provider", "", "provider name: codex, deepseek, gemini, nvidia, or openrouter")
 	thinking := flags.String("thinking", "", "thinking level for the selected model (see glue models); default preserves API defaults")
-	model := flags.String("model", "", "model id (default: the provider's default model); gemini/<model> accepted")
+	model := flags.String("model", "", "model id (default: selected activity or explicit provider default); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
 	coding := flags.Bool("coding", false, "enable local coding tools for this run")
@@ -102,7 +102,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		if !isFileTTY(stdin) || !isFileTTY(stderr) {
 			return errors.New("--select requires terminal stdin and stderr; use glue models and --provider/--model/--thinking for scripts")
 		}
-		initialProvider, initialModel, err := resolveProvider(*provider, *model)
+		initialProvider, initialModel, err := resolveSelection(*coding, *provider, *model)
 		if err != nil {
 			return err
 		}
@@ -142,7 +142,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		}
 	}
 
-	providerName, effectiveModel, err := resolveProvider(*provider, *model)
+	providerName, effectiveModel, err := resolveSelection(*coding, *provider, *model)
 	if err != nil {
 		return err
 	}

@@ -39,7 +39,7 @@ import (
 	_ "github.com/erain/glue/providers/openrouter"
 )
 
-const defaultProvider = "gemini"
+const defaultProvider = "openrouter"
 
 const defaultListenAddr = "127.0.0.1:0"
 
@@ -145,6 +145,25 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 		printUsage(stderr)
 		return 1
 	}
+}
+
+// defaultSelection returns CLI defaults for the selected activity.
+func defaultSelection(coding bool) (string, string) {
+	if coding {
+		return "gemini", "gemini-3.8-flash"
+	}
+	return "openrouter", "openrouter/free"
+}
+
+func resolveSelection(coding bool, name, model string) (string, string, error) {
+	p, m := defaultSelection(coding)
+	if strings.TrimSpace(name) == "" {
+		name = p
+		if strings.TrimSpace(model) == "" {
+			model = m
+		}
+	}
+	return resolveProvider(name, model)
 }
 
 // resolveProvider validates the provider name against the registry and
@@ -279,6 +298,10 @@ Commands:
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
   connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
   version  Print the binary's version, git revision, and Go toolchain (also: --version, -v).
+
+Defaults: chat uses provider openrouter, model openrouter/free.
+  --coding and goal use provider gemini, model gemini-3.8-flash.
+Explicit --provider and --model override defaults.
 
 Flags:
   --id       Session id. Defaults to "default".
