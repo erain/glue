@@ -17,15 +17,15 @@ const registrySchema = `CREATE TABLE IF NOT EXISTS runs (
  CREATE INDEX IF NOT EXISTS runs_status ON runs(status);`
 
 type runRecord struct {
-	ID                 string          `json:"id"`
-	SessionID          string          `json:"session_id"`
-	ClientID           string          `json:"client_id"`
-	Status             string          `json:"status"`
-	CreatedAt          string          `json:"created_at"`
-	UpdatedAt          string          `json:"updated_at"`
-	LastSeq            int64           `json:"last_seq"`
-	Error              json.RawMessage `json:"error"`
-	PendingPermissions []any           `json:"pending_permissions"`
+	ID                 string             `json:"id"`
+	SessionID          string             `json:"session_id"`
+	ClientID           string             `json:"client_id"`
+	Status             string             `json:"status"`
+	CreatedAt          string             `json:"created_at"`
+	UpdatedAt          string             `json:"updated_at"`
+	LastSeq            int64              `json:"last_seq"`
+	Error              json.RawMessage    `json:"error"`
+	PendingPermissions []permissionRecord `json:"pending_permissions"`
 }
 
 const runColumns = "id,session_id,client_id,status,created_at,updated_at,last_seq,error_json"
@@ -36,7 +36,7 @@ func scanRecord(row interface{ Scan(...any) error }) (runRecord, error) {
 	var data string
 	err := row.Scan(&r.ID, &r.SessionID, &r.ClientID, &r.Status, &r.CreatedAt, &r.UpdatedAt, &r.LastSeq, &data)
 	r.Error = json.RawMessage(data)
-	r.PendingPermissions = []any{}
+	r.PendingPermissions = []permissionRecord{}
 	return r, err
 }
 func (l *eventLog) record(id string) (runRecord, error) {
@@ -53,6 +53,11 @@ func appendRunEvent(tx *sql.Tx, e EventEnvelope) error {
 	}
 	if _, err = tx.Exec("INSERT INTO events(run_id,seq,payload_json) VALUES(?,?,?)", e.RunID, e.Seq, string(data)); err != nil {
 		return err
+	}
+	if e.Type == "permission_request" {
+		if err := storePermission(tx, e); err != nil {
+			return err
+		}
 	}
 	status := "running"
 	errData := "null"
@@ -113,6 +118,9 @@ func (s *Server) recoverRuns() error {
 	if err != nil {
 		return err
 	}
+	if _, err := tx.Exec("UPDATE permissions SET state='expired' WHERE state='pending' AND run_id IN (SELECT id FROM runs WHERE status='running')"); err != nil {
+		return err
+	}
 	for _, r := range runs {
 		e := EventEnvelope{Version: protocolVersion, ID: s.newID("evt"), Seq: r.LastSeq + 1, RunID: r.ID, SessionID: r.SessionID, Time: s.now().UTC(), Type: "run_interrupted"}
 		if err := appendRunEvent(tx, e); err != nil {
@@ -129,6 +137,11 @@ func (s *Server) handleRunGet(w http.ResponseWriter, r *http.Request, id string)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
+		return
+	}
+	record.PendingPermissions, err = s.log.permissions(id, "pending")
+	if err != nil {
+		writeError(w, 500, "internal", err.Error(), false)
 		return
 	}
 	writeJSON(w, http.StatusOK, record)

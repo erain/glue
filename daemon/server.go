@@ -795,6 +795,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if id, ok := parseRunPermissionsPath(r.URL.Path); ok {
+		if r.Method != http.MethodGet {
+			writeError(w, 405, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleRunPermissions(w, r, id)
+		return
+	}
 	if runID, permissionID, ok := parsePermissionDecisionPath(r.URL.Path); ok {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -1356,7 +1364,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, _ *http.Request, runID s
 func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request, runID, permissionID string) {
 	run := s.getRun(runID)
 	if run == nil {
-		writeError(w, http.StatusNotFound, "not_found", "run not found", false)
+		writeError(w, http.StatusConflict, "conflict", "permission is not pending", false)
 		return
 	}
 	if clientID := r.Header.Get("X-Glue-Client-ID"); clientID != "" && run.clientID != "" && clientID != run.clientID {
@@ -1381,8 +1389,13 @@ func (s *Server) handlePermissionDecision(w http.ResponseWriter, r *http.Request
 	if !decision.Allow && strings.TrimSpace(decision.Reason) == "" {
 		decision.Reason = "permission denied by daemon client"
 	}
-	if !run.resolvePermission(permissionID, decision) {
-		writeError(w, http.StatusNotFound, "not_found", "permission request not found", false)
+	changed, err := run.resolvePermission(permissionID, decision)
+	if err != nil {
+		writeError(w, 500, "internal", err.Error(), false)
+		return
+	}
+	if !changed {
+		writeError(w, http.StatusConflict, "conflict", "permission is not pending", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, permissionDecisionResponse{PermissionID: permissionID, Accepted: true})
@@ -1617,7 +1630,11 @@ func (s *Server) decidePermission(ctx context.Context, run *run, req glue.Permis
 		}
 		return decision, nil
 	case <-timer.C:
-		if !run.expirePermission(permissionID, pending) {
+		expired, err := run.expirePermission(permissionID, pending)
+		if err != nil {
+			return glue.PermissionDecision{}, err
+		}
+		if !expired {
 			decision := <-pending.done
 			if err := s.rememberPermission(run, req, decision); err != nil {
 				return glue.PermissionDecision{}, err
@@ -1626,7 +1643,11 @@ func (s *Server) decidePermission(ctx context.Context, run *run, req glue.Permis
 		}
 		return glue.PermissionDecision{Allow: false, Reason: "permission denied: daemon permission request timed out"}, nil
 	case <-ctx.Done():
-		if !run.expirePermission(permissionID, pending) {
+		expired, err := run.expirePermission(permissionID, pending)
+		if err != nil {
+			return glue.PermissionDecision{}, err
+		}
+		if !expired {
 			decision := <-pending.done
 			if err := s.rememberPermission(run, req, decision); err != nil {
 				return glue.PermissionDecision{}, err

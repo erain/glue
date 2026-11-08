@@ -1184,7 +1184,7 @@ func TestServerPermissionDecisionRejectsInvalidRequests(t *testing.T) {
 		id := permissionID(t, event)
 		postDecisionStatus(t, ts.URL, start.RunID, id, "token", "cli:other", `{"allow":true}`, http.StatusForbidden)
 		postDecisionStatus(t, ts.URL, start.RunID, id, "token", "", `{"allow":true,"remember_for":"workspace"}`, http.StatusBadRequest)
-		postDecisionStatus(t, ts.URL, start.RunID, "perm_missing", "token", "", `{"allow":true}`, http.StatusNotFound)
+		postDecisionStatus(t, ts.URL, start.RunID, "perm_missing", "token", "", `{"allow":true}`, http.StatusConflict)
 		postDecisionStatus(t, ts.URL, start.RunID, id, "token", "cli:test", `{"allow":true}`, http.StatusOK)
 	})
 	if err != nil {
@@ -1230,7 +1230,11 @@ func TestServerPermissionTimeoutDenies(t *testing.T) {
 	if timedOutPermissionID == "" {
 		t.Fatal("timed-out run did not emit permission_request")
 	}
-	postDecisionStatus(t, ts.URL, start.RunID, timedOutPermissionID, "token", "", `{"allow":true}`, http.StatusNotFound)
+	postDecisionStatus(t, ts.URL, start.RunID, timedOutPermissionID, "token", "", `{"allow":true}`, http.StatusConflict)
+	records, err := srv.log.permissions(start.RunID, "expired")
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records %v err %v", records, err)
+	}
 }
 
 func TestServerPermissionRememberSession(t *testing.T) {

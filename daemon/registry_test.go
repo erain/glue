@@ -58,6 +58,7 @@ func TestRestartMarksRunsInterrupted(t *testing.T) {
 	s := eventServer(t, dir)
 	r := s.newRun("session", "client", func() {})
 	r.emit("run_start", nil)
+	r.emit("permission_request", permissionRequestPayload{PermissionID: "pending", ExpiresAt: s.now().Add(time.Hour)})
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,15 +74,19 @@ func TestRestartMarksRunsInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[1].Type != "run_interrupted" || events[1].Seq != 2 {
+	if len(events) != 3 || events[2].Type != "run_interrupted" || events[2].Seq != 3 {
 		t.Fatal(events)
+	}
+	expired := registryRequest(t, other, "/v1/runs/"+r.id+"/permissions?state=expired", 200)
+	if len(expired["permissions"].([]any)) != 1 {
+		t.Fatal(expired)
 	}
 	if err := other.Close(); err != nil {
 		t.Fatal(err)
 	}
 	third := eventServer(t, dir)
 	events, err = third.log.read(r.id, 0)
-	if err != nil || len(events) != 2 {
+	if err != nil || len(events) != 3 {
 		t.Fatalf("events %v err %v", events, err)
 	}
 }

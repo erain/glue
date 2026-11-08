@@ -455,3 +455,8 @@ can list `/v1/runs` and inspect `/v1/runs/{id}` after restart. Terminal status
 commits with its event; startup marks previously running prompts interrupted
 and closes their replay with `run_interrupted`. Permission persistence and
 retention are subsequent steps in #405.
+
+Daemon permission requests and their outcomes are persisted with run state.
+Run inspection includes pending requests; `/v1/runs/{id}/permissions` lists
+request history by state. Restart expires interrupted-run requests, and
+late or repeated decisions return conflict instead of releasing a tool.
