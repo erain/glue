@@ -26,19 +26,22 @@ func openEventLog(dir string) (*eventLog, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
- CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id,seq));`); err != nil {
+ CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id,seq));` + registrySchema); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &eventLog{db}, nil
 }
 func (l *eventLog) append(e EventEnvelope) error {
-	data, err := json.Marshal(e)
+	tx, err := l.db.Begin()
 	if err != nil {
 		return err
 	}
-	_, err = l.db.Exec("INSERT INTO events(run_id,seq,payload_json) VALUES(?,?,?)", e.RunID, e.Seq, string(data))
-	return err
+	defer tx.Rollback()
+	if err := appendRunEvent(tx, e); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (l *eventLog) read(id string, after int64) ([]EventEnvelope, error) {
 	rows, err := l.db.Query("SELECT payload_json FROM events WHERE run_id=? AND seq>? ORDER BY seq", id, after)
