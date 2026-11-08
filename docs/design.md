@@ -303,7 +303,7 @@ fresh. The TUI surfaces all of this as `/goal <objective>` with `status` /
 `pause` / `resume` (continues the most recent unfinished record, even in a new
 process) / `list` / `clear` subcommands, a live checklist card in the
 transcript, and a `◎ goal` status-bar segment. `/goal -w` adds worktree
-isolation: cmd/glue (which owns the git plumbing per ADR-0012) creates
+isolation: cmd/glue uses `internal/worktree` to create
 `.glue/worktrees/<goal-id>` on branch `goal/<id>`, rebuilds the coding tool
 set rooted there via `tui.Config.BuildTools`, and records the root in
 `GoalSpec.WorkDir` so resume re-attaches the same worktree. The headless
@@ -472,3 +472,12 @@ Goal hosts can observe every planner, maker, and checker session through
 phase and iteration (planner uses 0); the host owns subscription cleanup.
 This supports durable job transcripts without changing the goal loop's
 provider or tool behavior.
+
+`internal/worktree` shares workspace preparation between the CLI and job
+hosts. `Ensure` retains existing goal worktree behavior. Explicit `Prepare`
+creates a new worktree or clone at a caller-selected path and branch and
+returns its base SHA. Existing destinations are rejected. Default revision
+selection prefers cached `origin/HEAD`, then a sole local branch, then local
+`main`/`master`; ambiguous repositories require an explicit base reference.
+URL clones use the remote default branch or a requested revision. Git errors
+omit command arguments and output so credential-bearing URLs are not logged.

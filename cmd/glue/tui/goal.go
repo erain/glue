@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/erain/glue"
-	"github.com/erain/glue/cmd/glue/worktree"
+	"github.com/erain/glue/internal/worktree"
 )
 
 // goalMaxIterations mirrors the library default for GoalSpec.MaxIterations.

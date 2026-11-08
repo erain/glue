@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Share isolated workspace preparation between CLI goals and job hosts,
+  including requested base revisions and URL clones with recorded base SHAs.
+
 - Observe goal planner, maker, and checker sessions before prompts through
   `GoalSpec.OnSession`, including phase and iteration for event transcripts.
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/erain/glue"
-	"github.com/erain/glue/cmd/glue/worktree"
+	"github.com/erain/glue/internal/worktree"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
