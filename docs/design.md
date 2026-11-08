@@ -465,3 +465,10 @@ Daemon history retention defaults to 720 hours (`--retain-runs`). Background
 sweeps atomically remove old terminal metadata, events, and permissions;
 running runs remain. Shutdown stops sweeps, interrupts active executions,
 and waits for their state writes before closing storage.
+
+Goal hosts can observe every planner, maker, and checker session through
+`GoalSpec.OnSession`. It runs before the session is prompted, allowing
+`Session.Subscribe` to capture loop events from the start. The hook receives
+phase and iteration (planner uses 0); the host owns subscription cleanup.
+This supports durable job transcripts without changing the goal loop's
+provider or tool behavior.
