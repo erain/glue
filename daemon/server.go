@@ -372,6 +372,10 @@ func (s filePermissionStore) SavePermissionGrants(grants []PermissionGrant) erro
 
 // Options configures [New].
 type Options struct {
+	// RetainRuns defaults to 720 hours; SweepInterval defaults to one hour.
+	RetainRuns    time.Duration
+	SweepInterval time.Duration
+
 	// StateDir stores durable daemon events. Empty uses an isolated in-memory database.
 	StateDir string
 	// KeepaliveInterval defaults to 15 seconds.
@@ -455,6 +459,14 @@ type PermissionPolicyDecision struct {
 
 // Server is an http.Handler for the local daemon protocol.
 type Server struct {
+	retainRuns           time.Duration
+	sweepStop, sweepDone chan struct{}
+	closeOnce            sync.Once
+	closeErr             error
+	lifecycleMu          sync.Mutex
+	closing              bool
+	runWG                sync.WaitGroup
+
 	log               *eventLog
 	keepaliveInterval time.Duration
 
@@ -597,6 +609,17 @@ func New(opts Options) (*Server, error) {
 	if diagnostics.StartedAt.IsZero() {
 		diagnostics.StartedAt = now().UTC()
 	}
+	if opts.RetainRuns < 0 || opts.SweepInterval < 0 {
+		return nil, errors.New("daemon: retention durations must not be negative")
+	}
+	retain := opts.RetainRuns
+	if retain == 0 {
+		retain = 720 * time.Hour
+	}
+	sweepInterval := opts.SweepInterval
+	if sweepInterval == 0 {
+		sweepInterval = time.Hour
+	}
 	log, err := openEventLog(opts.StateDir)
 	if err != nil {
 		return nil, err
@@ -606,6 +629,7 @@ func New(opts Options) (*Server, error) {
 		interval = 15 * time.Second
 	}
 	s := &Server{
+		retainRuns: retain, sweepStop: make(chan struct{}), sweepDone: make(chan struct{}),
 		log:               log,
 		keepaliveInterval: interval,
 		host:              opts.Host,
@@ -630,9 +654,10 @@ func New(opts Options) (*Server, error) {
 		s.loadPermissionGrants(grants)
 	}
 	if err := s.recoverRuns(); err != nil {
-		s.Close()
+		s.log.db.Close()
 		return nil, err
 	}
+	go s.sweepLoop(sweepInterval)
 	return s, nil
 }
 
@@ -934,6 +959,12 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionI
 		return
 	}
 
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closing {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "daemon is closing", true)
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	run := s.newRun(sessionID, req.ClientID, cancel)
 	if run.persistErr != nil {
@@ -941,7 +972,8 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request, sessionI
 		writeError(w, 500, "internal", run.persistErr.Error(), false)
 		return
 	}
-	go s.executeRun(ctx, run, session, req)
+	s.runWG.Add(1)
+	go func() { defer s.runWG.Done(); s.executeRun(ctx, run, session, req) }()
 
 	writeJSON(w, http.StatusCreated, startRunResponse{
 		RunID:     run.id,
@@ -1238,6 +1270,14 @@ func (s *Server) executeRun(ctx context.Context, r *run, session *glue.Session, 
 		result, err = session.Prompt(ctx, req.Text, options...)
 	}
 	if err != nil {
+		s.lifecycleMu.Lock()
+		closing := s.closing
+		s.lifecycleMu.Unlock()
+		if closing {
+			r.emit("run_interrupted", nil)
+			r.finish()
+			return
+		}
 		protocolErr := errorFor(err)
 		s.recordError(DiagnosticError{
 			Time:      s.now().UTC(),

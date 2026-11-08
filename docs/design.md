@@ -460,3 +460,8 @@ Daemon permission requests and their outcomes are persisted with run state.
 Run inspection includes pending requests; `/v1/runs/{id}/permissions` lists
 request history by state. Restart expires interrupted-run requests, and
 late or repeated decisions return conflict instead of releasing a tool.
+
+Daemon history retention defaults to 720 hours (`--retain-runs`). Background
+sweeps atomically remove old terminal metadata, events, and permissions;
+running runs remain. Shutdown stops sweeps, interrupts active executions,
+and waits for their state writes before closing storage.

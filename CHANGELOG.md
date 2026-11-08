@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Retain terminal daemon runs for 720 hours by default (`--retain-runs`),
+  delete associated history atomically, and record shutdown interruptions.
+
 - Persist daemon permission requests and decisions, expose their history,
   and expire interrupted-run requests after restart. Late decisions return 409.
 
