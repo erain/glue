@@ -442,3 +442,10 @@ Every issue must specify verification before work starts. At minimum:
 
 The full per-issue contributor protocol — branching, PR conventions, closing
 comments, and tracker updates — is documented in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+
+The daemon uses protocol v2 durable event streams. `glue serve --state-dir`
+(default `.glue/state`) stores SQLite events before publishing them. SSE
+IDs are sequence numbers; `Last-Event-ID` or `?after=` resumes replay and
+live output. Disconnect leaves execution running; DELETE cancels it.
+Keepalive comments default to 15 seconds. Finished events survive daemon
+restart; in-flight recovery is tracked separately in #405.

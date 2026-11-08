@@ -77,7 +77,7 @@ func TestRunCLIServeBuildsDaemon(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{
-		"serve",
+		"serve", "--state-dir", t.TempDir(),
 		"--listen", "127.0.0.1:0",
 		"--token", "test-token",
 		"--metadata", metadataPath,
@@ -135,7 +135,7 @@ func TestRunCLIServeCodingAdvertisesTools(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{
-		"serve",
+		"serve", "--state-dir", t.TempDir(),
 		"--coding",
 		"--work", workDir,
 		"--allow-binary", "go",
@@ -163,7 +163,7 @@ func TestRunCLIServeGeneratesTokenWhenMetadataEnabled(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{
-		"serve",
+		"serve", "--state-dir", t.TempDir(),
 		"--metadata", filepath.Join(t.TempDir(), "daemon.json"),
 	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}), serve)
 	if code != 0 {
@@ -178,7 +178,7 @@ func TestRunCLIServeMetadataDisabledRequiresKnownToken(t *testing.T) {
 	t.Setenv("GLUE_DAEMON_TOKEN", "")
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{
-		"serve",
+		"serve", "--state-dir", t.TempDir(),
 		"--metadata", "",
 	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}), func(context.Context, serveConfig, http.Handler, io.Writer) error {
 		t.Fatal("serve should not be called")
@@ -197,7 +197,7 @@ func TestRunCLIServeMetadataDisabledAllowsEnvToken(t *testing.T) {
 	var captured serveConfig
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{
-		"serve",
+		"serve", "--state-dir", t.TempDir(),
 		"--metadata", "",
 	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}), func(_ context.Context, cfg serveConfig, _ http.Handler, _ io.Writer) error {
 		captured = cfg
@@ -222,7 +222,7 @@ func TestRunCLIServeLoadsEnvBeforeTokenResolution(t *testing.T) {
 	var captured serveConfig
 	var stdout, stderr bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{
-		"serve",
+		"serve", "--state-dir", t.TempDir(),
 		"--metadata", "",
 		"--env", envPath,
 	}, &stdout, &stderr, fakeFactory(&scriptedProvider{}), func(_ context.Context, cfg serveConfig, _ http.Handler, _ io.Writer) error {
