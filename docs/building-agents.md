@@ -290,6 +290,11 @@ schema. Validation is JSON decoding into your Go type.
 
 ## Step 8 — Multiple providers and failover
 
+CLI defaults depend on activity: `glue run` and `glue serve` use
+`openrouter` / `openrouter/free`; `--coding` and `glue goal` use
+`gemini` / `gemini-3.8-flash`. Explicit `--provider` and `--model`
+override these choices. `glue models` labels the chat and coding defaults.
+
 Beyond Gemini, Glue ships `codex` (ChatGPT subscription via
 `codex login`), `nvidia` (build.nvidia.com), and `openrouter`. The
 driver-style registry lets you select by name, and `glue.WithFailover`

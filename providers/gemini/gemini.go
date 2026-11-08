@@ -46,6 +46,8 @@ func init() {
 		New:          func() loop.Provider { return New(Options{}) },
 		DefaultModel: DefaultModel,
 		Models: []providers.ModelInfo{
+			// Live probe 2026-11-07: low, medium, high accepted; minimal rejected.
+			{ID: "gemini-3.8-flash", ThinkingLevels: []string{"low", "medium", "high"}},
 			{ID: "gemini-4-argon", ThinkingLevels: []string{"low", "medium", "high"}},
 			{ID: "gemini-3.1-pro-preview", ThinkingLevels: []string{"low", "medium", "high"}},
 			{ID: "gemini-3-flash-preview", ThinkingLevels: []string{"minimal", "low", "medium", "high"}},

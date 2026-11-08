@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- CLI chat defaults to OpenRouter free; coding and goals default to Gemini 3.8 Flash.
+
 - **Remote mode is planned (`docs/remote-mode-roadmap.md`, ADR-0019).**
   Fire a coding job, disconnect, and pick it up from any terminal or a
   browser, with jobs running locally or as AX tasks. The plan is a tracker

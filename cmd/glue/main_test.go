@@ -158,7 +158,7 @@ func TestRunCLIMissingGeminiAPIKey(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := runCLI(context.Background(), []string{
-		"run", "--prompt", "go", "--store", t.TempDir(),
+		"run", "--provider", "gemini", "--prompt", "go", "--store", t.TempDir(),
 	}, &stdout, &stderr, defaultProviderFactory)
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero for missing GEMINI_API_KEY")
@@ -178,7 +178,7 @@ func TestResolveProvider(t *testing.T) {
 		wantModel string
 		wantErr   string
 	}{
-		{name: "default empty selects gemini", provider: "", model: "", wantName: "gemini", wantModel: "gemini-3.1-pro-preview"},
+		{name: "default empty selects openrouter", provider: "", model: "", wantName: "openrouter", wantModel: "openrouter/free"},
 		{name: "codex default model", provider: "codex", model: "", wantName: "codex", wantModel: "gpt-5-codex"},
 		{name: "explicit model overrides default", provider: "gemini", model: "gemini-2.0-pro", wantName: "gemini", wantModel: "gemini-2.0-pro"},
 		{name: "case insensitive name", provider: "CodeX", model: "", wantName: "codex", wantModel: "gpt-5-codex"},
