@@ -8,12 +8,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/erain/glue"
-	"github.com/erain/glue/cmd/glue/worktree"
+	"github.com/erain/glue/internal/worktree"
 )
 
 // scratchRepo initializes a git repository with one commit so worktrees can
 // branch off it. The worktree mechanics themselves are tested in the
-// cmd/glue/worktree package; here we test the /goal -w flow around them.
+// internal/worktree package; here we test the /goal -w flow around them.
 func scratchRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

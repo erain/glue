@@ -1,8 +1,7 @@
 // Package worktree creates the dedicated git worktrees isolated goals run
 // in: <repo root>/.glue/worktrees/<goal-id> on branch goal/<id-suffix>.
 // Shared by the TUI's /goal -w and the headless `glue goal --worktree`.
-// Git plumbing lives here in cmd/glue per ADR-0012 — the library stays
-// git-free.
+// Job hosts also use Prepare for explicitly requested isolated workspaces.
 package worktree
 
 import (
