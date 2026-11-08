@@ -25,6 +25,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/modelselection"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
@@ -38,8 +39,6 @@ import (
 	_ "github.com/erain/glue/providers/nvidia"
 	_ "github.com/erain/glue/providers/openrouter"
 )
-
-const defaultProvider = "openrouter"
 
 const defaultListenAddr = "127.0.0.1:0"
 
@@ -147,41 +146,12 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 }
 
-// defaultSelection returns CLI defaults for the selected activity.
-func defaultSelection(coding bool) (string, string) {
-	if coding {
-		return "gemini", "gemini-3.8-flash"
-	}
-	return "openrouter", "openrouter/free"
-}
-
+func defaultSelection(coding bool) (string, string) { return modelselection.Default(coding) }
 func resolveSelection(coding bool, name, model string) (string, string, error) {
-	p, m := defaultSelection(coding)
-	if strings.TrimSpace(name) == "" {
-		name = p
-		if strings.TrimSpace(model) == "" {
-			model = m
-		}
-	}
-	return resolveProvider(name, model)
+	return modelselection.Resolve(coding, name, model)
 }
-
-// resolveProvider validates the provider name against the registry and
-// resolves the effective model: an explicit --model wins, otherwise the
-// provider's registry default model is used.
 func resolveProvider(name, model string) (string, string, error) {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		name = defaultProvider
-	}
-	factory, ok := providers.Lookup(name)
-	if !ok {
-		return "", "", fmt.Errorf("unknown provider %q (known: %s)", name, strings.Join(providers.Known(), ", "))
-	}
-	if strings.TrimSpace(model) == "" {
-		model = factory.DefaultModel
-	}
-	return name, model, nil
+	return modelselection.Provider(name, model)
 }
 
 // isFileTTY reports whether the given reader/writer is an os.File backed

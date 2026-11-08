@@ -488,3 +488,11 @@ Hosts insert events inside the same transaction as their own metadata and
 publish only after commit. Optional phase and iteration metadata supports
 goal session transcripts, including planner iteration zero. Daemon JSON
 and transaction behavior remain unchanged when this metadata is absent.
+
+The `jobs` package stores validated coding objectives and `job_created`
+events atomically in the shared state database. `Manager.Create` performs
+no repository or provider operations; workspace preparation and goal
+execution begin only through the separate Start API. Get, List, and Events
+read persisted records across manager restart. Provider/model defaults use
+the same activity resolver as the CLI. Job execution and waiting/budgets are
+implemented in the remaining children of #406.
