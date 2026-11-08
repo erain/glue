@@ -28,7 +28,7 @@ backend. Local execution can still call a hosted model API.
 | Mode | Intended experience | Status |
 |------|---------------------|--------|
 | Local | Code interactively or run a goal in a workspace on this machine. | Existing `run`, TUI, and `goal` paths. |
-| Remote | Submit a complete coding job to AX, disconnect, inspect it later, and retrieve changes and test evidence. | Planning; no Glue AX integration shipped. |
+| Remote | Submit a complete coding job to AX, disconnect, inspect it later, and retrieve changes and test evidence. | Planned in [remote-mode-roadmap.md](remote-mode-roadmap.md) (tracker [#402](https://github.com/erain/glue/issues/402)); not implemented yet. |
 
 Glue owns agent behavior and the coding-job contract. [AX](https://github.com/google/ax)
 owns remote task orchestration and sandbox lifecycle on Agent Substrate.
@@ -37,6 +37,14 @@ Plan to execute the whole Glue coding job remotely. Redirecting only
 Keep local execution usable without AX or a cluster.
 
 ## Next step: write the detailed roadmap
+
+**Done 2026-11-07:** the detailed roadmap is
+[remote-mode-roadmap.md](remote-mode-roadmap.md), with decisions in
+[ADR-0019](adr/0019-remote-jobs-architecture.md) and one issue per step under
+tracker [#402](https://github.com/erain/glue/issues/402). The planning steps
+below are kept as the record of how it was produced; the hand-run AX job in
+[#418](https://github.com/erain/glue/issues/418) is the remaining feasibility
+gate.
 
 This is the plan for producing that roadmap, not an implementation backlog.
 Work through these deliverables in order under #392:
