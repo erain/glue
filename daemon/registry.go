@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/erain/glue/internal/eventlog"
 )
 
 const registrySchema = `CREATE TABLE IF NOT EXISTS runs (
@@ -47,11 +49,7 @@ func (l *eventLog) createRun(id, session, client string, now time.Time) error {
 	return err
 }
 func appendRunEvent(tx *sql.Tx, e EventEnvelope) error {
-	data, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec("INSERT INTO events(run_id,seq,payload_json) VALUES(?,?,?)", e.RunID, e.Seq, string(data)); err != nil {
+	if err := eventlog.Insert(tx, eventlog.Envelope(e)); err != nil {
 		return err
 	}
 	if e.Type == "permission_request" {
@@ -91,7 +89,7 @@ func appendRunEvent(tx *sql.Tx, e EventEnvelope) error {
 			status = "canceled"
 		}
 	}
-	_, err = tx.Exec("UPDATE runs SET status=?,updated_at=?,last_seq=?,error_json=? WHERE id=?", status, timestamp(e.Time), e.Seq, errData, e.RunID)
+	_, err := tx.Exec("UPDATE runs SET status=?,updated_at=?,last_seq=?,error_json=? WHERE id=?", status, timestamp(e.Time), e.Seq, errData, e.RunID)
 	return err
 }
 func (s *Server) recoverRuns() error {

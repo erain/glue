@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Share durable event storage between daemon and job hosts while preserving
+  daemon registry/permission transactions and resumable replay.
+
 - Share isolated workspace preparation between CLI goals and job hosts,
   including requested base revisions and URL clones with recorded base SHAs.
 
