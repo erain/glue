@@ -26,7 +26,7 @@ func openEventLog(dir string) (*eventLog, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
- CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id,seq));` + registrySchema); err != nil {
+ CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id,seq));` + registrySchema + permissionSchema); err != nil {
 		db.Close()
 		return nil, err
 	}

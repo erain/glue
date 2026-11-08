@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Persist daemon permission requests and decisions, expose their history,
+  and expire interrupted-run requests after restart. Late decisions return 409.
+
 - Inspect persisted daemon runs through list/get APIs; restarted daemons
   report interrupted prompts with a terminal replay event.
 

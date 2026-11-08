@@ -623,9 +623,22 @@ to 50 (1–1000). `before` is the ID of a preceding row, used as an exclusive
 cursor over that order. Invalid filters/cursors return 400.
 `GET /v1/runs/{id}` returns the persisted row or 404, including client,
 session, timestamps, last sequence, status, error, and pending permissions.
-Permission persistence is added separately; the pending list is empty here.
+The pending list includes persisted requests awaiting a decision.
 
 Statuses are `running`, `done`, `error`, `canceled`, and `interrupted`.
 Registry changes commit with their events. Startup marks running rows
 interrupted and appends one `run_interrupted` event in the same transaction;
 repeating startup does not append another. Prompt runs are not resumed.
+
+### Durable permission inspection
+
+`GET /v1/runs/{id}/permissions` returns `{ "permissions": [...] }`, optionally
+filtered by `state=pending|allowed|denied|expired`. Each record includes its
+ID, run ID, request, creation/expiry timestamps, and state. Requests commit
+with their SSE event; decisions persist before releasing the waiting tool.
+The run detail includes `pending_permissions`.
+
+Unknown, already decided, and expired decisions return 409. Timeout and
+cancellation expire pending records. Startup expires requests belonging to
+interrupted runs in the same transaction as interruption. Storage errors
+return errors without releasing an unrecorded approval.

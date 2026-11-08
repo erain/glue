@@ -100,28 +100,36 @@ func (r *run) addPermission(p *pendingPermission) bool {
 	return true
 }
 
-func (r *run) resolvePermission(id string, decision glue.PermissionDecision) bool {
+func (r *run) resolvePermission(id string, decision glue.PermissionDecision) (bool, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	pending := r.pending[id]
-	if pending != nil {
-		delete(r.pending, id)
-	}
-	r.mu.Unlock()
 	if pending == nil {
-		return false
+		return false, nil
 	}
+	state := "denied"
+	if decision.Allow {
+		state = "allowed"
+	}
+	changed, err := r.log.transitionPermission(r.id, id, state, r.now())
+	if err != nil || !changed {
+		return false, err
+	}
+	delete(r.pending, id)
 	pending.done <- decision
-	return true
+	return true, nil
 }
-
-func (r *run) expirePermission(id string, pending *pendingPermission) bool {
+func (r *run) expirePermission(id string, pending *pendingPermission) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pending[id] != pending {
-		return false
+		return false, nil
+	}
+	if _, err := r.log.transitionPermission(r.id, id, "expired", r.now()); err != nil {
+		return false, err
 	}
 	delete(r.pending, id)
-	return true
+	return true, nil
 }
 
 func (r *run) signalLocked() {
