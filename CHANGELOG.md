@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `jobs.Policy`, built-in permission profiles (`ask-all`, `workspace-auto`,
+  `yolo`), strict JSON policy file validation, and workspace-confined rule
+  evaluation.
+
 - Resume active jobs after a process restart, expire abandoned permissions, and
   retain iteration, token, and wall-clock limits across recovery.
 
