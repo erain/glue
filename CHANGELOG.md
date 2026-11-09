@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Resume active jobs after a process restart, expire abandoned permissions, and
+  retain iteration, token, and wall-clock limits across recovery.
+
 - Persist job preparation intent before repository work, require goal checkpoints,
   and recover validated checkouts without recreating branches or losing edits.
 
