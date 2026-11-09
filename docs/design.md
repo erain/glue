@@ -551,3 +551,24 @@ Message(ctx, id, text) persists before accepting; the HTTP messages route
 returns 202. At the next maker boundary the manager selects queued guidance,
 records delivery, and supplies all accumulated guidance to the maker/checker.
 Reopened managers reconstruct guidance and acknowledgments from durable events.
+
+Terminal blocked/max_iterations/budget_limited/interrupted jobs can continue
+from their GoalRecord checklist in the same workspace and branch. A single
+transaction records the updated iteration limit, resumed event and optional
+guidance before execution starts. Explicit continuation resets run budgets.
+
+```mermaid
+stateDiagram-v2
+    created --> running: start
+    running --> waiting_for_input: permission
+    waiting_for_input --> running: decision
+    running --> blocked
+    running --> max_iterations
+    running --> budget_limited
+    running --> interrupted: shutdown
+    blocked --> running: continue
+    max_iterations --> running: continue
+    budget_limited --> running: continue
+    interrupted --> running: continue
+    running --> achieved
+```

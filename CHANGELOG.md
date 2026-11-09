@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Continue blocked, iteration-limited, budget-limited, or interrupted jobs with
+  new guidance, preserving their checklist, branch, and isolated workspace.
+
 - Queue durable operator messages over the job API and show them to the next
   maker and checker, with delivery events and guidance preserved across restarts.
 

@@ -739,3 +739,21 @@ phase `maker` and the iteration. Events are the durable queue: unacknowledged
 messages survive restarts; acknowledged guidance stays in subsequent maker and
 checker prompts without duplicate delivery events. Messages arriving during a
 maker wait for its successor and do not change the current checker prompt.
+
+### Continue terminal jobs
+
+`POST /v1/jobs/{id}/continue` accepts `{ "text": "...", "max_iterations": 3 }`
+and returns 202 `{ "job_id": "...", "accepted": true }`. Only `blocked`,
+`max_iterations`, `budget_limited`, and `interrupted` jobs can continue; other
+states return 409. Text is optional. Zero/omitted max_iterations reuses the job
+limit, positive values replace it, and negative values return 400. Existing
+authentication and strict JSON rules apply. A saved goal checklist and matching
+workspace are required; missing checkpoint metadata returns 409.
+
+The job ID, worktree/branch and base SHA remain unchanged. The next iteration
+is the saved GoalRecord iteration plus one. A transaction updates the spec,
+logs `job_resumed{ from_iteration }` with that next iteration, and queues any
+guidance before execution detaches. Iteration numbers and event sequences
+continue across runs. As with `glue goal --resume`, explicit continuation gets
+fresh token/wall-clock budgets and the configured number of additional
+iterations. Automatic recovery of a killed process is a separate operation.
