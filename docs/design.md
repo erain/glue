@@ -519,3 +519,8 @@ SQLite read snapshot. It never constructs a provider or resumes execution.
 The terminal result supplies final progress; unsettled permissions expire
 on completion. Filtered listing uses stable creation-time/ID ordering and
 an exclusive job ID cursor. Canceling a created job only writes its outcome.
+
+Daemon model choices are available through authenticated `/v1/models`,
+including chat/coding defaults and thinking levels without provider I/O.
+A shared SSE writer handles resumable run and job streams, idle comments,
+and terminal closure; keepalives never resend an already delivered batch.

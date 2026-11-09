@@ -664,3 +664,15 @@ allowed, denied, and expired. Terminal completion expires any unsettled request.
 Job lists use creation time and ID descending, with an exclusive `before`
 job ID cursor. Validation identifies the snake_case field. Canceling a job
 that has not started writes a canceled completion without preparing a workspace.
+
+### Model catalog and shared streams
+
+Authenticated `GET /v1/models` returns `providers` (provider name,
+`default_model`, and curated `models` with thinking levels) and `defaults`
+with `chat`/`coding` objects containing `provider` and `model`. Catalog reads
+never construct providers or check credentials. Other methods return 405.
+
+Runs and jobs use one resumable SSE writer: decimal sequence IDs,
+Last-Event-ID/query precedence, keepalives, and detached disconnects. Readers
+without a notification channel are polled every 100ms; notified run streams
+remain event driven. Keepalives do not replay the preceding event batch.

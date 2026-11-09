@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -668,6 +669,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/models" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
+			return
+		}
+		s.handleModels(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/status" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -1308,79 +1317,31 @@ func (s *Server) recordError(entry DiagnosticError) {
 }
 
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
-	afterText := r.Header.Get("Last-Event-ID")
-	if values, ok := r.URL.Query()["after"]; ok {
-		afterText = values[0]
-	}
-	var after int64
-	if afterText != "" {
-		var err error
-		after, err = strconv.ParseInt(afterText, 10, 64)
-		if err != nil || after < 0 {
-			writeError(w, http.StatusBadRequest, "invalid_request", "invalid event sequence", false)
-			return
-		}
-	}
 	run := s.getRun(runID)
-	events, err := s.log.read(runID, after)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
-		return
-	}
-	if run == nil && len(events) == 0 {
-		all, err := s.log.read(runID, 0)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal", err.Error(), false)
-			return
-		}
-		if len(all) == 0 {
-			writeError(w, http.StatusNotFound, "not_found", "run not found", false)
-			return
-		}
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal", "streaming unsupported", false)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	ticker := time.NewTicker(s.keepaliveInterval)
-	defer ticker.Stop()
-	for {
-		var notify <-chan struct{}
-		done := run == nil
+	s.streamEvents(w, r, func(after int64) (eventBatch, error) {
+		batch := eventBatch{done: run == nil}
 		if run != nil {
 			run.mu.Lock()
-			notify = run.notify
-			done = run.done
+			batch.done = run.done
+			batch.notify = run.notify
 			run.mu.Unlock()
 		}
-		events, err = s.log.read(runID, after)
+		events, err := s.log.read(runID, after)
 		if err != nil {
-			return
+			return batch, err
 		}
-		for _, event := range events {
-			if err := writeSSE(w, event); err != nil {
-				return
+		if run == nil && len(events) == 0 {
+			all, err := s.log.read(runID, 0)
+			if err != nil {
+				return batch, err
 			}
-			after = event.Seq
-			flusher.Flush()
-		}
-		if done {
-			return
-		}
-		select {
-		case <-notify:
-		case <-ticker.C:
-			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
-				return
+			if len(all) == 0 {
+				return batch, sql.ErrNoRows
 			}
-			flusher.Flush()
-		case <-r.Context().Done():
-			return
 		}
-	}
+		batch.events = events
+		return batch, nil
+	})
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, _ *http.Request, runID string) {
