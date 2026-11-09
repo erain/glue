@@ -208,3 +208,41 @@ func TestServeJobsStartupWithoutCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestServePolicyFlags(t *testing.T) {
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, []byte(`{"name":"custom-deny","default":"deny"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseArgs := func() []string {
+		return []string{"serve", "--state-dir", t.TempDir(), "--store", t.TempDir(), "--work", t.TempDir(), "--metadata", "", "--token", "fixture-token"}
+	}
+	noopServe := func(context.Context, serveConfig, http.Handler, io.Writer) error { return nil }
+	for name, extra := range map[string][]string{
+		"both flags":     {"--policy", "ask-all", "--policy-file", policyPath},
+		"unknown policy": {"--policy", "invalid"},
+		"missing file":   {"--policy-file", filepath.Join(t.TempDir(), "missing.json")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var errs bytes.Buffer
+			if code := runCLIWithServe(context.Background(), append(baseArgs(), extra...), io.Discard, &errs, fakeFactory(&scriptedProvider{}), noopServe); code == 0 {
+				t.Fatalf("expected error for %s", name)
+			}
+		})
+	}
+	var errs bytes.Buffer
+	if code := runCLIWithServe(context.Background(), append(baseArgs(), "--policy", "yolo"), io.Discard, &errs, fakeFactory(&scriptedProvider{}), noopServe); code != 0 || !strings.Contains(errs.String(), "WARNING:") {
+		t.Fatalf("code %d stderr %q", code, errs.String())
+	}
+	repo := serveJobRepo(t)
+	var created jobs.Job
+	serve := func(_ context.Context, _ serveConfig, h http.Handler, _ io.Writer) error {
+		ts := httptest.NewServer(h)
+		defer ts.Close()
+		created = serveJobRequest(t, ts.URL, "/v1/jobs", jobs.Spec{Objective: "check policy", Repo: jobs.RepoSpec{Path: repo}})
+		return nil
+	}
+	if code := runCLIWithServe(context.Background(), append(baseArgs(), "--jobs", "--policy-file", policyPath), io.Discard, &errs, fakeFactory(&scriptedProvider{}), serve); code != 0 || created.Spec.Policy != "custom-deny" {
+		t.Fatalf("code %d policy %q stderr %s", code, created.Spec.Policy, errs.String())
+	}
+}

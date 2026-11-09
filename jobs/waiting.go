@@ -27,6 +27,26 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 		r.mu.Unlock()
 		return glue.PermissionDecision{}, err
 	}
+	if m.options.Permission == nil {
+		policy, err := m.policyFor(job.Spec.Policy)
+		if err != nil {
+			r.mu.Unlock()
+			return glue.PermissionDecision{}, err
+		}
+		if eval := policy.Evaluate(job.Workspace, request); eval.Decision != DecisionAsk {
+			if err := m.record(p.id, "permission_auto", map[string]any{"tool": request.Tool, "target": request.Target, "decision": eval.Decision, "rule": eval.Rule}, "", nil, ""); err != nil {
+				r.writeErr = err
+				r.cancel()
+				r.mu.Unlock()
+				return glue.PermissionDecision{}, err
+			}
+			r.mu.Unlock()
+			if eval.Decision == DecisionAllow {
+				return glue.PermissionDecision{Allow: true}, nil
+			}
+			return glue.PermissionDecision{Allow: false, Reason: "permission denied by policy (" + eval.Rule + ")"}, nil
+		}
+	}
 	id := fmt.Sprintf("%s:permission:%d", p.id, job.LastSeq+1)
 	pending := &pendingDecision{done: make(chan glue.PermissionDecision, 1)}
 	if r.pending == nil {
@@ -45,11 +65,7 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 		return glue.PermissionDecision{}, err
 	}
 	r.mu.Unlock()
-	handler := m.options.Permission
-	if handler == nil && job.Spec.Policy == "yolo" {
-		handler = glue.AllowAll{}
-	}
-	if handler != nil {
+	if handler := m.options.Permission; handler != nil {
 		decision, err := handler.Decide(ctx, request)
 		if err != nil {
 			return p.expire(id, pending, err)

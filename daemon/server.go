@@ -460,7 +460,23 @@ const (
 type PermissionPolicyDecision struct {
 	Action      PermissionPolicyAction
 	Reason      string
+	Rule        string
 	RememberFor glue.RememberScope
+}
+
+// NewPermissionPolicy adapts a jobs.Policy confined to workDir into a daemon PermissionPolicy.
+func NewPermissionPolicy(policy jobs.Policy, workDir string) PermissionPolicy {
+	return PermissionPolicyFunc(func(_ context.Context, _ PermissionContext, req glue.PermissionRequest) (PermissionPolicyDecision, error) {
+		eval := policy.Evaluate(workDir, req)
+		switch eval.Decision {
+		case jobs.DecisionAllow:
+			return PermissionPolicyDecision{Action: PermissionPolicyAllow, Rule: eval.Rule}, nil
+		case jobs.DecisionDeny:
+			return PermissionPolicyDecision{Action: PermissionPolicyDeny, Reason: "permission denied by policy (" + eval.Rule + ")", Rule: eval.Rule}, nil
+		default:
+			return PermissionPolicyDecision{Action: PermissionPolicyPrompt, Rule: eval.Rule}, nil
+		}
+	})
 }
 
 // Server is an http.Handler for the local daemon protocol.
@@ -1679,16 +1695,26 @@ func (s *Server) applyPermissionPolicy(ctx context.Context, run *run, req glue.P
 	if err != nil {
 		return glue.PermissionDecision{}, true, err
 	}
+	rule := strings.TrimSpace(policyDecision.Rule)
+	if rule == "" {
+		rule = "policy"
+	}
 	switch policyDecision.Action {
 	case PermissionPolicyPrompt:
 		return glue.PermissionDecision{}, false, nil
 	case PermissionPolicyAllow:
+		if run != nil {
+			run.emit("permission_auto", map[string]any{"tool": req.Tool, "target": req.Target, "decision": jobs.DecisionAllow, "rule": rule})
+		}
 		return glue.PermissionDecision{
 			Allow:       true,
 			Reason:      policyDecision.Reason,
 			RememberFor: policyDecision.RememberFor,
 		}, true, nil
 	case PermissionPolicyDeny:
+		if run != nil {
+			run.emit("permission_auto", map[string]any{"tool": req.Tool, "target": req.Target, "decision": jobs.DecisionDeny, "rule": rule})
+		}
 		reason := strings.TrimSpace(policyDecision.Reason)
 		if reason == "" {
 			reason = "permission denied by daemon policy"

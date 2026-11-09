@@ -88,6 +88,7 @@ type Options struct {
 	ProviderFactory func(string) (glue.Provider, error)
 	Now             func() time.Time
 	Permission      glue.Permission
+	Policy          *Policy
 	// AfterFunc schedules a wall-clock deadline and returns its stop function.
 	AfterFunc func(time.Duration, func()) func() bool
 }
@@ -117,6 +118,11 @@ func New(opts Options) (*Manager, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Policy != nil {
+		if err := opts.Policy.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	lock, err := acquireLock(opts.StateDir)
 	if err != nil {
 		return nil, err
@@ -133,7 +139,23 @@ func New(opts Options) (*Manager, error) {
 	return m, nil
 }
 
-func validate(s Spec) (Spec, error) {
+func (m *Manager) policyFor(name string) (Policy, error) {
+	name = strings.TrimSpace(name)
+	if m.options.Policy != nil {
+		cfgName := strings.TrimSpace(m.options.Policy.Name)
+		if cfgName == "" {
+			cfgName = "custom"
+		}
+		if name == "" || name == cfgName {
+			p := *m.options.Policy
+			p.Name = cfgName
+			return p, nil
+		}
+	}
+	return BuiltInPolicy(name)
+}
+
+func (m *Manager) validate(s Spec) (Spec, error) {
 	s.Objective = strings.TrimSpace(s.Objective)
 	if s.Objective == "" {
 		return s, invalid("objective", "required")
@@ -173,7 +195,11 @@ func validate(s Spec) (Spec, error) {
 			return s, invalid("verify", "commands require an executable")
 		}
 	}
-	var err error
+	policy, err := m.policyFor(s.Policy)
+	if err != nil {
+		return s, invalid("policy", err.Error())
+	}
+	s.Policy = policy.Name
 	s.Provider, s.Model, err = modelselection.Resolve(true, s.Provider, s.Model)
 	if err != nil {
 		return s, invalid("provider", err.Error())
@@ -187,7 +213,7 @@ func validate(s Spec) (Spec, error) {
 // Create atomically writes a validated specification and its first event.
 func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 	var job Job
-	spec, err := validate(spec)
+	spec, err := m.validate(spec)
 	if err != nil {
 		return job, err
 	}

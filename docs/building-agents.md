@@ -415,7 +415,10 @@ opt-in behind an interface:
   A/B-test and roll back system prompts.
 - **Coding tools** — `tools/coding.Tools(...)` assembles a
   permission-gated local coding bundle over `glue.Executor`. See
-  [ADR-0012](adr/0012-sdk-coding-agent-peggy-boundary.md).
+  [ADR-0012](adr/0012-sdk-coding-agent-peggy-boundary.md) and
+  [`docs/policies.md`](policies.md) for `ask-all`, `workspace-auto`,
+  `yolo`, and custom JSON permission policy profiles (`glue serve --policy`
+  / `--policy-file`).
 - **Sandboxed execution** — implement `glue.Executor` to run
   `shell_exec` in a container/VM instead of the local process.
 - **MCP servers** — `tools/mcp` consumes Model Context Protocol servers

@@ -59,7 +59,7 @@ func jobHTTP(t *testing.T, s *Server, method, path, body string, want int) map[s
 }
 func createHTTPJob(t *testing.T, s *Server, repo string, start bool) string {
 	t.Helper()
-	data, _ := json.Marshal(jobs.Spec{Objective: "write a file", Repo: jobs.RepoSpec{Path: repo}})
+	data, _ := json.Marshal(jobs.Spec{Objective: "write a file", Repo: jobs.RepoSpec{Path: repo}, Policy: "ask-all"})
 	path := "/v1/jobs"
 	if start {
 		path += "?start=true"
@@ -232,4 +232,57 @@ func TestJobHTTPIdleKeepalive(t *testing.T) {
 		}
 	}
 	t.Fatal("no keepalive")
+}
+
+func TestDaemonPermissionPolicyAutoEvents(t *testing.T) {
+	ws := t.TempDir()
+	policy := jobs.Policy{
+		Name:    "test-policy",
+		Default: jobs.DecisionAsk,
+		Rules: []jobs.PolicyRule{
+			{Name: "deny-secret", Tool: "write_file", Target: "secret.txt", Decision: jobs.DecisionDeny},
+			{Name: "allow-readme", Tool: "write_file", Target: "README.md", Decision: jobs.DecisionAllow},
+		},
+	}
+	writeTool := glue.NewTool[struct {
+		Path string `json:"path"`
+	}](glue.ToolSpec{
+		Name:               "write_file",
+		RequiresPermission: true,
+		PermissionAction:   "write_file",
+		PermissionTarget: func(call glue.ToolCall) string {
+			var a struct {
+				Path string `json:"path"`
+			}
+			_ = json.Unmarshal(call.Arguments, &a)
+			return a.Path
+		},
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	}, func(context.Context, struct {
+		Path string `json:"path"`
+	}) (glue.ToolResult, error) {
+		return glue.TextResult("written"), nil
+	})
+	agent := glue.NewAgent(glue.AgentOptions{
+		Provider: &turnProvider{turns: [][]glue.ProviderEvent{
+			{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "1", Name: "write_file", Arguments: []byte(`{"path":"README.md"}`)}}, {Type: glue.ProviderEventDone}},
+			{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "2", Name: "write_file", Arguments: []byte(`{"path":"secret.txt"}`)}}, {Type: glue.ProviderEventDone}},
+			textTurn("done"),
+		}},
+		Tools: []glue.Tool{writeTool},
+	})
+	srv := newTestServerWithPolicy(t, agent, NewPermissionPolicy(policy, ws))
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	start := startRunWithClient(t, ts.URL, "default", "cli:test")
+	events := getSSE(t, ts.URL+start.EventsURL, "token")
+	var autos []map[string]any
+	for _, e := range events {
+		if e.Type == "permission_auto" {
+			autos = append(autos, e.Payload.(map[string]any))
+		}
+	}
+	if len(autos) != 2 || autos[0]["decision"] != "allow" || autos[0]["rule"] != "allow-readme" || autos[1]["decision"] != "deny" || autos[1]["rule"] != "deny-secret" {
+		t.Fatalf("permission_auto events = %+v", autos)
+	}
 }

@@ -51,6 +51,8 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
 	coding := flags.Bool("coding", false, "enable local coding tools for daemon runs")
 	jobsEnabled := flags.Bool("jobs", false, "host durable coding jobs (default on with --coding)")
+	policyName := flags.String("policy", "workspace-auto", "permission policy profile: ask-all, workspace-auto, or yolo")
+	policyFile := flags.String("policy-file", "", "path to custom JSON permission policy file")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and daemon permission approval")
 	listenAddr := flags.String("listen", defaultListenAddr, "local listen address")
 	tokenFlag := flags.String("token", "", "bearer token; defaults to GLUE_DAEMON_TOKEN or a generated token")
@@ -65,14 +67,33 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		return err
 	}
 
-	jobsSet := false
+	jobsSet, policySet := false, false
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "jobs" {
+		switch f.Name {
+		case "jobs":
 			jobsSet = true
+		case "policy":
+			policySet = true
 		}
 	})
 	if !jobsSet {
 		*jobsEnabled = *coding
+	}
+	if policySet && strings.TrimSpace(*policyFile) != "" {
+		return errors.New("cannot combine --policy and --policy-file")
+	}
+	var policy jobs.Policy
+	var err error
+	if strings.TrimSpace(*policyFile) != "" {
+		policy, err = jobs.LoadPolicyFile(*policyFile)
+	} else {
+		policy, err = jobs.BuiltInPolicy(*policyName, allowedBinaries...)
+	}
+	if err != nil {
+		return err
+	}
+	if policy.Name == "yolo" || (policy.Default == jobs.DecisionAllow && len(policy.Rules) == 0) {
+		fmt.Fprintln(stderr, "WARNING: glue serve: --policy yolo enabled; permission prompts are off.")
 	}
 
 	agentName := "default"
@@ -130,18 +151,19 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	}
 	var manager *jobs.Manager
 	if *jobsEnabled {
-		manager, err = jobs.New(jobs.Options{StateDir: *stateDir, ProviderFactory: newProvider})
+		manager, err = jobs.New(jobs.Options{StateDir: *stateDir, ProviderFactory: newProvider, Policy: &policy})
 		if err != nil {
 			return err
 		}
 		defer func() { resultErr = errors.Join(resultErr, manager.Close()) }()
 	}
 	handler, err := daemon.New(daemon.Options{
-		Jobs:       manager,
-		RetainRuns: *retainRuns,
-		StateDir:   *stateDir,
-		Host:       agent,
-		Token:      token,
+		Jobs:             manager,
+		PermissionPolicy: daemon.NewPermissionPolicy(policy, *workDir),
+		RetainRuns:       *retainRuns,
+		StateDir:         *stateDir,
+		Host:             agent,
+		Token:            token,
 		Diagnostics: daemon.DiagnosticInfo{
 			Name:         "glue",
 			ListenAddr:   *listenAddr,
