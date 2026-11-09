@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,7 @@ type Manager struct {
 	closed       bool
 	closeOnce    sync.Once
 	closeErr     error
+	lock         *os.File
 	store        *eventlog.Store
 	options      Options
 }
@@ -113,11 +115,16 @@ func New(opts Options) (*Manager, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	store, err := eventlog.Open(opts.StateDir, schema)
+	lock, err := acquireLock(opts.StateDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{store: store, options: opts, active: map[string]*execution{}}, nil
+	store, err := eventlog.Open(opts.StateDir, schema)
+	if err != nil {
+		releaseLock(lock)
+		return nil, err
+	}
+	return &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}}, nil
 }
 
 func validate(s Spec) (Spec, error) {

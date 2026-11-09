@@ -535,3 +535,8 @@ HTTP stream disconnects never cancel a job; DELETE does.
 performs no execution and requires no model credentials in jobs mode.
 Ordinary runs construct their provider on first use; jobs construct theirs
 only at Start. Server shutdown joins both managers before storage closes.
+
+Each jobs.Manager owns an exclusive `<state-dir>/LOCK` for its whole lifetime,
+including worker shutdown and storage cleanup. A competing manager fails fast.
+The OS releases ownership on process death, allowing a replacement manager to
+open the same durable state; the lock file is never unlinked.
