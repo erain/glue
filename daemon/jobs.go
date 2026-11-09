@@ -110,6 +110,23 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"job": current})
 			return
+		case "continue":
+			if !jobMethod(w, r, http.MethodPost) {
+				return
+			}
+			var body struct {
+				Text          string `json:"text"`
+				MaxIterations int    `json:"max_iterations"`
+			}
+			if !jobBody(w, r, &body) {
+				return
+			}
+			if err := s.jobs.Continue(r.Context(), id, body.Text, body.MaxIterations); err != nil {
+				jobError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "accepted": true})
+			return
 		case "messages":
 			if !jobMethod(w, r, http.MethodPost) {
 				return

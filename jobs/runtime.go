@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 )
 
 type execution struct {
+	resume                  *glue.GoalRecord
 	ctx                     context.Context
 	pending                 map[string]*pendingDecision
 	stopTimer               func() bool
@@ -42,8 +44,15 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if err := m.record(id, "job_started", nil, "", nil, Running); err != nil {
 		return err
 	}
+	m.launch(job, nil)
+	return nil
+}
+
+// launch requires m.mu; the durable transition must already be committed.
+func (m *Manager) launch(job Job, resume *glue.GoalRecord) {
+	id := job.ID
 	runCtx, cancel := context.WithCancel(context.Background())
-	run := &execution{ctx: runCtx, cancel: cancel}
+	run := &execution{ctx: runCtx, cancel: cancel, resume: resume}
 	m.budget(run, job.Spec.Budgets.WallClock)
 	m.active[id] = run
 	m.wg.Add(1)
@@ -52,10 +61,11 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 		defer cancel()
 		m.execute(runCtx, id, run)
 		m.mu.Lock()
-		delete(m.active, id)
+		if m.active[id] == run {
+			delete(m.active, id)
+		}
 		m.mu.Unlock()
 	}()
-	return nil
 }
 
 // Cancel stops one active execution. It does not cancel other jobs.
@@ -102,6 +112,13 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 		return err
 	}
 	defer tx.Rollback()
+	if err := m.appendEvent(tx, id, typ, payload, phase, iteration, status); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (m *Manager) appendEvent(tx *sql.Tx, id, typ string, payload any, phase string, iteration *int, status Status) error {
 	var seq int64
 	var current Status
 	if err := tx.QueryRow("SELECT last_seq,status FROM jobs WHERE id=?", id).Scan(&seq, &current); err != nil {
@@ -125,7 +142,7 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 	if _, err := tx.Exec("UPDATE jobs SET status=?,last_seq=?,updated_at=? WHERE id=?", status, seq, now.Format("2006-01-02T15:04:05.000000000Z"), id); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 func (m *Manager) execute(ctx context.Context, id string, run *execution) {
 	result, err := m.pursue(ctx, id, run)
@@ -179,16 +196,19 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 	if err != nil {
 		return empty, err
 	}
-	subdir := "worktrees"
-	if job.Spec.Repo.URL != "" {
-		subdir = "repos"
-	}
-	workspace, err := worktree.Prepare(ctx, worktree.Options{Path: job.Spec.Repo.Path, URL: job.Spec.Repo.URL, BaseRef: job.Spec.Repo.BaseRef, Dir: filepath.Join(m.options.StateDir, subdir, id), Branch: "glue/" + id})
-	if err != nil {
-		return empty, err
-	}
-	if _, err := m.store.DB.ExecContext(ctx, "UPDATE jobs SET workspace=?,base_sha=?,goal_id=? WHERE id=?", workspace.Path, workspace.BaseSHA, id, id); err != nil {
-		return empty, err
+	workspace := worktree.Workspace{Path: job.Workspace, BaseSHA: job.BaseSHA}
+	if run.resume == nil {
+		subdir := "worktrees"
+		if job.Spec.Repo.URL != "" {
+			subdir = "repos"
+		}
+		workspace, err = worktree.Prepare(ctx, worktree.Options{Path: job.Spec.Repo.Path, URL: job.Spec.Repo.URL, BaseRef: job.Spec.Repo.BaseRef, Dir: filepath.Join(m.options.StateDir, subdir, id), Branch: "glue/" + id})
+		if err != nil {
+			return empty, err
+		}
+		if _, err := m.store.DB.ExecContext(ctx, "UPDATE jobs SET workspace=?,base_sha=?,goal_id=? WHERE id=?", workspace.Path, workspace.BaseSHA, id, id); err != nil {
+			return empty, err
+		}
 	}
 	factory := m.options.ProviderFactory
 	if factory == nil {
@@ -228,11 +248,16 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			stop()
 		}
 	}()
-	return agent.PursueGoal(ctx, glue.GoalSpec{Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: job.Spec.Budgets.MaxIterations, TokenBudget: job.Spec.Budgets.TokenBudget,
+	spec := glue.GoalSpec{Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: job.Spec.Budgets.MaxIterations, TokenBudget: job.Spec.Budgets.TokenBudget,
 		Guidance: func(ctx context.Context, iteration int) (string, error) { return m.guidance(ctx, id, iteration) },
 		Emit:     func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
 		OnSession: func(phase string, iteration int, s *glue.Session) {
 			unsubscribe = append(unsubscribe, s.Subscribe(func(e glue.Event) { emit(string(e.Type), e, phase, &iteration) }))
 		},
-	})
+	}
+	if run.resume != nil {
+		spec.Checklist = run.resume.Checklist
+		spec.StartIteration = run.resume.Iterations + 1
+	}
+	return agent.PursueGoal(ctx, spec)
 }
