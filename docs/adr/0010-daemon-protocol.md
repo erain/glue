@@ -723,3 +723,19 @@ Updates arriving after sampling wait for the next maker; checker sampling is
 never independent. Callback errors stop the goal before model execution and
 are returned to the host. A nil callback or blank text preserves prior prompts.
 The durable operator message queue and HTTP messages route build on this hook.
+
+### Durable job messages
+
+`POST /v1/jobs/{id}/messages` accepts `{ "text": "..." }` for a created, running,
+or waiting job and returns 202 `{ "job_id": "...", "accepted": true }`. Bearer
+authentication and the existing 1 MiB strict JSON limit apply. Blank text is
+400 `invalid_request`; unknown jobs return 404 and terminal jobs 409. Use the
+continuation operation for terminal resumable jobs once available.
+
+The response follows durable `operator_message{ text }` insertion. At the next
+maker boundary, `operator_message_delivered{ message_id, iteration }` references
+the queued event ID and is appended before model execution. Its envelope has
+phase `maker` and the iteration. Events are the durable queue: unacknowledged
+messages survive restarts; acknowledged guidance stays in subsequent maker and
+checker prompts without duplicate delivery events. Messages arriving during a
+maker wait for its successor and do not change the current checker prompt.

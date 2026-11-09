@@ -545,3 +545,9 @@ Goal hosts can supply Guidance(ctx, iteration), sampled at each maker boundary
 after cancellation and budget checks. The maker and its checker receive the
 same Operator guidance block. Updates during a turn wait for the next maker;
 a callback error stops the loop before that iteration executes.
+
+Job operator messages and delivery acknowledgments live in the event log.
+Message(ctx, id, text) persists before accepting; the HTTP messages route
+returns 202. At the next maker boundary the manager selects queued guidance,
+records delivery, and supplies all accumulated guidance to the maker/checker.
+Reopened managers reconstruct guidance and acknowledgments from durable events.

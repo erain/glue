@@ -107,6 +107,9 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 	if err := tx.QueryRow("SELECT last_seq,status FROM jobs WHERE id=?", id).Scan(&seq, &current); err != nil {
 		return err
 	}
+	if typ == "operator_message" && current != Created && current != Running && current != WaitingForInput {
+		return fmt.Errorf("%w: guidance requires a created or active job", ErrConflict)
+	}
 	if typ == "job_started" && current != Created {
 		return fmt.Errorf("%w: job has already started", ErrConflict)
 	}
@@ -226,7 +229,8 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 		}
 	}()
 	return agent.PursueGoal(ctx, glue.GoalSpec{Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: job.Spec.Budgets.MaxIterations, TokenBudget: job.Spec.Budgets.TokenBudget,
-		Emit: func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
+		Guidance: func(ctx context.Context, iteration int) (string, error) { return m.guidance(ctx, id, iteration) },
+		Emit:     func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
 		OnSession: func(phase string, iteration int, s *glue.Session) {
 			unsubscribe = append(unsubscribe, s.Subscribe(func(e glue.Event) { emit(string(e.Type), e, phase, &iteration) }))
 		},
