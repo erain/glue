@@ -496,3 +496,11 @@ execution begin only through the separate Start API. Get, List, and Events
 read persisted records across manager restart. Provider/model defaults use
 the same activity resolver as the CLI. Job execution and waiting/budgets are
 implemented in the remaining children of #406.
+
+`jobs.Manager.Start` records the start before detaching execution from its
+caller. It prepares a worktree or clone, records the base SHA and goal ID,
+and runs the coding goal with tools rooted there. Goal progress and every
+planner/maker/checker loop event commit to the shared log; session events
+include phase and iteration. Cancel stops an active job; Close joins jobs
+and records interrupted outcomes before closing storage. Repeated Start
+is rejected. Waiting state and wall-clock handling remain in #441.
