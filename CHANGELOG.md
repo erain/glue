@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Expose authenticated job lifecycle, permission, inspection, and resumable
+  event endpoints through the daemon when a job manager is configured.
+
 - Expose authenticated model choices and activity defaults, and share
   resumable SSE handling between run and job streams.
 
