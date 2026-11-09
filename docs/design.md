@@ -524,3 +524,8 @@ Daemon model choices are available through authenticated `/v1/models`,
 including chat/coding defaults and thinking levels without provider I/O.
 A shared SSE writer handles resumable run and job streams, idle comments,
 and terminal closure; keepalives never resend an already delivered batch.
+
+The daemon accepts an externally owned jobs.Manager and exposes authenticated
+job creation, control, inspection, permissions, and resumable event routes.
+Creating and starting remain separate operations unless start=true is explicit.
+HTTP stream disconnects never cancel a job; DELETE does.

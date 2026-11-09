@@ -24,6 +24,7 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/internal/eventlog"
+	"github.com/erain/glue/jobs"
 )
 
 const protocolVersion = 2
@@ -374,6 +375,9 @@ func (s filePermissionStore) SavePermissionGrants(grants []PermissionGrant) erro
 
 // Options configures [New].
 type Options struct {
+	// Jobs is an optional externally owned manager. Its owner closes it.
+	Jobs *jobs.Manager
+
 	// RetainRuns defaults to 720 hours; SweepInterval defaults to one hour.
 	RetainRuns    time.Duration
 	SweepInterval time.Duration
@@ -461,6 +465,8 @@ type PermissionPolicyDecision struct {
 
 // Server is an http.Handler for the local daemon protocol.
 type Server struct {
+	jobs *jobs.Manager
+
 	retainRuns           time.Duration
 	sweepStop, sweepDone chan struct{}
 	closeOnce            sync.Once
@@ -622,6 +628,7 @@ func New(opts Options) (*Server, error) {
 		interval = 15 * time.Second
 	}
 	s := &Server{
+		jobs:       opts.Jobs,
 		retainRuns: retain, sweepStop: make(chan struct{}), sweepDone: make(chan struct{}),
 		log:               log,
 		keepaliveInterval: interval,
@@ -669,6 +676,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/jobs" || strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
+		s.handleJobs(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/models" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)

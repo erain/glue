@@ -676,3 +676,19 @@ Runs and jobs use one resumable SSE writer: decimal sequence IDs,
 Last-Event-ID/query precedence, keepalives, and detached disconnects. Readers
 without a notification channel are polled every 100ms; notified run streams
 remain event driven. Keepalives do not replay the preceding event batch.
+
+### Authenticated job HTTP routes
+
+- `POST /v1/jobs`: spec body; 201 `{ "job": ... }`; `?start=true` also starts it.
+- `POST /v1/jobs/{id}/start`: 200 `{ "job": ... }`; running/waiting starts are no-ops.
+- `GET /v1/jobs?status=&limit=&before=`: `{ "jobs": [...] }`; limit defaults to 50.
+- `GET /v1/jobs/{id}`: the job detail object described above.
+- `GET /v1/jobs/{id}/events`: durable resumable SSE with keepalives.
+- `GET /v1/jobs/{id}/permissions?state=pending`: `{ "permissions": [...] }`.
+- `POST /v1/jobs/{id}/permissions/{pid}/decision`: required boolean `allow`,
+  optional `reason` and `remember_for`; returns `permission_id` and `accepted`.
+- `DELETE /v1/jobs/{id}`: 202 with `job_id` and `canceled`.
+
+Unknown jobs return 404, invalid requests 400 `invalid_request`, and conflicting
+transitions 409. Job JSON bodies are limited to 1 MiB; unknown fields and
+trailing JSON are rejected. A missing job manager leaves these routes disabled.
