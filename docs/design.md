@@ -572,3 +572,9 @@ stateDiagram-v2
     interrupted --> running: continue
     running --> achieved
 ```
+
+Restartable hosts can require goal persistence instead of the default
+best-effort checkpointing. Initial records precede planning, required failures
+stop execution, and terminal success events follow durable success checkpoints.
+InitialUsage and StartIteration preserve interrupted-run budget/iteration state;
+Agent.SaveGoal allows a host to checkpoint before preparing external resources.

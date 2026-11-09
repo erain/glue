@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Let restartable goal hosts require checkpoints before execution, save initial
+  goal records, and preserve iteration and usage counters on recovery.
+
 - Continue blocked, iteration-limited, budget-limited, or interrupted jobs with
   new guidance, preserving their checklist, branch, and isolated workspace.
 

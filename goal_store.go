@@ -3,6 +3,8 @@ package glue
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -50,12 +52,15 @@ func (r GoalRecord) Resumable() bool {
 	}
 }
 
-// saveGoalRecord checkpoints the record onto the session at rec.ID.
-// Best-effort by design: persistence failures must never abort the loop,
-// so the error is intentionally dropped by callers inside PursueGoal.
-func (a *Agent) saveGoalRecord(ctx context.Context, rec GoalRecord) error {
-	if a.store == nil {
-		return nil
+// SaveGoal checkpoints a goal record onto its session. ID, Objective and a
+// configured Store are required. Hosts can save an initial record before
+// repository or provider preparation, then load it after a process restart.
+func (a *Agent) SaveGoal(ctx context.Context, rec GoalRecord) error {
+	if a == nil || a.store == nil {
+		return errors.New("glue: goal persistence requires a store")
+	}
+	if strings.TrimSpace(rec.ID) == "" || strings.TrimSpace(rec.Objective) == "" {
+		return errors.New("glue: goal record ID and Objective are required")
 	}
 	state, ok, err := a.store.Load(ctx, rec.ID)
 	if err != nil {
@@ -65,6 +70,7 @@ func (a *Agent) saveGoalRecord(ctx context.Context, rec GoalRecord) error {
 	if !ok {
 		state = SessionState{Version: 1, ID: rec.ID, CreatedAt: now}
 	}
+	state.Metadata = maps.Clone(state.Metadata)
 	if state.Metadata == nil {
 		state.Metadata = map[string]any{}
 	}

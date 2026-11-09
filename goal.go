@@ -92,6 +92,13 @@ type GoalSpec struct {
 	// policy.
 	Permission Permission
 
+	// RequirePersistence makes failed goal checkpoints stop execution and return
+	// an error. A Store is required. The default keeps best-effort persistence.
+	RequirePersistence bool
+	// InitialUsage seeds cumulative usage when recovering an interrupted run.
+	// Explicit continuation can leave it zero to begin a fresh run budget.
+	InitialUsage Usage
+
 	// Emit, when set, receives progress events as the loop runs.
 	Emit func(GoalEvent)
 }
@@ -187,29 +194,30 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		return GoalResult{}, errors.New("glue: goal objective is required")
 	}
 
-	result := GoalResult{Objective: spec.Objective}
+	result := GoalResult{Objective: spec.Objective, Iterations: spec.StartIteration - 1, Usage: spec.InitialUsage, Checklist: cloneChecklist(spec.Checklist)}
 	emit := func(ev GoalEvent) {
 		if spec.Emit != nil {
 			spec.Emit(ev)
 		}
 	}
 
-	// checkpoint persists the durable GoalRecord when the agent has a
-	// store. Best-effort: the loop never depended on the store, so a failed
-	// save must not abort it. WithoutCancel because the terminal checkpoint
-	// (paused, errored) runs after ctx has already been cancelled.
-	var checklist []ChecklistItem
-	checkpoint := func(status GoalStatus) {
-		_ = a.saveGoalRecord(context.WithoutCancel(ctx), GoalRecord{
-			ID:         spec.SessionPrefix,
-			Objective:  spec.Objective,
-			Status:     status,
-			Checklist:  cloneChecklist(checklist),
-			Iterations: result.Iterations,
-			Usage:      result.Usage,
-			Summary:    result.Summary,
-			WorkDir:    spec.WorkDir,
+	// checkpoint is best-effort unless the host requires durable execution.
+	// Terminal checkpoints outlive caller cancellation.
+	var checklist = cloneChecklist(spec.Checklist)
+	checkpoint := func(status GoalStatus) error {
+		err := a.SaveGoal(context.WithoutCancel(ctx), GoalRecord{
+			ID: spec.SessionPrefix, Objective: spec.Objective, Status: status,
+			Checklist: cloneChecklist(checklist), Iterations: result.Iterations,
+			Usage: result.Usage, Summary: result.Summary, WorkDir: spec.WorkDir,
 		})
+		if err != nil && spec.RequirePersistence {
+			result.Status = GoalErrored
+			return fmt.Errorf("glue: checkpoint goal %s: %w", spec.SessionPrefix, err)
+		}
+		return nil
+	}
+	if err := checkpoint(GoalRunning); err != nil {
+		return result, err
 	}
 	// pauseOrErrored maps a run failure to its durable status: a cancelled
 	// context is a clean pause (resumable), anything else an error.
@@ -234,7 +242,9 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		}
 	}
 	emit(GoalEvent{Type: GoalEventPlan, Checklist: cloneChecklist(checklist), Usage: result.Usage})
-	checkpoint(GoalRunning)
+	if err := checkpoint(GoalRunning); err != nil {
+		return result, err
+	}
 
 	var prevRemaining string
 	noProgress := 0
@@ -244,14 +254,15 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		if err := ctx.Err(); err != nil {
 			result.Status = GoalErrored
 			result.Checklist = cloneChecklist(checklist)
-			checkpoint(GoalPaused)
-			return result, err
+			return result, errors.Join(err, checkpoint(GoalPaused))
 		}
 		if spec.TokenBudget > 0 && result.Usage.TotalTokens >= spec.TokenBudget {
 			result.Status = GoalBudgetLimited
 			result.Checklist = cloneChecklist(checklist)
 			emit(GoalEvent{Type: GoalEventBudget, Iteration: result.Iterations, Checklist: cloneChecklist(checklist), Usage: result.Usage})
-			checkpoint(GoalBudgetLimited)
+			if err := checkpoint(GoalBudgetLimited); err != nil {
+				return result, err
+			}
 			return result, nil
 		}
 		var guidance string
@@ -261,8 +272,7 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 			if err != nil {
 				result.Status = GoalErrored
 				result.Checklist = cloneChecklist(checklist)
-				checkpoint(pauseOrErrored())
-				return result, fmt.Errorf("glue: goal guidance iteration %d: %w", i, err)
+				return result, errors.Join(fmt.Errorf("glue: goal guidance iteration %d: %w", i, err), checkpoint(pauseOrErrored()))
 			}
 		}
 		result.Iterations = i
@@ -274,8 +284,7 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		if err != nil {
 			result.Status = GoalErrored
 			result.Checklist = cloneChecklist(checklist)
-			checkpoint(pauseOrErrored())
-			return result, fmt.Errorf("glue: goal maker iteration %d: %w", i, err)
+			return result, errors.Join(fmt.Errorf("glue: goal maker iteration %d: %w", i, err), checkpoint(pauseOrErrored()))
 		}
 		emit(GoalEvent{Type: GoalEventMakerDone, Iteration: i, Usage: result.Usage})
 
@@ -285,8 +294,7 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		if err != nil {
 			result.Status = GoalErrored
 			result.Checklist = cloneChecklist(checklist)
-			checkpoint(pauseOrErrored())
-			return result, fmt.Errorf("glue: goal checker iteration %d: %w", i, err)
+			return result, errors.Join(fmt.Errorf("glue: goal checker iteration %d: %w", i, err), checkpoint(pauseOrErrored()))
 		}
 		if len(verdict.Items) > 0 {
 			checklist = verdict.Items
@@ -294,13 +302,17 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		result.Summary = strings.TrimSpace(verdict.Summary)
 		result.Checklist = cloneChecklist(checklist)
 		emit(GoalEvent{Type: GoalEventVerdict, Iteration: i, Message: result.Summary, Checklist: cloneChecklist(checklist), Usage: result.Usage})
-		checkpoint(GoalRunning)
+		if err := checkpoint(GoalRunning); err != nil {
+			return result, err
+		}
 
 		// 4) Decide.
 		if verdict.Done && allDone(checklist) {
 			result.Status = GoalAchieved
+			if err := checkpoint(GoalAchieved); err != nil {
+				return result, err
+			}
 			emit(GoalEvent{Type: GoalEventDone, Iteration: i, Message: result.Summary, Checklist: cloneChecklist(checklist), Usage: result.Usage})
-			checkpoint(GoalAchieved)
 			return result, nil
 		}
 		remaining := remainingKey(checklist)
@@ -313,7 +325,9 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		if noProgress >= spec.NoProgressLimit {
 			result.Status = GoalBlocked
 			emit(GoalEvent{Type: GoalEventBlocked, Iteration: i, Checklist: cloneChecklist(checklist), Usage: result.Usage})
-			checkpoint(GoalBlocked)
+			if err := checkpoint(GoalBlocked); err != nil {
+				return result, err
+			}
 			return result, nil
 		}
 	}
@@ -321,7 +335,9 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 	result.Status = GoalMaxIterations
 	result.Checklist = cloneChecklist(checklist)
 	emit(GoalEvent{Type: GoalEventMaxIterations, Iteration: result.Iterations, Checklist: cloneChecklist(checklist), Usage: result.Usage})
-	checkpoint(GoalMaxIterations)
+	if err := checkpoint(GoalMaxIterations); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
