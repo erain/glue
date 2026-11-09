@@ -86,6 +86,8 @@ type Options struct {
 	ProviderFactory func(string) (glue.Provider, error)
 	Now             func() time.Time
 	Permission      glue.Permission
+	// AfterFunc schedules a wall-clock deadline and returns its stop function.
+	AfterFunc func(time.Duration, func()) func() bool
 }
 
 // Manager owns durable job state. Creating it does not start execution.
