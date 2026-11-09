@@ -453,8 +453,8 @@ restart; in-flight recovery is tracked separately in #405.
 Daemon run metadata is stored beside events in SQLite. Authenticated clients
 can list `/v1/runs` and inspect `/v1/runs/{id}` after restart. Terminal status
 commits with its event; startup marks previously running prompts interrupted
-and closes their replay with `run_interrupted`. Permission persistence and
-retention are subsequent steps in #405.
+and closes their replay with `run_interrupted`. Permission requests and
+retention share the same state database.
 
 Daemon permission requests and their outcomes are persisted with run state.
 Run inspection includes pending requests; `/v1/runs/{id}/permissions` lists
@@ -494,8 +494,8 @@ events atomically in the shared state database. `Manager.Create` performs
 no repository or provider operations; workspace preparation and goal
 execution begin only through the separate Start API. Get, List, and Events
 read persisted records across manager restart. Provider/model defaults use
-the same activity resolver as the CLI. Job execution and waiting/budgets are
-implemented in the remaining children of #406.
+the same activity resolver as the CLI. Execution and permission waits use
+the same durable event stream.
 
 `jobs.Manager.Start` records the start before detaching execution from its
 caller. It prepares a worktree or clone, records the base SHA and goal ID,
@@ -503,4 +503,13 @@ and runs the coding goal with tools rooted there. Goal progress and every
 planner/maker/checker loop event commit to the shared log; session events
 include phase and iteration. Cancel stops an active job; Close joins jobs
 and records interrupted outcomes before closing storage. Repeated Start
-is rejected. Waiting state and wall-clock handling remain in #441.
+is rejected.
+
+Jobs emit durable `permission_request` and `job_waiting` events before
+waiting for a decision. The manager's Decide API records each decision
+before releasing its tool; repeated or canceled requests conflict. Status
+stays waiting while any request remains, then returns to running. Hosts
+may supply a permission handler; otherwise decisions arrive externally.
+Cancellation and shutdown expire pending requests. Wall-clock budgets
+cover preparation and execution, stop on completion, and terminate as
+budget_limited. Hosts can inject scheduling through Options.AfterFunc.

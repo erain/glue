@@ -16,9 +16,13 @@ import (
 )
 
 type execution struct {
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	writeErr error
+	ctx                     context.Context
+	pending                 map[string]*pendingDecision
+	stopTimer               func() bool
+	finished, budgetExpired bool
+	mu                      sync.Mutex
+	cancel                  context.CancelFunc
+	writeErr                error
 }
 
 // Start detaches execution from the caller after durably recording its start.
@@ -31,11 +35,16 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	job, err := m.Get(ctx, id)
+	if err != nil {
+		return err
+	}
 	if err := m.record(id, "job_started", nil, "", nil, Running); err != nil {
 		return err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	run := &execution{cancel: cancel}
+	run := &execution{ctx: runCtx, cancel: cancel}
+	m.budget(run, job.Spec.Budgets.WallClock)
 	m.active[id] = run
 	m.wg.Add(1)
 	go func() {
@@ -94,7 +103,7 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 		return err
 	}
 	if typ == "job_started" && current != Created {
-		return errors.New("jobs: job has already started")
+		return fmt.Errorf("%w: job has already started", ErrConflict)
 	}
 	if status == "" {
 		status = current
@@ -112,6 +121,14 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 }
 func (m *Manager) execute(ctx context.Context, id string, run *execution) {
 	result, err := m.pursue(ctx, id, run)
+	run.mu.Lock()
+	run.finished = true
+	budgetExpired := run.budgetExpired
+	stop := run.stopTimer
+	run.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 	status := Status(result.Status)
 	if err != nil || status == "" {
 		status = Errored
@@ -123,6 +140,9 @@ func (m *Manager) execute(ctx context.Context, id string, run *execution) {
 			status = Interrupted
 		}
 		m.mu.Unlock()
+	}
+	if budgetExpired {
+		status = BudgetLimited
 	}
 	payload := map[string]any{"status": status, "result": result}
 	if err != nil {
@@ -182,7 +202,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 		return empty, err
 	}
 	caps := providers.CapabilitiesFor(job.Spec.Provider)
-	agent := glue.NewAgent(glue.AgentOptions{Provider: provider, Model: job.Spec.Model, Options: options, Tools: tools, WorkDir: workspace.Path, Store: filestore.New(filepath.Join(m.options.StateDir, "sessions")), Permission: m.options.Permission, SystemPrompt: coding.SystemPrompt(tools, caps.PromptVariant), AutoContinue: caps.AutoContinue})
+	agent := glue.NewAgent(glue.AgentOptions{Provider: provider, Model: job.Spec.Model, Options: options, Tools: tools, WorkDir: workspace.Path, Store: filestore.New(filepath.Join(m.options.StateDir, "sessions")), Permission: jobPermission{manager: m, id: id, run: run}, SystemPrompt: coding.SystemPrompt(tools, caps.PromptVariant), AutoContinue: caps.AutoContinue})
 	emit := func(typ string, payload any, phase string, iteration *int) {
 		run.mu.Lock()
 		defer run.mu.Unlock()

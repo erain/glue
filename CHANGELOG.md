@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Track coding jobs waiting on permission, persist decisions before tools
+  resume, and enforce wall-clock budgets with durable terminal outcomes.
+
 - Start isolated coding jobs, retain goal/session/tool events, and persist
   terminal outcomes with cancellation and shutdown interruption.
 
