@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Let goal hosts deliver operator guidance to the next maker iteration and
+  its independent checker through an optional safe-point callback.
+
 - Prevent duplicate job execution by locking each manager state directory until
   its workers and storage close; a killed process releases ownership automatically.
 

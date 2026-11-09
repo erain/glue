@@ -713,3 +713,13 @@ Process death releases the lock automatically; the file remains in place so
 concurrent openers always lock the same inode. Unix flock and Windows byte-range
 locks are supported; other platforms fail explicitly. This prevents duplicate
 execution; automatic job recovery is a separate lifecycle step.
+
+### Goal guidance safe points
+
+`GoalSpec.Guidance(ctx, iteration)` is an optional host callback sampled after
+guardrails and before each maker iteration. Its text is prepended under
+`Operator guidance` to that maker prompt and the corresponding checker prompt.
+Updates arriving after sampling wait for the next maker; checker sampling is
+never independent. Callback errors stop the goal before model execution and
+are returned to the host. A nil callback or blank text preserves prior prompts.
+The durable operator message queue and HTTP messages route build on this hook.
