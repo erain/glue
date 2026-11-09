@@ -65,8 +65,12 @@ func (m *Manager) Cancel(ctx context.Context, id string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.Get(ctx, id); err != nil {
+	job, err := m.Get(ctx, id)
+	if err != nil {
 		return err
+	}
+	if job.Status == Created {
+		return m.record(id, "job_done", map[string]any{"status": Canceled}, "", nil, Canceled)
 	}
 	if run := m.active[id]; run != nil {
 		run.cancel()
