@@ -43,7 +43,7 @@ func TestCreateHasNoSideEffects(t *testing.T) {
 		t.Fatal(job.Spec)
 	}
 }
-func TestJobsSurviveManagerRestart(t *testing.T) {
+func TestCreatedJobsSurviveManagerRestart(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(Options{StateDir: dir})
 	if err != nil {

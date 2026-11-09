@@ -26,12 +26,10 @@ func (p *scriptProvider) Stream(context.Context, glue.ProviderRequest) (<-chan g
 	if len(p.turns) == 0 {
 		return nil, errors.New("unexpected provider turn")
 	}
-	if len(p.turns) > 0 {
-		for _, e := range p.turns[0] {
-			ch <- e
-		}
-		p.turns = p.turns[1:]
+	for _, e := range p.turns[0] {
+		ch <- e
 	}
+	p.turns = p.turns[1:]
 	close(ch)
 	return ch, nil
 }
@@ -90,7 +88,7 @@ func achievedJob(t *testing.T) (*Manager, Job, string) {
 	return m, waitJob(t, m, job.ID), repo
 }
 func TestJobAchieved(t *testing.T) {
-	m, job, repo := achievedJob(t)
+	_, job, repo := achievedJob(t)
 	if job.Status != Achieved {
 		t.Fatalf("job %+v", job)
 	}
@@ -109,6 +107,10 @@ func TestJobAchieved(t *testing.T) {
 	if job.BaseSHA == "" || job.GoalID != job.ID {
 		t.Fatal(job)
 	}
+}
+
+func TestJobsSurviveManagerRestart(t *testing.T) {
+	m, job, _ := achievedJob(t)
 	dir := m.options.StateDir
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
