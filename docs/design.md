@@ -578,3 +578,9 @@ best-effort checkpointing. Initial records precede planning, required failures
 stop execution, and terminal success events follow durable success checkpoints.
 InitialUsage and StartIteration preserve interrupted-run budget/iteration state;
 Agent.SaveGoal allows a host to checkpoint before preparing external resources.
+
+Job start persists an initial GoalRecord and planned workspace before git or
+provider work. A completed checkout can be recovered after a lost metadata write
+without recreating its branch or following an advanced source HEAD. Existing
+job edits are preserved once the base SHA is known. Unsafe/partial directories
+fail with repair errors while preserving contents. Jobs require goal saves.

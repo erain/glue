@@ -10,7 +10,6 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/internal/eventlog"
-	"github.com/erain/glue/internal/worktree"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	"github.com/erain/glue/tools/coding"
@@ -41,7 +40,10 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.record(id, "job_started", nil, "", nil, Running); err != nil {
+	if job.Status != Created {
+		return fmt.Errorf("%w: job has already started", ErrConflict)
+	}
+	if err := m.startIntent(ctx, job); err != nil {
 		return err
 	}
 	m.launch(job, nil)
@@ -196,19 +198,9 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 	if err != nil {
 		return empty, err
 	}
-	workspace := worktree.Workspace{Path: job.Workspace, BaseSHA: job.BaseSHA}
-	if run.resume == nil {
-		subdir := "worktrees"
-		if job.Spec.Repo.URL != "" {
-			subdir = "repos"
-		}
-		workspace, err = worktree.Prepare(ctx, worktree.Options{Path: job.Spec.Repo.Path, URL: job.Spec.Repo.URL, BaseRef: job.Spec.Repo.BaseRef, Dir: filepath.Join(m.options.StateDir, subdir, id), Branch: "glue/" + id})
-		if err != nil {
-			return empty, err
-		}
-		if _, err := m.store.DB.ExecContext(ctx, "UPDATE jobs SET workspace=?,base_sha=?,goal_id=? WHERE id=?", workspace.Path, workspace.BaseSHA, id, id); err != nil {
-			return empty, err
-		}
+	workspace, err := m.prepareWorkspace(ctx, job)
+	if err != nil {
+		return empty, err
 	}
 	factory := m.options.ProviderFactory
 	if factory == nil {
@@ -248,7 +240,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			stop()
 		}
 	}()
-	spec := glue.GoalSpec{Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: job.Spec.Budgets.MaxIterations, TokenBudget: job.Spec.Budgets.TokenBudget,
+	spec := glue.GoalSpec{RequirePersistence: true, Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: job.Spec.Budgets.MaxIterations, TokenBudget: job.Spec.Budgets.TokenBudget,
 		Guidance: func(ctx context.Context, iteration int) (string, error) { return m.guidance(ctx, id, iteration) },
 		Emit:     func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
 		OnSession: func(phase string, iteration int, s *glue.Session) {

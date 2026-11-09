@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Persist job preparation intent before repository work, require goal checkpoints,
+  and recover validated checkouts without recreating branches or losing edits.
+
 - Let restartable goal hosts require checkpoints before execution, save initial
   goal records, and preserve iteration and usage counters on recovery.
 

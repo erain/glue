@@ -766,3 +766,20 @@ Failed required saves stop model execution and surface an error. InitialUsage
 and StartIteration preserve usage and numbering across repeated recovery.
 Job startup recovery builds on this API; enabling it for jobs and recovering
 workspace preparation are separate implementation steps.
+
+### Job preparation checkpoints
+
+Starting a job saves its initial GoalRecord, then atomically records job_started
+and the planned absolute workspace/goal ID before git or provider construction.
+An initial save failure leaves the job created and starts no preparation. Local
+repository paths become absolute at creation so a changed server working
+directory cannot redirect later preparation. Jobs require goal persistence.
+
+After preparing a checkout, the manager commits its immutable base SHA before
+constructing a provider. If the process dies between checkout and metadata, a
+clean checkout on the expected job branch can supply the original SHA from HEAD.
+A saved base allows existing edits and commits while retaining that original SHA.
+Recovery verifies the independent checkout root and branch. Invalid, missing or
+incomplete workspaces fail explicitly and preserve their contents for repair;
+no reset, deletion, branch switch or global worktree prune is attempted.
+Automatic active-job startup recovery is the next lifecycle step.

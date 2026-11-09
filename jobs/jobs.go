@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -134,6 +135,13 @@ func validate(s Spec) (Spec, error) {
 	}
 	if (s.Repo.Path == "") == (s.Repo.URL == "") {
 		return s, invalid("repo", "exactly one path or url is required")
+	}
+	if s.Repo.Path != "" {
+		absolute, err := filepath.Abs(s.Repo.Path)
+		if err != nil {
+			return s, invalid("repo.path", err.Error())
+		}
+		s.Repo.Path = absolute
 	}
 	if s.Budgets.MaxIterations < 0 {
 		return s, invalid("budgets.max_iterations", "must not be negative")
