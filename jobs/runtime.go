@@ -16,6 +16,8 @@ import (
 )
 
 type execution struct {
+	budgets                 Budgets
+	initialUsage            glue.Usage
 	resume                  *glue.GoalRecord
 	ctx                     context.Context
 	pending                 map[string]*pendingDecision
@@ -46,15 +48,18 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if err := m.startIntent(ctx, job); err != nil {
 		return err
 	}
-	m.launch(job, nil)
+	m.launch(job, nil, false)
 	return nil
 }
 
 // launch requires m.mu; the durable transition must already be committed.
-func (m *Manager) launch(job Job, resume *glue.GoalRecord) {
+func (m *Manager) launch(job Job, resume *glue.GoalRecord, recovering bool) {
 	id := job.ID
 	runCtx, cancel := context.WithCancel(context.Background())
-	run := &execution{ctx: runCtx, cancel: cancel, resume: resume}
+	run := &execution{ctx: runCtx, cancel: cancel, resume: resume, budgets: job.Spec.Budgets}
+	if recovering && resume != nil {
+		run.initialUsage = resume.Usage
+	}
 	m.budget(run, job.Spec.Budgets.WallClock)
 	m.active[id] = run
 	m.wg.Add(1)
@@ -240,7 +245,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			stop()
 		}
 	}()
-	spec := glue.GoalSpec{RequirePersistence: true, Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: job.Spec.Budgets.MaxIterations, TokenBudget: job.Spec.Budgets.TokenBudget,
+	spec := glue.GoalSpec{RequirePersistence: true, Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: run.budgets.MaxIterations, TokenBudget: run.budgets.TokenBudget, InitialUsage: run.initialUsage,
 		Guidance: func(ctx context.Context, iteration int) (string, error) { return m.guidance(ctx, id, iteration) },
 		Emit:     func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
 		OnSession: func(phase string, iteration int, s *glue.Session) {

@@ -92,7 +92,7 @@ type Options struct {
 	AfterFunc func(time.Duration, func()) func() bool
 }
 
-// Manager owns durable job state. Creating it does not start execution.
+// Manager owns durable job state and recovers unfinished executions on startup.
 type Manager struct {
 	mu, eventsMu sync.Mutex
 	active       map[string]*execution
@@ -108,7 +108,8 @@ type Manager struct {
 const schema = `CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,spec_json TEXT NOT NULL,status TEXT NOT NULL,base_sha TEXT NOT NULL,workspace TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_seq INTEGER NOT NULL,goal_id TEXT NOT NULL);`
 const columns = "id,spec_json,status,base_sha,workspace,created_at,updated_at,last_seq,goal_id"
 
-// New opens durable state without contacting providers or repositories.
+// New opens durable state and resumes running/waiting jobs in the background.
+// Created and terminal jobs never start automatically.
 func New(opts Options) (*Manager, error) {
 	if strings.TrimSpace(opts.StateDir) == "" {
 		return nil, errors.New("jobs: StateDir is required")
@@ -125,7 +126,11 @@ func New(opts Options) (*Manager, error) {
 		releaseLock(lock)
 		return nil, err
 	}
-	return &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}}, nil
+	m := &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}}
+	if err := m.recoverJobs(); err != nil {
+		return nil, errors.Join(err, m.Close())
+	}
+	return m, nil
 }
 
 func validate(s Spec) (Spec, error) {

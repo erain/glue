@@ -532,9 +532,9 @@ HTTP stream disconnects never cancel a job; DELETE does.
 
 `glue serve --jobs` hosts the durable job manager in its state directory;
 `--coding` enables jobs by default and `--jobs=false` overrides it. Startup
-performs no execution and requires no model credentials in jobs mode.
+requires no model credentials for idle state; active jobs recover automatically.
 Ordinary runs construct their provider on first use; jobs construct theirs
-only at Start. Server shutdown joins both managers before storage closes.
+only when executing. Shutdown joins both managers before storage closes.
 
 Each jobs.Manager owns an exclusive `<state-dir>/LOCK` for its whole lifetime,
 including worker shutdown and storage cleanup. A competing manager fails fast.
@@ -570,6 +570,8 @@ stateDiagram-v2
     max_iterations --> running: continue
     budget_limited --> running: continue
     interrupted --> running: continue
+    running --> running: process restart
+    waiting_for_input --> running: restart and expire permissions
     running --> achieved
 ```
 
@@ -584,3 +586,8 @@ provider work. A completed checkout can be recovered after a lost metadata write
 without recreating its branch or following an advanced source HEAD. Existing
 job edits are preserved once the base SHA is known. Unsafe/partial directories
 fail with repair errors while preserving contents. Jobs require goal saves.
+
+Startup recovery retains checkpoints, workspaces and event sequences, expires
+abandoned permissions, and starts fresh sessions at the next iteration boundary.
+Token/iteration budgets retain verified progress; wall time includes downtime.
+Created and terminal jobs stay idle. A durable terminal goal completes directly.

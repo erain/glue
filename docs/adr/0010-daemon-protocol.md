@@ -697,8 +697,8 @@ trailing JSON are rejected. A missing job manager leaves these routes disabled.
 
 `glue serve --jobs` enables job routes. `--coding` enables them by default;
 explicit `--jobs=false` disables them. The manager shares `--state-dir` and
-starts no job until requested. Ordinary-run provider construction is deferred
-when jobs are enabled, so startup needs no model credentials. Each job spec
+starts new jobs on request and recovers active jobs on restart. Ordinary-run
+provider construction is deferred; idle startup needs no model credentials. Each job spec
 selects its own coding provider/model independently of ordinary daemon runs.
 Shutdown drains both run and job managers before returning storage errors.
 Until policy profiles are added, explicit job `policy: "yolo"` allows tool
@@ -782,4 +782,16 @@ A saved base allows existing edits and commits while retaining that original SHA
 Recovery verifies the independent checkout root and branch. Invalid, missing or
 incomplete workspaces fail explicitly and preserve their contents for repair;
 no reset, deletion, branch switch or global worktree prune is attempted.
-Automatic active-job startup recovery is the next lifecycle step.
+Active jobs recover automatically when a replacement manager opens their state.
+
+### Restart recovery
+
+Startup resumes running/waiting jobs from GoalRecord at iteration boundaries,
+reuses their workspaces, and atomically expires dead-process permissions with
+`job_resumed{ from_iteration, reason: "restart" }`. Explicit continuation uses
+reason `continue`. Abandoned maker/checker session files are discarded while
+their durable events and filesystem edits remain. Created/terminal jobs stay idle.
+Checkpointed usage, remaining iterations and elapsed wall time (including
+downtime) count toward the original run limits; explicit continuation renews them.
+A saved terminal goal finishes without another model call. Invalid recovery
+state becomes an errored job with its diagnostic, allowing other jobs to recover.

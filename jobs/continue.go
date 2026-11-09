@@ -74,7 +74,7 @@ func (m *Manager) Continue(ctx context.Context, id, text string, maxIterations i
 	if _, err := tx.ExecContext(ctx, "UPDATE jobs SET spec_json=? WHERE id=?", string(data), id); err != nil {
 		return err
 	}
-	if err := m.appendEvent(tx, id, "job_resumed", map[string]any{"from_iteration": rec.Iterations + 1}, "", nil, Running); err != nil {
+	if err := m.appendEvent(tx, id, "job_resumed", map[string]any{"from_iteration": rec.Iterations + 1, "reason": "continue"}, "", nil, Running); err != nil {
 		return err
 	}
 	if text = strings.TrimSpace(text); text != "" {
@@ -85,6 +85,6 @@ func (m *Manager) Continue(ctx context.Context, id, text string, maxIterations i
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	m.launch(job, &rec)
+	m.launch(job, &rec, false)
 	return nil
 }
