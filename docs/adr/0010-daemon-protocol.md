@@ -701,8 +701,9 @@ starts new jobs on request and recovers active jobs on restart. Ordinary-run
 provider construction is deferred; idle startup needs no model credentials. Each job spec
 selects its own coding provider/model independently of ordinary daemon runs.
 Shutdown drains both run and job managers before returning storage errors.
-Until policy profiles are added, explicit job `policy: "yolo"` allows tool
-permissions only when no host handler overrides it; other jobs ask externally.
+`glue serve` accepts `--policy` (default `workspace-auto`) or `--policy-file`
+(mutually exclusive) and applies the policy across daemon runs and jobs;
+automatic `allow`/`deny` decisions emit `permission_auto {tool, target, decision, rule}`.
 
 ### Job manager ownership
 

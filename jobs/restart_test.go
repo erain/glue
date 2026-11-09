@@ -178,7 +178,7 @@ func restartFixture(t *testing.T, budgets Budgets, rec glue.GoalRecord) (*Manage
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
-	job, err := m.Create(context.Background(), Spec{Objective: "A", Repo: RepoSpec{Path: repoFixture(t)}, Budgets: budgets})
+	job, err := m.Create(context.Background(), Spec{Objective: "A", Repo: RepoSpec{Path: repoFixture(t)}, Budgets: budgets, Policy: "ask-all"})
 	if err != nil {
 		t.Fatal(err)
 	}

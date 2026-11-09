@@ -591,3 +591,10 @@ Startup recovery retains checkpoints, workspaces and event sequences, expires
 abandoned permissions, and starts fresh sessions at the next iteration boundary.
 Token/iteration budgets retain verified progress; wall time includes downtime.
 Created and terminal jobs stay idle. A durable terminal goal completes directly.
+
+Permission policies (`ask-all`, `workspace-auto`, `yolo`, or custom JSON rules via
+`--policy-file`) govern both daemon runs (`daemon.NewPermissionPolicy`) and jobs
+(`jobs.Options.Policy`, defaulting to `workspace-auto`). Automatic `allow` and
+`deny` decisions record `permission_auto {tool, target, decision, rule}` events
+without waiting; `ask` decisions emit `permission_request` and enter
+`waiting_for_input`. Selecting `yolo` logs a warning to `stderr`.

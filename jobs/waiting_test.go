@@ -39,7 +39,7 @@ func TestJobWaitingForInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
-	job, err := m.Create(context.Background(), Spec{Objective: "write", Repo: RepoSpec{Path: repoFixture(t)}})
+	job, err := m.Create(context.Background(), Spec{Objective: "write", Repo: RepoSpec{Path: repoFixture(t)}, Policy: "ask-all"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestJobCloseWhileWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
-	job, err := m.Create(context.Background(), Spec{Objective: "write", Repo: RepoSpec{Path: repoFixture(t)}})
+	job, err := m.Create(context.Background(), Spec{Objective: "write", Repo: RepoSpec{Path: repoFixture(t)}, Policy: "ask-all"})
 	if err != nil {
 		t.Fatal(err)
 	}

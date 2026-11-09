@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Enforce permission policies across jobs, daemon runs (`daemon.NewPermissionPolicy`),
+  and `glue serve` (`--policy` / `--policy-file`), default jobs to `workspace-auto`,
+  and emit `permission_auto` audit events on automatic `allow`/`deny` decisions.
+
 - Add `jobs.Policy`, built-in permission profiles (`ask-all`, `workspace-auto`,
   `yolo`), strict JSON policy file validation, and workspace-confined rule
   evaluation.

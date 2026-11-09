@@ -54,3 +54,9 @@ Custom policies use strict JSON decoding (`DisallowUnknownFields`):
 - `default` and every rule `decision` must be `"allow"`, `"deny"`, or `"ask"`.
 - Unknown JSON fields, trailing JSON values, malformed `target` globs (`path.Match`), and empty `argv_prefix` tokens are rejected at load time.
 - File targets and `exec` working directories are resolved relative to the workspace with `tools/fs.SafeJoin` and `filepath.EvalSymlinks` across existing ancestor directories; paths outside the workspace or traversing symlinks outside the workspace never match workspace `allow` rules.
+
+## Runtime Enforcement and `permission_auto` Auditing
+
+- `glue serve` accepts `--policy <ask-all|workspace-auto|yolo>` (default `workspace-auto`) or `--policy-file <path>` (mutually exclusive) and applies the selected policy to both `/v1/sessions/{id}/runs` (`daemon.NewPermissionPolicy`) and hosted jobs (`jobs.Options.Policy`). Selecting `yolo` logs a loud warning to `stderr`.
+- Jobs default empty `Spec.Policy` to `workspace-auto` (or the manager's configured policy name) and reject unknown policy names at creation time (`400 invalid_request`).
+- Every automatic `allow` or `deny` decision emits a durable `permission_auto` event (`{tool, target, decision, rule}`) without transitioning the job to `waiting_for_input`; `ask` emits `permission_request` and `job_waiting`.
