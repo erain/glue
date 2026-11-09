@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Queue durable operator messages over the job API and show them to the next
+  maker and checker, with delivery events and guidance preserved across restarts.
+
 - Let goal hosts deliver operator guidance to the next maker iteration and
   its independent checker through an optional safe-point callback.
 
