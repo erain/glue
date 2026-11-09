@@ -757,3 +757,12 @@ guidance before execution detaches. Iteration numbers and event sequences
 continue across runs. As with `glue goal --resume`, explicit continuation gets
 fresh token/wall-clock budgets and the configured number of additional
 iterations. Automatic recovery of a killed process is a separate operation.
+
+### Durable execution checkpoints
+
+Restartable hosts can require goal checkpoints with RequirePersistence and
+save a GoalRecord before repository/provider preparation through Agent.SaveGoal.
+Failed required saves stop model execution and surface an error. InitialUsage
+and StartIteration preserve usage and numbering across repeated recovery.
+Job startup recovery builds on this API; enabling it for jobs and recovering
+workspace preparation are separate implementation steps.

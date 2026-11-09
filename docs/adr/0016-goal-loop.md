@@ -107,3 +107,18 @@ Each iteration:
   live checklist panel (reuses the new `/` autocomplete).
 - **Phase 3:** durable `glue/goal:*` state + resume; `goal/<slug>` branch
   isolation; daemon / scheduled goals.
+
+### Required persistence for restartable hosts
+
+`GoalSpec.RequirePersistence` opts into checkpoint errors stopping the loop.
+A Store is required; the default remains best-effort. An initial running record
+is saved before planning, then checkpoints precede maker execution and follow
+verified iterations. Required terminal checkpoint failures return an error and
+`GoalErrored`; a successful goal event follows its successful terminal save.
+`Agent.SaveGoal` lets hosts persist an initial record before repository/provider
+preparation and reports storage errors directly. ID and Objective are required.
+
+`InitialUsage` seeds cumulative usage for interrupted-run recovery. Initial
+checkpoints retain `StartIteration - 1` as the previous iteration, so a restart
+before the first new maker does not rewind numbering or budgets. Explicit
+continuation can leave InitialUsage zero to start a fresh run budget.
