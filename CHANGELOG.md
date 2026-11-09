@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Start isolated coding jobs, retain goal/session/tool events, and persist
+  terminal outcomes with cancellation and shutdown interruption.
+
 - Persist validated coding job specs and creation events without starting
   execution; inspect them after manager restart.
 

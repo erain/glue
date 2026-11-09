@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erain/glue"
@@ -84,12 +85,19 @@ type Options struct {
 	StateDir        string
 	ProviderFactory func(string) (glue.Provider, error)
 	Now             func() time.Time
+	Permission      glue.Permission
 }
 
 // Manager owns durable job state. Creating it does not start execution.
 type Manager struct {
-	store   *eventlog.Store
-	options Options
+	mu, eventsMu sync.Mutex
+	active       map[string]*execution
+	wg           sync.WaitGroup
+	closed       bool
+	closeOnce    sync.Once
+	closeErr     error
+	store        *eventlog.Store
+	options      Options
 }
 
 const schema = `CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,spec_json TEXT NOT NULL,status TEXT NOT NULL,base_sha TEXT NOT NULL,workspace TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_seq INTEGER NOT NULL,goal_id TEXT NOT NULL);`
@@ -107,11 +115,8 @@ func New(opts Options) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{store: store, options: opts}, nil
+	return &Manager{store: store, options: opts, active: map[string]*execution{}}, nil
 }
-
-// Close releases state storage.
-func (m *Manager) Close() error { return m.store.DB.Close() }
 
 func validate(s Spec) (Spec, error) {
 	s.Objective = strings.TrimSpace(s.Objective)
