@@ -692,3 +692,14 @@ remain event driven. Keepalives do not replay the preceding event batch.
 Unknown jobs return 404, invalid requests 400 `invalid_request`, and conflicting
 transitions 409. Job JSON bodies are limited to 1 MiB; unknown fields and
 trailing JSON are rejected. A missing job manager leaves these routes disabled.
+
+### CLI job hosting
+
+`glue serve --jobs` enables job routes. `--coding` enables them by default;
+explicit `--jobs=false` disables them. The manager shares `--state-dir` and
+starts no job until requested. Ordinary-run provider construction is deferred
+when jobs are enabled, so startup needs no model credentials. Each job spec
+selects its own coding provider/model independently of ordinary daemon runs.
+Shutdown drains both run and job managers before returning storage errors.
+Until policy profiles are added, explicit job `policy: "yolo"` allows tool
+permissions only when no host handler overrides it; other jobs ask externally.

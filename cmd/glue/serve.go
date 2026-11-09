@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
+	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/providers"
 	// Register the shipped providers so they resolve through the
 	// providers registry by name (--provider). Importing for side
@@ -36,7 +38,7 @@ type serveConfig struct {
 
 type daemonMetadata = daemon.Metadata
 
-func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc) error {
+func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc) (resultErr error) {
 	flags := flag.NewFlagSet("glue serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -48,6 +50,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
 	coding := flags.Bool("coding", false, "enable local coding tools for daemon runs")
+	jobsEnabled := flags.Bool("jobs", false, "host durable coding jobs (default on with --coding)")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and daemon permission approval")
 	listenAddr := flags.String("listen", defaultListenAddr, "local listen address")
 	tokenFlag := flags.String("token", "", "bearer token; defaults to GLUE_DAEMON_TOKEN or a generated token")
@@ -60,6 +63,16 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+
+	jobsSet := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "jobs" {
+			jobsSet = true
+		}
+	})
+	if !jobsSet {
+		*jobsEnabled = *coding
 	}
 
 	agentName := "default"
@@ -99,7 +112,11 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if *coding {
 		fmt.Fprintf(stderr, "glue serve: coding tools enabled for %s\n", *workDir)
 	}
-	agent, err := newAgent(newProvider, agentConfig{
+	hostFactory := newProvider
+	if *jobsEnabled {
+		hostFactory = func(name string) (glue.Provider, error) { return &lazyProvider{name: name, factory: newProvider}, nil }
+	}
+	agent, err := newAgent(hostFactory, agentConfig{
 		Provider: providerName,
 		Options:  providerOptions,
 		Model:    effectiveModel,
@@ -111,7 +128,16 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err != nil {
 		return err
 	}
+	var manager *jobs.Manager
+	if *jobsEnabled {
+		manager, err = jobs.New(jobs.Options{StateDir: *stateDir, ProviderFactory: newProvider})
+		if err != nil {
+			return err
+		}
+		defer func() { resultErr = errors.Join(resultErr, manager.Close()) }()
+	}
 	handler, err := daemon.New(daemon.Options{
+		Jobs:       manager,
 		RetainRuns: *retainRuns,
 		StateDir:   *stateDir,
 		Host:       agent,
@@ -131,7 +157,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err != nil {
 		return err
 	}
-	defer handler.Close()
+	defer func() { resultErr = errors.Join(resultErr, handler.Close()) }()
 	return serve(ctx, serveConfig{
 		ListenAddr:        *listenAddr,
 		Token:             token,

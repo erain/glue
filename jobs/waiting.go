@@ -45,7 +45,11 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 		return glue.PermissionDecision{}, err
 	}
 	r.mu.Unlock()
-	if handler := m.options.Permission; handler != nil {
+	handler := m.options.Permission
+	if handler == nil && job.Spec.Policy == "yolo" {
+		handler = glue.AllowAll{}
+	}
+	if handler != nil {
 		decision, err := handler.Decide(ctx, request)
 		if err != nil {
 			return p.expire(id, pending, err)
