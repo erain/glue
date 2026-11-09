@@ -89,6 +89,7 @@ func (m *Manager) Close() error {
 		m.mu.Unlock()
 		m.wg.Wait()
 		m.closeErr = errors.Join(m.closeErr, m.store.DB.Close())
+		m.closeErr = errors.Join(m.closeErr, releaseLock(m.lock))
 	})
 	return m.closeErr
 }

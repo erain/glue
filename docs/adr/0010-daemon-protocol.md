@@ -703,3 +703,13 @@ selects its own coding provider/model independently of ordinary daemon runs.
 Shutdown drains both run and job managers before returning storage errors.
 Until policy profiles are added, explicit job `policy: "yolo"` allows tool
 permissions only when no host handler overrides it; other jobs ask externally.
+
+### Job manager ownership
+
+A manager acquires a nonblocking exclusive OS lock on `<state-dir>/LOCK` before
+opening storage. A second manager fails with a state-ownership error. Ownership
+lasts until workers drain and storage closes, including failed startup cleanup.
+Process death releases the lock automatically; the file remains in place so
+concurrent openers always lock the same inode. Unix flock and Windows byte-range
+locks are supported; other platforms fail explicitly. This prevents duplicate
+execution; automatic job recovery is a separate lifecycle step.

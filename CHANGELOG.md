@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Prevent duplicate job execution by locking each manager state directory until
+  its workers and storage close; a killed process releases ownership automatically.
+
 - Host durable jobs with `glue serve --jobs` (on by default with --coding),
   including lazy provider startup, isolated execution and lifecycle cleanup.
 
