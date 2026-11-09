@@ -653,3 +653,14 @@ Library hosts can set `Options.RetainRuns` and `Options.SweepInterval`;
 negative durations are invalid. Closing the server stops the sweep,
 cancels and joins executions, and then closes SQLite. Executions stopped
 by daemon shutdown are interrupted; explicit DELETE remains cancellation.
+
+### Job inspection data
+
+Job detail includes the persisted specification and workspace metadata plus
+`iteration`, `checklist`, `usage`, and `pending_permission_count`, projected
+from a consistent metadata/event snapshot. Permission history records expose
+`id`, `request`, `state`, `created_at`, and `updated_at`; states are pending,
+allowed, denied, and expired. Terminal completion expires any unsettled request.
+Job lists use creation time and ID descending, with an exclusive `before`
+job ID cursor. Validation identifies the snake_case field. Canceling a job
+that has not started writes a canceled completion without preparing a workspace.

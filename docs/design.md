@@ -513,3 +513,9 @@ may supply a permission handler; otherwise decisions arrive externally.
 Cancellation and shutdown expire pending requests. Wall-clock budgets
 cover preparation and execution, stop on completion, and terminate as
 budget_limited. Hosts can inject scheduling through Options.AfterFunc.
+
+Job inspection projects progress, usage, and permission history from one
+SQLite read snapshot. It never constructs a provider or resumes execution.
+The terminal result supplies final progress; unsettled permissions expire
+on completion. Filtered listing uses stable creation-time/ID ordering and
+an exclusive job ID cursor. Canceling a created job only writes its outcome.

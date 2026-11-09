@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Inspect durable job progress and permission history, filter job lists,
+  and cancel unstarted jobs without preparing a workspace.
+
 - Track coding jobs waiting on permission, persist decisions before tools
   resume, and enforce wall-clock budgets with durable terminal outcomes.
 

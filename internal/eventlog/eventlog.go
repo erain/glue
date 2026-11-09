@@ -64,8 +64,17 @@ func Insert(tx *sql.Tx, e Envelope) error {
 }
 
 // Read returns strictly later events in sequence order.
-func (s *Store) Read(id string, after int64) ([]Envelope, error) {
-	rows, err := s.DB.Query("SELECT payload_json FROM events WHERE run_id=? AND seq>? ORDER BY seq", id, after)
+func (s *Store) Read(id string, after int64) ([]Envelope, error) { return read(s.DB, id, after) }
+
+// ReadTx reads events in the owner's existing snapshot transaction.
+func ReadTx(tx *sql.Tx, id string, after int64) ([]Envelope, error) { return read(tx, id, after) }
+
+type queryer interface {
+	Query(string, ...any) (*sql.Rows, error)
+}
+
+func read(source queryer, id string, after int64) ([]Envelope, error) {
+	rows, err := source.Query("SELECT payload_json FROM events WHERE run_id=? AND seq>? ORDER BY seq", id, after)
 	if err != nil {
 		return nil, err
 	}

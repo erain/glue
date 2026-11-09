@@ -122,11 +122,20 @@ func New(opts Options) (*Manager, error) {
 
 func validate(s Spec) (Spec, error) {
 	s.Objective = strings.TrimSpace(s.Objective)
-	if s.Objective == "" || (s.Repo.Path == "") == (s.Repo.URL == "") {
-		return s, errors.New("jobs: objective and exactly one repository source are required")
+	if s.Objective == "" {
+		return s, invalid("objective", "required")
 	}
-	if s.Budgets.MaxIterations < 0 || s.Budgets.TokenBudget < 0 || s.Budgets.WallClock < 0 {
-		return s, errors.New("jobs: budgets must not be negative")
+	if (s.Repo.Path == "") == (s.Repo.URL == "") {
+		return s, invalid("repo", "exactly one path or url is required")
+	}
+	if s.Budgets.MaxIterations < 0 {
+		return s, invalid("budgets.max_iterations", "must not be negative")
+	}
+	if s.Budgets.TokenBudget < 0 {
+		return s, invalid("budgets.token_budget", "must not be negative")
+	}
+	if s.Budgets.WallClock < 0 {
+		return s, invalid("budgets.wall_clock", "must not be negative")
 	}
 	if s.Budgets.MaxIterations == 0 {
 		s.Budgets.MaxIterations = 10
@@ -137,20 +146,20 @@ func validate(s Spec) (Spec, error) {
 	switch s.Delivery {
 	case "none", "branch", "draft_pr":
 	default:
-		return s, errors.New("jobs: invalid delivery mode")
+		return s, invalid("delivery", "unknown mode")
 	}
 	for _, argv := range s.Verify {
 		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
-			return s, errors.New("jobs: verify commands require an executable")
+			return s, invalid("verify", "commands require an executable")
 		}
 	}
 	var err error
 	s.Provider, s.Model, err = modelselection.Resolve(true, s.Provider, s.Model)
 	if err != nil {
-		return s, err
+		return s, invalid("provider", err.Error())
 	}
 	if _, err := providers.ThinkingOptions(s.Provider, s.Model, s.Thinking); err != nil {
-		return s, err
+		return s, invalid("thinking", err.Error())
 	}
 	return s, nil
 }
@@ -214,20 +223,7 @@ func (m *Manager) Get(ctx context.Context, id string) (Job, error) {
 
 // List returns jobs newest first, ordered by creation time and ID.
 func (m *Manager) List(ctx context.Context) ([]Job, error) {
-	rows, err := m.store.DB.QueryContext(ctx, "SELECT "+columns+" FROM jobs ORDER BY created_at DESC,id DESC")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	jobs := []Job{}
-	for rows.Next() {
-		j, err := scan(rows)
-		if err != nil {
-			return nil, err
-		}
-		jobs = append(jobs, j)
-	}
-	return jobs, rows.Err()
+	return m.Query(ctx, Filter{})
 }
 
 // Events replays strictly later events for an existing job.
