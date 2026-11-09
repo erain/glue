@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Host durable jobs with `glue serve --jobs` (on by default with --coding),
+  including lazy provider startup, isolated execution and lifecycle cleanup.
+
 - Expose authenticated job lifecycle, permission, inspection, and resumable
   event endpoints through the daemon when a job manager is configured.
 

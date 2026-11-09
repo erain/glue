@@ -529,3 +529,9 @@ The daemon accepts an externally owned jobs.Manager and exposes authenticated
 job creation, control, inspection, permissions, and resumable event routes.
 Creating and starting remain separate operations unless start=true is explicit.
 HTTP stream disconnects never cancel a job; DELETE does.
+
+`glue serve --jobs` hosts the durable job manager in its state directory;
+`--coding` enables jobs by default and `--jobs=false` overrides it. Startup
+performs no execution and requires no model credentials in jobs mode.
+Ordinary runs construct their provider on first use; jobs construct theirs
+only at Start. Server shutdown joins both managers before storage closes.
