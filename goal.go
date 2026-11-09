@@ -18,6 +18,12 @@ import (
 // from the durable checklist (a Ralph-style loop) rather than an ever-growing
 // transcript. See docs/adr/0016-goal-loop.md.
 type GoalSpec struct {
+	// Guidance is sampled once before each maker iteration, after guardrails.
+	// Its text is prepended to both that maker prompt and its checker prompt.
+	// Updates during an iteration wait until the next maker. An error stops the
+	// loop before the maker runs and is returned to the host. Nil adds no text.
+	Guidance func(context.Context, int) (string, error)
+
 	// OnSession runs before a planner, maker, or checker session is prompted.
 	// Phases are "planner", "maker", and "checker". Planning uses iteration 0;
 	// makers and checkers use the actual iteration, including StartIteration.
@@ -248,11 +254,22 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 			checkpoint(GoalBudgetLimited)
 			return result, nil
 		}
+		var guidance string
+		if spec.Guidance != nil {
+			var err error
+			guidance, err = spec.Guidance(ctx, i)
+			if err != nil {
+				result.Status = GoalErrored
+				result.Checklist = cloneChecklist(checklist)
+				checkpoint(pauseOrErrored())
+				return result, fmt.Errorf("glue: goal guidance iteration %d: %w", i, err)
+			}
+		}
 		result.Iterations = i
 		emit(GoalEvent{Type: GoalEventIterationStart, Iteration: i, Checklist: cloneChecklist(checklist), Usage: result.Usage})
 
 		// 2) Maker: a fresh session works the open items.
-		makerUsage, err := a.runGoalMaker(ctx, spec, i, checklist)
+		makerUsage, err := a.runGoalMaker(ctx, spec, i, checklist, guidance)
 		addUsage(&result.Usage, makerUsage)
 		if err != nil {
 			result.Status = GoalErrored
@@ -263,7 +280,7 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		emit(GoalEvent{Type: GoalEventMakerDone, Iteration: i, Usage: result.Usage})
 
 		// 3) Checker: a separate session audits against real evidence.
-		verdict, checkUsage, err := a.runGoalChecker(ctx, spec, i, checklist)
+		verdict, checkUsage, err := a.runGoalChecker(ctx, spec, i, checklist, guidance)
 		addUsage(&result.Usage, checkUsage)
 		if err != nil {
 			result.Status = GoalErrored
@@ -377,7 +394,7 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	return out, usage, nil
 }
 
-func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, checklist []ChecklistItem) (Usage, error) {
+func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, checklist []ChecklistItem, guidance string) (Usage, error) {
 	sess, err := a.Session(ctx, fmt.Sprintf("%s:iter-%d", spec.SessionPrefix, iter))
 	if err != nil {
 		return Usage{}, err
@@ -401,13 +418,13 @@ func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, check
 	if spec.Permission != nil {
 		opts = append(opts, WithPermission(spec.Permission))
 	}
-	res, err := sess.Prompt(ctx, makerPrompt(spec.Objective, iter, checklist), opts...)
+	res, err := sess.Prompt(ctx, withGoalGuidance(makerPrompt(spec.Objective, iter, checklist), guidance), opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
 	return usage, err
 }
 
-func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, checklist []ChecklistItem) (goalVerdict, Usage, error) {
+func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, checklist []ChecklistItem, guidance string) (goalVerdict, Usage, error) {
 	sess, err := a.Session(ctx, fmt.Sprintf("%s:check-%d", spec.SessionPrefix, iter))
 	if err != nil {
 		return goalVerdict{}, Usage{}, err
@@ -432,10 +449,17 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 		opts = append(opts, WithPermission(spec.Permission))
 	}
 	var verdict goalVerdict
-	res, err := sess.PromptJSON(ctx, checkerPrompt(spec.Objective, checklist), &verdict, opts...)
+	res, err := sess.PromptJSON(ctx, withGoalGuidance(checkerPrompt(spec.Objective, checklist), guidance), &verdict, opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
 	return verdict, usage, err
+}
+
+func withGoalGuidance(prompt, guidance string) string {
+	if guidance = strings.TrimSpace(guidance); guidance == "" {
+		return prompt
+	}
+	return "Operator guidance\n" + guidance + "\n\n" + prompt
 }
 
 // ---- prompts ----

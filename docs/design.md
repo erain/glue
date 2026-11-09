@@ -540,3 +540,8 @@ Each jobs.Manager owns an exclusive `<state-dir>/LOCK` for its whole lifetime,
 including worker shutdown and storage cleanup. A competing manager fails fast.
 The OS releases ownership on process death, allowing a replacement manager to
 open the same durable state; the lock file is never unlinked.
+
+Goal hosts can supply Guidance(ctx, iteration), sampled at each maker boundary
+after cancellation and budget checks. The maker and its checker receive the
+same Operator guidance block. Updates during a turn wait for the next maker;
+a callback error stops the loop before that iteration executes.
