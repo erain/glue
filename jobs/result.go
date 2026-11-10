@@ -3,10 +3,14 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +22,24 @@ import (
 	"github.com/erain/glue/tools/coding"
 )
 
-const verifyOutputTailLines = 200
+const (
+	verifyOutputTailLines = 200
+	defaultGitHubAPIURL   = "https://api.github.com"
+)
+
+// Askpass implements the hidden "glue git-askpass" credential helper for GIT_ASKPASS.
+func Askpass(args []string, stdout io.Writer) int {
+	if len(args) > 0 && strings.HasPrefix(strings.ToLower(strings.TrimSpace(args[0])), "username") {
+		fmt.Fprintln(stdout, "x-access-token")
+		return 0
+	}
+	token := strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN"))
+	if token == "" {
+		return 1
+	}
+	fmt.Fprintln(stdout, token)
+	return 0
+}
 
 // VerifyResult records one post-goal verification command execution.
 type VerifyResult struct {
@@ -115,10 +136,11 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 		Verify: []VerifyResult{}, Iterations: goal.Iterations, Usage: goal.Usage, Summary: goal.Summary,
 	}
 	if info, err := os.Stat(job.Workspace); job.Workspace != "" && err == nil && info.IsDir() {
-		if status == Achieved || status == Blocked || status == MaxIterations || status == BudgetLimited {
+		deliverable := status == Achieved || status == Blocked || status == MaxIterations || status == BudgetLimited
+		if deliverable {
 			if len(job.Spec.Verify) > 0 {
 				if resolved, err := coding.ResolveOptions(m.codingOptions(job.ID, job.Spec, job.Workspace, job.BaseSHA)); err != nil {
-					res.DeliveryError = err.Error()
+					res.DeliveryError = sanitizeToken(err.Error())
 				} else {
 					for _, argv := range job.Spec.Verify {
 						res.Verify = append(res.Verify, runVerifyCommand(context.Background(), job.Workspace, resolved.Env, resolved.ShellTimeout, argv))
@@ -126,7 +148,7 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 				}
 			}
 			if err := commitWorkspaceChanges(context.Background(), job, goal.Summary); err != nil && res.DeliveryError == "" {
-				res.DeliveryError = err.Error()
+				res.DeliveryError = sanitizeToken(err.Error())
 			}
 		}
 		if head, err := workspaceGit(context.Background(), job.Workspace, nil, "rev-parse", "HEAD"); err == nil {
@@ -135,6 +157,11 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 		if res.BaseSHA != "" && res.HeadSHA != "" {
 			if diffstat, err := workspaceGit(context.Background(), job.Workspace, nil, "diff", "--stat", res.BaseSHA+".."+res.HeadSHA); err == nil {
 				res.Diffstat = diffstat
+			}
+		}
+		if deliverable && res.DeliveryError == "" && (job.Spec.Delivery == "branch" || job.Spec.Delivery == "draft_pr") && res.BaseSHA != "" && res.HeadSHA != "" && res.HeadSHA != res.BaseSHA {
+			if err := deliverJob(context.Background(), job, goal, &res); err != nil {
+				res.DeliveryError = sanitizeToken(err.Error())
 			}
 		}
 	}
@@ -243,4 +270,205 @@ func workspaceGit(ctx context.Context, dir string, extraEnv []string, args ...st
 		return "", fmt.Errorf("jobs: git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func deliverJob(ctx context.Context, job Job, goal glue.GoalResult, res *Result) error {
+	if err := pushBranch(ctx, job.Workspace, res.Branch); err != nil || job.Spec.Delivery != "draft_pr" || res.Status != Achieved {
+		return err
+	}
+	// TODO(#402): Support non-GitHub forges (such as GitLab and Gitea) for draft PR delivery.
+	originURL, err := workspaceGit(ctx, job.Workspace, nil, "remote", "get-url", "origin")
+	if err != nil {
+		return err
+	}
+	owner, repo, err := parseOriginRepo(originURL)
+	if err != nil {
+		return err
+	}
+	res.PRURL, err = openGitHubDraftPR(ctx, owner, repo, job, goal, *res)
+	return err
+}
+
+func pushBranch(ctx context.Context, dir, branch string) error {
+	var extra []string
+	if strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")) != "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		f, err := os.CreateTemp("", "glue-askpass-*")
+		if err != nil {
+			return err
+		}
+		askpass := f.Name()
+		defer os.Remove(askpass)
+		_, writeErr := fmt.Fprintf(f, "#!/bin/sh\nexec %q git-askpass \"$@\"\n", exe)
+		if err := errors.Join(writeErr, f.Close(), os.Chmod(askpass, 0o700)); err != nil {
+			return err
+		}
+		extra = []string{
+			"GIT_ASKPASS=" + askpass, "SSH_ASKPASS=" + askpass, "GIT_ASKPASS_REQUIRE=force",
+			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
+		}
+	}
+	_, err := workspaceGit(ctx, dir, extra, "push", "origin", "refs/heads/"+branch+":refs/heads/"+branch)
+	return err
+}
+
+func parseOriginRepo(raw string) (string, string, error) {
+	raw = strings.TrimSpace(raw)
+	var parts []string
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", "", fmt.Errorf("jobs: invalid origin URL: %w", err)
+		}
+		parts = strings.Split(strings.Trim(u.Path, "/"), "/")
+		if u.Scheme != "file" && (u.Host == "" || len(parts) != 2) {
+			return "", "", fmt.Errorf("jobs: unsupported origin URL %q", raw)
+		}
+	} else if !strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, ".") && strings.Contains(raw, ":") {
+		host, path, _ := strings.Cut(raw, ":")
+		parts = strings.Split(strings.Trim(path, "/"), "/")
+		if host == "" || strings.Contains(host, "/") || len(parts) != 2 {
+			return "", "", fmt.Errorf("jobs: unsupported origin URL %q", raw)
+		}
+	} else {
+		parts = strings.Split(strings.Trim(filepath.ToSlash(raw), "/"), "/")
+	}
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("jobs: cannot parse owner/repo from origin %q", raw)
+	}
+	owner, repo := parts[len(parts)-2], strings.TrimSuffix(parts[len(parts)-1], ".git")
+	if owner == "" || repo == "" || owner == "." || owner == ".." || repo == "." || repo == ".." {
+		return "", "", fmt.Errorf("jobs: invalid owner/repo in origin %q", raw)
+	}
+	return owner, repo, nil
+}
+
+func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal glue.GoalResult, res Result) (string, error) {
+	apiBase := strings.TrimRight(strings.TrimSpace(os.Getenv("GLUE_GITHUB_API_URL")), "/")
+	if apiBase == "" {
+		apiBase = defaultGitHubAPIURL
+	}
+	token := strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN"))
+	var repoInfo struct {
+		DefaultBranch string `json:"default_branch"`
+		Parent        *struct {
+			FullName      string `json:"full_name"`
+			DefaultBranch string `json:"default_branch"`
+		} `json:"parent"`
+	}
+	if err := githubJSON(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s", apiBase, owner, repo), token, nil, &repoInfo); err != nil {
+		return "", err
+	}
+	targetRepo, head, defaultBranch := owner+"/"+repo, res.Branch, strings.TrimSpace(repoInfo.DefaultBranch)
+	if repoInfo.Parent != nil && strings.TrimSpace(repoInfo.Parent.FullName) != "" {
+		targetRepo, head = strings.TrimSpace(repoInfo.Parent.FullName), owner+":"+res.Branch
+		if b := strings.TrimSpace(repoInfo.Parent.DefaultBranch); b != "" {
+			defaultBranch = b
+		}
+	}
+	base := strings.TrimPrefix(strings.TrimSpace(job.Spec.Repo.BaseRef), "refs/heads/")
+	if base == "" {
+		base = defaultBranch
+	}
+	if base == "" {
+		base = "main"
+	}
+	title, _, _ := strings.Cut(strings.TrimSpace(goal.Summary), "\n")
+	if title == "" {
+		title, _, _ = strings.Cut(strings.TrimSpace(job.Spec.Objective), "\n")
+	}
+	if title == "" {
+		title = "Glue job " + job.ID
+	}
+	var prResp struct {
+		HTMLURL string `json:"html_url"`
+		URL     string `json:"url"`
+	}
+	reqBody := map[string]any{"title": title, "head": head, "base": base, "body": formatPRBody(job, goal, res), "draft": true}
+	if err := githubJSON(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/pulls", apiBase, targetRepo), token, reqBody, &prResp); err != nil {
+		return "", err
+	}
+	if u := strings.TrimSpace(prResp.HTMLURL); u != "" {
+		return u, nil
+	}
+	if u := strings.TrimSpace(prResp.URL); u != "" {
+		return u, nil
+	}
+	return "", errors.New("jobs: github pull request response missing url")
+}
+
+func githubJSON(ctx context.Context, method, endpoint, token string, reqBody, respBody any) error {
+	var reader io.Reader
+	if reqBody != nil {
+		raw, err := json.Marshal(reqBody)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "glue")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("jobs: github %s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if respBody == nil {
+		return nil
+	}
+	return json.Unmarshal(body, respBody)
+}
+
+func formatPRBody(job Job, goal glue.GoalResult, res Result) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Objective\n\n%s\n\n## Summary\n\n%s\n\n## Checklist\n\n", strings.TrimSpace(job.Spec.Objective), strings.TrimSpace(goal.Summary))
+	for _, item := range goal.Checklist {
+		mark := " "
+		if item.Done {
+			mark = "x"
+		}
+		fmt.Fprintf(&b, "- [%s] %s", mark, strings.TrimSpace(item.Title))
+		if ev := strings.TrimSpace(item.Evidence); ev != "" {
+			fmt.Fprintf(&b, " — %s", ev)
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n## Verify\n\n")
+	for _, v := range res.Verify {
+		fmt.Fprintf(&b, "- `%s` (exit `%d`, `%dms`)\n", strings.Join(v.Argv, " "), v.ExitCode, v.DurationMS)
+		if tail := strings.TrimSpace(v.OutputTail); tail != "" {
+			fmt.Fprintf(&b, "```\n%s\n```\n", tail)
+		}
+	}
+	fmt.Fprintf(&b, "\n## Usage\n\nIterations: %d · Input tokens: %d · Output tokens: %d · Total tokens: %d\n\nOpened by Glue job %s\n",
+		res.Iterations, res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.TotalTokens, job.ID)
+	return b.String()
+}
+
+func sanitizeToken(msg string) string {
+	if token := strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")); token != "" {
+		msg = strings.ReplaceAll(msg, token, "[REDACTED]")
+	}
+	return msg
 }

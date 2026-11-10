@@ -26,6 +26,7 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/internal/modelselection"
+	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
@@ -99,6 +100,9 @@ func runCLIWithServe(ctx context.Context, args []string, stdout io.Writer, stder
 }
 
 func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc, client httpDoer) int {
+	if os.Getenv("GLUE_GIT_ASKPASS") == "1" {
+		return jobs.Askpass(args, stdout)
+	}
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		printUsage(stdout)
 		return 0
@@ -109,6 +113,8 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	}
 
 	switch args[0] {
+	case "git-askpass":
+		return jobs.Askpass(args[1:], stdout)
 	case "models":
 		if err := modelsCommand(args[1:], stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)

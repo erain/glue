@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/erain/glue"
@@ -285,10 +286,13 @@ func (m *Manager) codingOptions(id string, spec Spec, workspacePath, baseSHA str
 	if timeout <= 0 {
 		timeout = m.options.ShellTimeout
 	}
+	secretAllow := slices.DeleteFunc(append(append([]string(nil), m.options.ShellEnvSecretAllow...), spec.ShellEnvSecretAllow...), func(s string) bool {
+		return strings.EqualFold(strings.TrimSpace(s), "GLUE_GITHUB_TOKEN")
+	})
 	return coding.Options{
 		Enabled: true, WorkDir: workspacePath, AllowedBinaries: bins, AllowOverwrite: true,
 		EnvPass: envPass, Env: append(append([]string(nil), m.options.ShellEnv...), spec.ShellEnv...),
-		SecretAllow: append(append([]string(nil), m.options.ShellEnvSecretAllow...), spec.ShellEnvSecretAllow...),
+		SecretAllow: secretAllow,
 		DefaultHome: filepath.Join(m.options.StateDir, "home", id), SpoolDir: filepath.Join(m.options.StateDir, "tmp"),
 		ShellTimeout: timeout, GitDefaultBase: baseSHA,
 	}

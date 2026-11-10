@@ -249,6 +249,23 @@ func TestRunCLIUnknownProvider(t *testing.T) {
 	}
 }
 
+func TestRunCLIGitAskpass(t *testing.T) {
+	t.Setenv("GLUE_GITHUB_TOKEN", "ghp_cli_askpass_secret")
+	var stdout, stderr bytes.Buffer
+	if code := runCLI(context.Background(), []string{"git-askpass", "Username for 'https://github.com': "}, &stdout, &stderr, fakeFactory(nil)); code != 0 || stdout.String() != "x-access-token\n" {
+		t.Fatalf("username askpass code=%d out=%q", code, stdout.String())
+	}
+	stdout.Reset()
+	if code := runCLI(context.Background(), []string{"git-askpass", "Password for 'https://x-access-token@github.com': "}, &stdout, &stderr, fakeFactory(nil)); code != 0 || stdout.String() != "ghp_cli_askpass_secret\n" {
+		t.Fatalf("password askpass code=%d out=%q", code, stdout.String())
+	}
+	t.Setenv("GLUE_GITHUB_TOKEN", "")
+	stdout.Reset()
+	if code := runCLI(context.Background(), []string{"git-askpass"}, &stdout, &stderr, fakeFactory(nil)); code == 0 || stdout.Len() != 0 {
+		t.Fatalf("empty token askpass code=%d out=%q", code, stdout.String())
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
