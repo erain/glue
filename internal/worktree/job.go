@@ -61,11 +61,13 @@ func Prepare(ctx context.Context, opts Options) (Workspace, error) {
 	if ref == "" {
 		ref, err = git(source, "symbolic-ref", "refs/remotes/origin/HEAD")
 		if err != nil {
-			branches, e := git(source, "for-each-ref", "--format=%(refname)", "refs/heads")
-			if e == nil && branches != "" && !strings.Contains(branches, "\n") {
-				ref = branches
+			for _, prefix := range []string{"refs/heads", "refs/remotes/origin"} {
+				if branches, e := git(source, "for-each-ref", "--format=%(refname)", prefix); e == nil && branches != "" && !strings.Contains(branches, "\n") {
+					ref = branches
+					break
+				}
 			}
-			for _, candidate := range []string{"refs/heads/main", "refs/heads/master"} {
+			for _, candidate := range []string{"refs/heads/main", "refs/heads/master", "refs/remotes/origin/main", "refs/remotes/origin/master"} {
 				if ref != "" {
 					break
 				}
@@ -80,7 +82,7 @@ func Prepare(ctx context.Context, opts Options) (Workspace, error) {
 		}
 	}
 	sha, err := git(source, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
-	if err != nil && opts.URL != "" {
+	if err != nil {
 		sha, err = git(source, "rev-parse", "--verify", "--end-of-options", "refs/remotes/origin/"+ref+"^{commit}")
 	}
 	if err != nil {

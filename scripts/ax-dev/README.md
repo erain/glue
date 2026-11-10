@@ -11,6 +11,7 @@ Reproducible single-host [kind](https://kind.sigs.k8s.io/) cluster running pinne
 | `scripts/ax-dev/build-task-image.sh` | `make ax-dev-task-image` | Build `deploy/ax/task-image/Dockerfile` from `ax-task-runner` digest, push `localhost:5001/glue-task`, record `GLUE_TASK_IMAGE` in `${STATE}/images.env` |
 | `scripts/ax-dev/status.sh` | `make ax-dev-status` | Verify `ate-system`, `ax-system`, and `ax-workers` (`GLUE_AX_WORKERS`, default 4) are Ready |
 | `scripts/ax-dev/smoke.sh` | `make ax-dev-smoke` | Run the 6-assertion platform smoke test (apply/resume/ssh, default-deny egress, `tls_passthrough` egress, `kubectl ate proxy` ingress on `:8080`, suspend/resume `/workspace` durability, delete) |
+| `scripts/ax-dev/manual-job.sh` | `make ax-dev-manual-job ARGS="..."` | Run an end-to-end Glue coding job inside an AX `Task` (`Workspace`, `Task`, `EgressPolicy`, `ax resume`, `kubectl ate proxy`, golden boot check, `glue job start/attach/result`; see [`docs/runbooks/ax-manual-job.md`](../../docs/runbooks/ax-manual-job.md)) |
 | `scripts/ax-dev/down.sh` | `make ax-dev-down` | Tear down `glue-ax`, `kind-registry`, and any leftover port-forwards/tunnels |
 
 Cached sources (`substrate`, `ax`), host binaries (`kind`, `kubectl-ate`, `ax`), `kubeconfig`, and `images.env` live under `STATE=${XDG_CACHE_HOME:-~/.cache}/glue/ax-dev`. Source `scripts/ax-dev/versions.env` to add `${STATE}/bin` and `KUBECONFIG` to your shell.
