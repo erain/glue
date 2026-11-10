@@ -23,6 +23,7 @@ type execution struct {
 	resume                  *glue.GoalRecord
 	ctx                     context.Context
 	pending                 map[string]*pendingDecision
+	allows                  map[string]glue.RememberScope
 	stopTimer               func() bool
 	finished, budgetExpired bool
 	mu                      sync.Mutex

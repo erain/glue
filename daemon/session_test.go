@@ -118,6 +118,27 @@ func TestCookieAuthRequiresCSRFOnPost(t *testing.T) {
 	if wOK.Code != http.StatusCreated {
 		t.Fatalf("POST /v1/jobs with valid CSRF = %d: %s", wOK.Code, wOK.Body.String())
 	}
+	var created struct {
+		Job jobs.Job `json:"job"`
+	}
+	if err := json.Unmarshal(wOK.Body.Bytes(), &created); err != nil || created.Job.ID == "" {
+		t.Fatalf("decode created job: %v", err)
+	}
+	wDelNoCSRF := httptest.NewRecorder()
+	reqDelNoCSRF := httptest.NewRequest(http.MethodDelete, "/v1/jobs/"+created.Job.ID, nil)
+	reqDelNoCSRF.AddCookie(cookie)
+	s.ServeHTTP(wDelNoCSRF, reqDelNoCSRF)
+	if wDelNoCSRF.Code != http.StatusForbidden {
+		t.Fatalf("DELETE /v1/jobs/%s without CSRF = %d, want 403", created.Job.ID, wDelNoCSRF.Code)
+	}
+	wDelOK := httptest.NewRecorder()
+	reqDelOK := httptest.NewRequest(http.MethodDelete, "/v1/jobs/"+created.Job.ID, nil)
+	reqDelOK.AddCookie(cookie)
+	reqDelOK.Header.Set(csrfHeaderName, sess.CSRFToken)
+	s.ServeHTTP(wDelOK, reqDelOK)
+	if wDelOK.Code != http.StatusAccepted {
+		t.Fatalf("DELETE /v1/jobs/%s with CSRF = %d, want 202", created.Job.ID, wDelOK.Code)
+	}
 }
 
 func TestBearerStillWorks(t *testing.T) {
