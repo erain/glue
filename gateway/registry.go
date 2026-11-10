@@ -58,6 +58,9 @@ func OpenRegistry(stateDir string) (*Registry, error) {
 		return nil, errors.New("gateway: stateDir is required")
 	}
 	store, err := eventlog.Open(stateDir, registrySchema)
+	if err == nil {
+		store.DB.SetMaxOpenConns(1)
+	}
 	return &Registry{store: store}, err
 }
 func (r *Registry) Close() error { return r.store.DB.Close() }
@@ -126,27 +129,36 @@ func (r *Registry) SaveResult(ctx context.Context, id string, result jobs.Result
 	res, err := r.store.DB.ExecContext(ctx,
 		"UPDATE jobs SET result_json=?,status=CASE WHEN ? != '' THEN ? ELSE status END,updated_at=? WHERE id=?",
 		mustJSON(result), result.Status, result.Status, fmtTime(time.Time{}), id)
-	if n, _ := res.RowsAffected(); err == nil && n == 0 {
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
 	}
-	return err
+	return nil
 }
 func (r *Registry) AppendEvent(ctx context.Context, jobID string, ev eventlog.Envelope) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ev.RunID = jobID
 	ins, err := r.store.DB.ExecContext(ctx, "INSERT OR IGNORE INTO events(run_id,seq,payload_json) VALUES(?,?,?)", jobID, ev.Seq, mustJSON(ev))
-	if affected, _ := ins.RowsAffected(); err != nil || affected == 0 {
+	if err != nil {
 		return false, err
+	}
+	if affected, _ := ins.RowsAffected(); affected == 0 {
+		return false, nil
 	}
 	st := statusFromEvent(ev)
 	res, err := r.store.DB.ExecContext(ctx,
 		"UPDATE jobs SET status=CASE WHEN ?='' THEN status ELSE ? END,last_seq=MAX(last_seq,?),updated_at=? WHERE id=?",
 		st, st, ev.Seq, fmtTime(ev.Time), jobID)
-	if n, _ := res.RowsAffected(); err == nil && n == 0 {
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return false, sql.ErrNoRows
 	}
-	return err == nil, err
+	return true, nil
 }
 func statusFromEvent(ev eventlog.Envelope) jobs.Status {
 	if ev.Type == "job_done" {
