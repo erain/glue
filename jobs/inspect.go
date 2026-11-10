@@ -33,6 +33,7 @@ type Detail struct {
 	Checklist              []glue.ChecklistItem `json:"checklist"`
 	Usage                  glue.Usage           `json:"usage"`
 	PendingPermissionCount int                  `json:"pending_permission_count"`
+	Credentials            string               `json:"credentials,omitempty"`
 }
 
 // PermissionInfo is a request and its latest durable outcome.
@@ -50,7 +51,7 @@ func (m *Manager) Query(ctx context.Context, f Filter) ([]Job, error) {
 		return nil, invalid("limit", "must be between 0 and 1000")
 	}
 	switch f.Status {
-	case "", Created, Running, WaitingForInput, Suspended, Achieved, Blocked, BudgetLimited, MaxIterations, Errored, Canceled, Interrupted:
+	case "", Created, Running, WaitingForInput, WaitingForCredentials, Suspended, Achieved, Blocked, BudgetLimited, MaxIterations, Errored, Canceled, Interrupted:
 	default:
 		return nil, invalid("status", "unknown status")
 	}
@@ -209,6 +210,12 @@ func decode(value, target any) error {
 // Inspect reads job metadata and progress from one consistent snapshot.
 func (m *Manager) Inspect(ctx context.Context, id string) (Detail, error) {
 	detail, _, err := m.snapshot(ctx, id)
+	if err == nil {
+		detail.Credentials = "absent"
+		if m.HasCredentials() {
+			detail.Credentials = "present"
+		}
+	}
 	return detail, err
 }
 

@@ -295,3 +295,24 @@ func TestDaemonPermissionPolicyAutoEvents(t *testing.T) {
 		t.Fatalf("permission_auto events = %+v", autos)
 	}
 }
+
+func TestCredentialsEndpointRequiresAuth(t *testing.T) {
+	srv, ts, _ := jobHTTPFixture(t, &turnProvider{})
+	body := `{"github_token":"ghp_AuthEndpointToken123456","provider_keys":{"GEMINI_API_KEY":"AIzaSyAuthEndpointKey123456"}}`
+	for _, tok := range []string{"", "wrong-token"} {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/credentials", strings.NewReader(body))
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("token=%q resp=%v err=%v", tok, resp, err)
+		}
+		resp.Body.Close()
+	}
+	jobHTTP(t, srv, http.MethodGet, "/v1/credentials", "", http.StatusMethodNotAllowed)
+	jobHTTP(t, srv, http.MethodPost, "/v1/credentials", body, http.StatusOK)
+	if !srv.jobs.HasCredentials() {
+		t.Fatal("expected HasCredentials() = true")
+	}
+}

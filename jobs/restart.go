@@ -24,7 +24,7 @@ func (m *Manager) recoverJobs() error {
 	}
 	var plans []recovery
 	for _, job := range all {
-		if job.Status != Running && job.Status != WaitingForInput {
+		if job.Status != Running && job.Status != WaitingForInput && job.Status != WaitingForCredentials {
 			continue
 		}
 		plan, err := m.recoverJob(ctx, job)
@@ -103,7 +103,11 @@ func (m *Manager) recoverJob(ctx context.Context, job Job) (*recovery, error) {
 			}
 		}
 		if err == nil {
-			err = m.appendEvent(tx, job.ID, "job_resumed", map[string]any{"from_iteration": rec.Iterations + 1, "reason": "restart"}, "", nil, Running)
+			resumedStatus := Running
+			if m.missingCredentials(job.Spec, false) {
+				resumedStatus = WaitingForCredentials
+			}
+			err = m.appendEvent(tx, job.ID, "job_resumed", map[string]any{"from_iteration": rec.Iterations + 1, "reason": "restart"}, "", nil, resumedStatus)
 		}
 		if err == nil {
 			err = tx.Commit()

@@ -16,6 +16,15 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `POST /v1/credentials` on `glue serve` to hold `github_token` and
+  `provider_keys` in memory only, wait in `waiting_for_credentials` (and report
+  `credentials: "absent" | "present"` in `GET /v1/jobs/{id}`) until required
+  credentials arrive, wire in-memory credentials into model providers, `draft_pr`
+  delivery, and `--shell-env-secret-allow`, and redact known credential values
+  and common token shapes (`ghp_…`, `github_pat_…`, `gho_…`, `AIza…`, `sk-…`)
+  from events, tool outputs, sessions, and results (`jobs.Credentials`,
+  `jobs.WaitingForCredentials`, `jobclient.Client.PushCredentials`).
+
 - Persist job completion results in the `glue-gateway` SQLite registry before
   any AX task deletion, automatically delete terminal AX Tasks, Workspaces, and
   EgressPolicies after `retain_tasks` (default `168h` or `GLUE_RETAIN_TASKS`)

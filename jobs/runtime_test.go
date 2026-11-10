@@ -56,7 +56,7 @@ func waitJob(t *testing.T, m *Manager, id string) Job {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if job.Status != Created && job.Status != Running && job.Status != WaitingForInput {
+		if job.Status != Created && job.Status != Running && job.Status != WaitingForInput && job.Status != WaitingForCredentials {
 			return job
 		}
 		if time.Now().After(deadline) {

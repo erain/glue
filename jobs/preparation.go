@@ -38,7 +38,11 @@ func (m *Manager) startIntent(ctx context.Context, job Job) error {
 	if _, err := tx.ExecContext(ctx, "UPDATE jobs SET workspace=?,goal_id=? WHERE id=?", dir, job.ID, job.ID); err != nil {
 		return err
 	}
-	if err := m.appendEvent(tx, job.ID, "job_started", nil, "", nil, Running); err != nil {
+	initialStatus := Running
+	if m.missingCredentials(job.Spec, false) {
+		initialStatus = WaitingForCredentials
+	}
+	if err := m.appendEvent(tx, job.ID, "job_started", nil, "", nil, initialStatus); err != nil {
 		return err
 	}
 	return tx.Commit()

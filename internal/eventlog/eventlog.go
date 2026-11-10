@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/erain/glue/internal/redact"
 	_ "modernc.org/sqlite"
 )
 
@@ -59,6 +60,7 @@ func Insert(tx *sql.Tx, e Envelope) error {
 	if err != nil {
 		return err
 	}
+	data = redact.Bytes(data)
 	_, err = tx.Exec("INSERT INTO events(run_id,seq,payload_json) VALUES(?,?,?)", e.RunID, e.Seq, string(data))
 	return err
 }

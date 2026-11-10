@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/redact"
 )
 
 // Store persists Glue sessions as local JSON files.
@@ -88,7 +89,7 @@ func (s *Store) Save(_ context.Context, id string, state glue.SessionState) erro
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	data = append(redact.Bytes(data), '\n')
 
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {

@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/erain/glue/internal/redact"
 )
 
 // DefaultExecMaxOutputBytes is the per-stream output cap used by
@@ -300,6 +302,9 @@ func (w *limitedOutput) FinishSpool() string {
 	if w.omitted == 0 || w.spoolBroken {
 		_ = os.Remove(path)
 		return ""
+	}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = os.WriteFile(path, redact.Bytes(raw), 0o600)
 	}
 	return path
 }

@@ -47,6 +47,25 @@ func jobMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
 	return false
 }
+func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
+	if s.jobs == nil {
+		writeError(w, http.StatusNotFound, "not_found", "jobs are not enabled", false)
+		return
+	}
+	if !jobMethod(w, r, http.MethodPost) {
+		return
+	}
+	var creds jobs.Credentials
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&creds) != nil || dec.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid credentials body", false)
+		return
+	}
+	s.jobs.SetCredentials(creds)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	if s.jobs == nil {
 		writeError(w, http.StatusNotFound, "not_found", "jobs are not enabled", false)
@@ -90,14 +109,14 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			if !jobMethod(w, r, http.MethodPost) {
 				return
 			}
-			if job.Status != jobs.Running && job.Status != jobs.WaitingForInput {
+			if job.Status != jobs.Running && job.Status != jobs.WaitingForInput && job.Status != jobs.WaitingForCredentials {
 				if err := s.jobs.Start(r.Context(), id); err != nil {
 					current, getErr := s.jobs.Get(r.Context(), id)
 					if getErr != nil {
 						jobError(w, getErr)
 						return
 					}
-					if !errors.Is(err, jobs.ErrConflict) || (current.Status != jobs.Running && current.Status != jobs.WaitingForInput) {
+					if !errors.Is(err, jobs.ErrConflict) || (current.Status != jobs.Running && current.Status != jobs.WaitingForInput && current.Status != jobs.WaitingForCredentials) {
 						jobError(w, err)
 						return
 					}
@@ -160,7 +179,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 				for i, e := range stored {
 					events[i] = EventEnvelope(e)
 				}
-				done := current.Status != jobs.Created && current.Status != jobs.Running && current.Status != jobs.WaitingForInput
+				done := current.Status != jobs.Created && current.Status != jobs.Running && current.Status != jobs.WaitingForInput && current.Status != jobs.WaitingForCredentials
 				return eventBatch{events: events, done: done}, nil
 			})
 			return
