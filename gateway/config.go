@@ -1,0 +1,82 @@
+// Copyright (c) 2026 Yu YI. Licensed under the MIT License.
+
+// Package gateway implements the glue-gateway job registry, backend routing,
+// event stream proxy, and browser UI host.
+package gateway
+
+import (
+	"bytes"
+	"cmp"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// AuthConfig configures client authentication for glue-gateway.
+type AuthConfig struct{ Mode, Token string }
+
+// BackendConfig configures one upstream job execution backend.
+type BackendConfig struct {
+	Name, Type string
+	URL        string `yaml:"url" json:"url,omitempty"`
+	Token      string `yaml:"token" json:"-"`
+}
+
+// Config is the top-level YAML configuration for glue-gateway.
+type Config struct {
+	Listen         string          `yaml:"listen"`
+	PublicURL      string          `yaml:"public_url"`
+	StateDir       string          `yaml:"state_dir"`
+	Auth           AuthConfig      `yaml:"auth"`
+	Backends       []BackendConfig `yaml:"backends"`
+	DefaultBackend string          `yaml:"default_backend"`
+}
+
+// LoadConfig reads and validates a YAML gateway configuration file.
+func LoadConfig(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("gateway: read config %s: %w", path, err)
+	}
+	return ParseConfig(data)
+}
+func ParseConfig(data []byte) (Config, error) {
+	var cfg Config
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return Config{}, fmt.Errorf("gateway: parse config: %w", err)
+	}
+	return cfg.Validate()
+}
+func (cfg Config) Validate() (Config, error) {
+	cfg.Listen = cmp.Or(strings.TrimSpace(cfg.Listen), "127.0.0.1:8800")
+	cfg.PublicURL = strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/")
+	cfg.StateDir = strings.TrimSpace(cfg.StateDir)
+	cfg.Auth.Mode = cmp.Or(strings.TrimSpace(cfg.Auth.Mode), "dev-token")
+	cfg.Auth.Token = cmp.Or(strings.TrimSpace(cfg.Auth.Token), strings.TrimSpace(os.Getenv("GLUE_GATEWAY_TOKEN")))
+	if cfg.StateDir == "" || cfg.Auth.Mode != "dev-token" || cfg.Auth.Token == "" || len(cfg.Backends) == 0 {
+		return Config{}, fmt.Errorf("gateway: invalid config (state_dir=%q, auth.mode=%q, has_token=%v, backends=%d)", cfg.StateDir, cfg.Auth.Mode, cfg.Auth.Token != "", len(cfg.Backends))
+	}
+	seen := make(map[string]bool, len(cfg.Backends))
+	for i := range cfg.Backends {
+		b := &cfg.Backends[i]
+		b.Name, b.Type = strings.TrimSpace(b.Name), strings.TrimSpace(b.Type)
+		b.URL, b.Token = strings.TrimRight(strings.TrimSpace(b.URL), "/"), strings.TrimSpace(b.Token)
+		if b.Name == "" || seen[b.Name] || b.Type != "local" || b.URL == "" || b.Token == "" {
+			return Config{}, fmt.Errorf("gateway: invalid backend %q (duplicate=%v, type=%q)", b.Name, seen[b.Name], b.Type)
+		}
+		seen[b.Name] = true
+	}
+	if cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend); cfg.DefaultBackend == "" && len(cfg.Backends) == 1 {
+		cfg.DefaultBackend = cfg.Backends[0].Name
+	}
+	if !seen[cfg.DefaultBackend] {
+		return Config{}, fmt.Errorf("gateway: default_backend %q does not match any configured backend", cfg.DefaultBackend)
+	}
+	return cfg, nil
+}

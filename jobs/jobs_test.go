@@ -42,6 +42,14 @@ func TestCreateHasNoSideEffects(t *testing.T) {
 	if job.Spec.Provider != "gemini" || job.Spec.Model != "gemini-3.8-flash" || job.Spec.Delivery != "none" {
 		t.Fatal(job.Spec)
 	}
+	if explicit, err := m.Create(context.Background(), Spec{ID: "job-0123456789ab", Objective: "explicit id", Repo: RepoSpec{URL: "https://example.invalid/repo.git"}}); err != nil || explicit.ID != "job-0123456789ab" || explicit.Spec.ID != "" {
+		t.Fatalf("explicit job=%+v err=%v", explicit, err)
+	}
+	for _, badID := range []string{"job-0123456789ab", "bad-id"} {
+		if _, err := m.Create(context.Background(), Spec{ID: badID, Objective: "bad", Repo: RepoSpec{URL: "https://example.invalid/repo.git"}}); err == nil {
+			t.Fatalf("expected error for id %q", badID)
+		}
+	}
 }
 func TestCreatedJobsSurviveManagerRestart(t *testing.T) {
 	dir := t.TempDir()

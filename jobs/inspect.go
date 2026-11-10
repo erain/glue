@@ -109,7 +109,12 @@ func (m *Manager) snapshot(ctx context.Context, id string) (Detail, []Permission
 	if err := tx.Commit(); err != nil {
 		return detail, nil, err
 	}
-	detail = Detail{Job: job, Checklist: []glue.ChecklistItem{}}
+	return SummarizeEvents(job, events)
+}
+
+// SummarizeEvents folds ordered job events into a Detail and permission history.
+func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionInfo, error) {
+	detail := Detail{Job: job, Checklist: []glue.ChecklistItem{}}
 	permissions := []PermissionInfo{}
 	index := map[string]int{}
 	for _, event := range events {

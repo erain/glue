@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add the nested `gateway` module (`Config` and SQLite `Registry`) plus
+  caller-supplied job IDs (`jobs.Spec.ID`, `jobs.NewID`, `jobs.SummarizeEvents`).
+
 - Add `scripts/ax-dev/manual-job.sh` (`make ax-dev-manual-job`) and
   `docs/runbooks/ax-manual-job.md` to run and verify a Glue coding job end to
   end inside an AX `Task`, configure system `core.askPass`
