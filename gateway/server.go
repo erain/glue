@@ -5,16 +5,16 @@ package gateway
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +27,22 @@ import (
 	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/webui"
 )
+
+// Route describes one HTTP route registered on the gateway Server.
+type Route struct {
+	Method, Path string
+	Public       bool
+}
+
+var gatewayRoutes = []Route{
+	{http.MethodGet, "/", true}, {http.MethodGet, "/index.html", true}, {http.MethodGet, "/static/app.js", true}, {http.MethodGet, "/static/api.js", true}, {http.MethodGet, "/static/app.css", true},
+	{http.MethodGet, "/healthz", true}, {http.MethodGet, "/auth/github/login", true}, {http.MethodGet, "/auth/github/callback", true},
+	{http.MethodGet, "/v1/health", false}, {http.MethodGet, "/v1/session", false}, {http.MethodPost, "/v1/session/login", false}, {http.MethodPost, "/v1/session/logout", false},
+	{http.MethodGet, "/v1/backends", false}, {http.MethodGet, "/v1/diagnostics", false}, {http.MethodGet, "/v1/jobs", false}, {http.MethodPost, "/v1/jobs", false},
+	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
+	{http.MethodGet, "/v1/jobs/{id}/permissions", false}, {http.MethodPost, "/v1/jobs/{id}/permissions/{permID}/decision", false},
+	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
+}
 
 // Server serves the glue-gateway HTTP API, upstream SSE proxy, and browser UI.
 type Server struct {
@@ -43,8 +59,12 @@ type Server struct {
 	waiting  map[string]time.Time
 	remap    map[string]string
 	orphans  []string
+	rateHits map[string][]time.Time
 	notify   chan struct{}
 }
+
+// Routes returns a copy of all HTTP routes registered on the gateway Server.
+func (s *Server) Routes() []Route { return slices.Clone(gatewayRoutes) }
 
 // NewServer validates configuration, opens the registry, and initializes backends.
 func NewServer(cfg Config) (*Server, error) {
@@ -70,7 +90,7 @@ func NewServer(cfg Config) (*Server, error) {
 		name := b.Name
 		axb, err := ax.NewBackend(ax.Options{
 			Atespace: b.Atespace, Image: b.Image, CPU: b.Resources.CPU, Memory: b.Resources.Memory, EgressHosts: b.EgressHosts,
-			AXServer: b.AXServer, Substrate: b.Substrate, Router: b.Router, CertFile: b.CertFile, CAFile: b.CAFile, TokenFile: b.TokenFile, Secret: cfg.Auth.Token, Credentials: cfg.Credentials,
+			AXServer: b.AXServer, Substrate: b.Substrate, Router: b.Router, CertFile: b.CertFile, CAFile: b.CAFile, TokenFile: b.TokenFile, Secret: cmp.Or(cfg.Auth.Token, cfg.Auth.ClientSecret), Credentials: cfg.Credentials,
 			GetJob: func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error) {
 				r, e := reg.GetJob(ctx, id)
 				return r.Spec, r.Status, e
@@ -88,7 +108,7 @@ func NewServer(cfg Config) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg: cfg, reg: reg, backends: backends, ctx: ctx, cancel: cancel, watchers: map[string]bool{},
-		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, orphans: []string{}, notify: make(chan struct{}),
+		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, orphans: []string{}, rateHits: map[string][]time.Time{}, notify: make(chan struct{}),
 	}
 	s.reconcileOrphans(ctx)
 	s.wg.Go(s.retentionLoop)
@@ -332,25 +352,112 @@ func respond(w http.ResponseWriter, status int, v any, err error) {
 		writeErr(w, http.StatusBadGateway, "bad_gateway", err.Error())
 	}
 }
-func (s *Server) tokenHash(prefix string) string {
-	sum := sha256.Sum256([]byte(prefix + s.cfg.Auth.Token))
-	return hex.EncodeToString(sum[:])
+func eqToken(a, b string) bool {
+	return a != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
-func eqToken(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
-func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
-	if got := r.Header.Get("Authorization"); got != "" {
-		if eqToken(got, "Bearer "+s.cfg.Auth.Token) {
-			return true
-		}
-	} else if c, err := r.Cookie("glue_session"); err == nil && eqToken(c.Value, s.tokenHash("glue-session-v1:")) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || eqToken(r.Header.Get("X-Glue-CSRF"), s.tokenHash("glue-csrf-v1:")) {
-			return true
-		}
-		writeErr(w, http.StatusForbidden, "forbidden", "missing or invalid CSRF token")
+func (s *Server) isAllowedLogin(login string) bool {
+	return s.cfg.Auth.Mode != "github" || slices.ContainsFunc(s.cfg.Auth.AllowedLogins, func(a string) bool { return strings.EqualFold(a, login) })
+}
+func (s *Server) allowAuthRate(r *http.Request) bool {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := cmp.Or(host, r.RemoteAddr, "local")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.cfg.Now().UTC()
+	hits := slices.DeleteFunc(s.rateHits[ip], func(t time.Time) bool { return now.Sub(t) >= time.Minute })
+	if len(hits) >= cmp.Or(s.cfg.Auth.RateLimitPerMin, DefaultAuthRateLimit) {
+		s.rateHits[ip] = hits
 		return false
 	}
-	writeErr(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
-	return false
+	s.rateHits[ip] = append(hits, now)
+	return true
+}
+func (s *Server) callbackURL(r *http.Request) string {
+	if s.cfg.PublicURL != "" {
+		return s.cfg.PublicURL + "/auth/github/callback"
+	}
+	return "http://" + cmp.Or(r.Host, "127.0.0.1") + "/auth/github/callback"
+}
+func setCookie(w http.ResponseWriter, name, val string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+}
+func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAuthRate(r) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication requests")
+		return
+	}
+	state := randHex(32)
+	setCookie(w, "glue_oauth_state", state, 600)
+	q := url.Values{"client_id": {s.cfg.Auth.ClientID}, "redirect_uri": {s.callbackURL(r)}, "state": {state}}
+	http.Redirect(w, r, s.cfg.Auth.AuthorizeURL+"?"+q.Encode(), http.StatusFound)
+}
+func fetchJSON(ctx context.Context, method, rawURL, auth, body string, dst any) error {
+	req, _ := http.NewRequestWithContext(ctx, method, rawURL, strings.NewReader(body))
+	req.Header.Set("Accept", "application/json")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", "Bearer "+auth)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(dst)
+}
+func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAuthRate(r) {
+		writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication requests")
+		return
+	}
+	state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
+	c, err := r.Cookie("glue_oauth_state")
+	setCookie(w, "glue_oauth_state", "", -1)
+	if err != nil || !eqToken(state, c.Value) || code == "" {
+		writeErr(w, http.StatusBadRequest, "invalid_oauth_state", "missing or mismatched OAuth state")
+		return
+	}
+	form := url.Values{"client_id": {s.cfg.Auth.ClientID}, "client_secret": {s.cfg.Auth.ClientSecret}, "code": {code}, "redirect_uri": {s.callbackURL(r)}, "state": {state}}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	var user struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+	}
+	if fetchJSON(r.Context(), http.MethodPost, s.cfg.Auth.TokenURL, "", form.Encode(), &tok) != nil || tok.AccessToken == "" || fetchJSON(r.Context(), http.MethodGet, s.cfg.Auth.UserURL, tok.AccessToken, "", &user) != nil || user.Login == "" || user.ID <= 0 {
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "OAuth exchange or user fetch failed")
+		return
+	}
+	if !s.isAllowedLogin(user.Login) {
+		writeErr(w, http.StatusForbidden, "forbidden", "GitHub login is not in allowed_logins")
+		return
+	}
+	if sess, err := s.reg.CreateSession(r.Context(), user.Login, user.ID, s.cfg.Auth.SessionAbsoluteTTL); err == nil {
+		setCookie(w, "glue_session", sess.ID, int(s.cfg.Auth.SessionAbsoluteTTL.Seconds()))
+		http.Redirect(w, r, "/", http.StatusFound)
+	} else {
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+	}
+}
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Session, bool) {
+	if got := r.Header.Get("Authorization"); got != "" {
+		if s.cfg.Auth.Mode == "dev-token" && eqToken(got, "Bearer "+s.cfg.Auth.Token) {
+			return Session{Login: "dev-token"}, true
+		}
+	} else if c, err := r.Cookie("glue_session"); err == nil {
+		if sess, err := s.reg.AuthenticateSession(r.Context(), c.Value, s.cfg.Auth.SessionIdleTTL); err == nil && s.isAllowedLogin(sess.Login) {
+			if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || eqToken(r.Header.Get("X-Glue-CSRF"), sess.CSRFToken) {
+				return sess, true
+			}
+			writeErr(w, http.StatusForbidden, "forbidden", "missing or invalid CSRF token")
+			return Session{}, false
+		}
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"auth_mode": s.cfg.Auth.Mode, "error": map[string]any{"code": "unauthorized", "message": "missing or invalid credentials", "retryable": false}})
+	return Session{}, false
 }
 
 // ServeHTTP routes browser UI, session, health, backend list, and job requests.
@@ -359,24 +466,57 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		webui.Handler().ServeHTTP(w, r)
 		return
 	}
-	route := r.Method + " " + r.URL.Path
-	if route != "GET /v1/health" && route != "POST /v1/session/login" && !s.authorize(w, r) {
+	switch route := r.Method + " " + r.URL.Path; route {
+	case "GET /healthz":
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
-	}
-	switch route {
+	case "GET /auth/github/login":
+		s.handleGitHubLogin(w, r)
+		return
+	case "GET /auth/github/callback":
+		s.handleGitHubCallback(w, r)
+		return
 	case "GET /v1/health":
+		if s.cfg.Auth.Mode != "dev-token" {
+			if _, ok := s.authorize(w, r); !ok {
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": 2})
 		return
 	case "POST /v1/session/login":
+		if !s.allowAuthRate(r) {
+			writeErr(w, http.StatusTooManyRequests, "rate_limited", "too many authentication requests")
+			return
+		}
 		var body struct{ Token string }
-		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body) != nil || !eqToken(body.Token, s.cfg.Auth.Token) {
+		if s.cfg.Auth.Mode != "dev-token" || json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body) != nil || !eqToken(body.Token, s.cfg.Auth.Token) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid token")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "glue_session", Value: s.tokenHash("glue-session-v1:"), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		fallthrough
+		sess, err := s.reg.CreateSession(r.Context(), "dev-token", 0, s.cfg.Auth.SessionAbsoluteTTL)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "glue_session", Value: sess.ID, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: int(s.cfg.Auth.SessionAbsoluteTTL.Seconds())})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "auth_mode": s.cfg.Auth.Mode, "login": sess.Login, "csrf_token": sess.CSRFToken})
+		return
+	}
+	sess, ok := s.authorize(w, r)
+	if !ok {
+		return
+	}
+	switch r.Method + " " + r.URL.Path {
 	case "GET /v1/session":
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "csrf_token": s.tokenHash("glue-csrf-v1:")})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "auth_mode": s.cfg.Auth.Mode, "login": sess.Login, "github_id": sess.GitHubID, "csrf_token": sess.CSRFToken})
+		return
+	case "POST /v1/session/logout":
+		if c, err := r.Cookie("glue_session"); err == nil {
+			_ = s.reg.DeleteSession(r.Context(), c.Value)
+		}
+		http.SetCookie(w, &http.Cookie{Name: "glue_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	case "GET /v1/backends":
 		writeJSON(w, http.StatusOK, map[string]any{"backends": s.cfg.Backends, "default_backend": s.cfg.DefaultBackend})
@@ -403,7 +543,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		created, err := b.Create(r.Context(), cmp.Or(strings.TrimSpace(spec.ID), id), spec)
 		_, isAX := b.(*ax.Backend)
 		if err == nil && !isAX {
-			_, err = s.reg.CreateJob(r.Context(), Record{ID: created.ID, Backend: name, BackendRef: created.ID, Owner: "dev-token", Spec: created.Spec, Status: created.Status, CreatedAt: created.CreatedAt, UpdatedAt: created.UpdatedAt})
+			_, err = s.reg.CreateJob(r.Context(), Record{ID: created.ID, Backend: name, BackendRef: created.ID, Owner: sess.Login, Spec: created.Spec, Status: created.Status, CreatedAt: created.CreatedAt, UpdatedAt: created.UpdatedAt})
 		}
 		if err == nil {
 			if start, _ := strconv.ParseBool(r.URL.Query().Get("start")); start {

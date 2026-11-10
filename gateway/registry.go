@@ -5,7 +5,9 @@ package gateway
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,8 +21,9 @@ import (
 )
 
 const (
-	registrySchema = `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, backend TEXT NOT NULL, backend_ref TEXT NOT NULL, owner TEXT NOT NULL, spec_json TEXT NOT NULL, status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', task_deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL, upstream_seq INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL);`
-	jobColumns     = "id,backend,backend_ref,owner,spec_json,status,status_reason,task_deleted,created_at,updated_at,last_seq,upstream_seq,result_json"
+	registrySchema = `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, backend TEXT NOT NULL, backend_ref TEXT NOT NULL, owner TEXT NOT NULL, spec_json TEXT NOT NULL, status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', task_deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL, upstream_seq INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, login TEXT NOT NULL, github_id INTEGER NOT NULL, csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL);`
+	jobColumns = "id,backend,backend_ref,owner,spec_json,status,status_reason,task_deleted,created_at,updated_at,last_seq,upstream_seq,result_json"
 )
 
 // SubmitUnknown is recorded when an AX CreateTask call fails with an ambiguous error.
@@ -253,4 +256,52 @@ func (r *Registry) Permissions(ctx context.Context, id, state string) ([]jobs.Pe
 		return all, err
 	}
 	return slices.DeleteFunc(all, func(p jobs.PermissionInfo) bool { return p.State != state }), nil
+}
+
+// Session is a server-side browser session row in the gateway SQLite registry.
+type Session struct {
+	ID, Login, CSRFToken             string
+	GitHubID                         int64
+	CreatedAt, LastSeenAt, ExpiresAt time.Time
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+func (r *Registry) CreateSession(ctx context.Context, login string, githubID int64, absTTL time.Duration) (Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now().UTC()
+	s := Session{ID: randHex(32), Login: login, GitHubID: githubID, CSRFToken: randHex(32), CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(cmp.Or(absTTL, DefaultSessionAbsoluteTTL))}
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO sessions(id,login,github_id,csrf_token,created_at,last_seen_at,expires_at) VALUES(?,?,?,?,?,?,?)",
+		s.ID, s.Login, s.GitHubID, s.CSRFToken, r.fmtTime(s.CreatedAt), r.fmtTime(s.LastSeenAt), r.fmtTime(s.ExpiresAt))
+	return s, err
+}
+func (r *Registry) AuthenticateSession(ctx context.Context, id string, idleTTL time.Duration) (Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var s Session
+	var created, lastSeen, expires string
+	if err := r.store.DB.QueryRowContext(ctx, "SELECT id,login,github_id,csrf_token,created_at,last_seen_at,expires_at FROM sessions WHERE id=?", id).Scan(&s.ID, &s.Login, &s.GitHubID, &s.CSRFToken, &created, &lastSeen, &expires); err != nil {
+		return Session{}, err
+	}
+	s.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	s.LastSeenAt, _ = time.Parse(time.RFC3339Nano, lastSeen)
+	s.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
+	now := r.now().UTC()
+	if !now.Before(s.ExpiresAt) || !now.Before(s.LastSeenAt.Add(cmp.Or(idleTTL, DefaultSessionIdleTTL))) {
+		_, _ = r.store.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id=?", id)
+		return Session{}, sql.ErrNoRows
+	}
+	s.LastSeenAt = now
+	_, err := r.store.DB.ExecContext(ctx, "UPDATE sessions SET last_seen_at=? WHERE id=?", r.fmtTime(now), id)
+	return s, err
+}
+func (r *Registry) DeleteSession(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := r.store.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id=?", id)
+	return err
 }
