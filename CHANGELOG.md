@@ -16,6 +16,17 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Suspend AX tasks while jobs wait for human input (`suspend_after` default
+  `2m`, or `GLUE_SUSPEND_AFTER`, when no live SSE viewer is attached) and when
+  jobs finish (`suspend_on_finish` default `true`), serve read-only inspection
+  views (`GET /v1/jobs`, `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/permissions`,
+  `GET /v1/jobs/{id}/result`, and cached `/events`) from the gateway SQLite
+  registry without waking suspended tasks, resume tasks on demand (`ResumeTask`
+  + `WorkspaceReady`) with `Last-Event-ID` reconnect and re-issued permission ID
+  remapping (`original_permission_id` + `permission_id`), surface the
+  `"Suspended – waiting for you"` badge and resume notice in `webui`, and add
+  `scripts/ax-dev/e2e/suspend-resume.sh`.
+
 - Add `deploy/ax/gateway/Dockerfile` and `deploy/ax/gateway/manifests.yaml` for
   running `glue-gateway` in `glue-system` with projected Substrate pod
   certificates and `ate-token` volumes, plus `scripts/ax-dev/deploy-gateway.sh`

@@ -76,6 +76,9 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - "--config=/etc/glue-gateway/config.yaml"
+          env:
+            - name: GLUE_SUSPEND_AFTER
+              value: "${GLUE_SUSPEND_AFTER}"
           envFrom:
             - secretRef:
                 name: glue-gateway-secrets
