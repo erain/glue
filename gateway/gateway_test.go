@@ -706,6 +706,73 @@ func TestAuthRateLimit(t *testing.T) {
 	}
 }
 
+func TestAPITokenCreateUseRevoke(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	_, c, csrf := oauthLogin(t, ts, cli)
+	cresp := doCookie(t, cli, http.MethodPost, ts.URL+"/v1/tokens", c, csrf, `{"name":"laptop"}`)
+	defer cresp.Body.Close()
+	var created APIToken
+	must(0, json.NewDecoder(cresp.Body).Decode(&created))
+	if cresp.StatusCode != http.StatusCreated || !strings.HasPrefix(created.Token, "glue_pat_") || created.Name != "laptop" || created.Owner != "alice" {
+		t.Fatalf("create token: status=%d tok=%+v", cresp.StatusCode, created)
+	}
+	lresp := doCookie(t, cli, http.MethodGet, ts.URL+"/v1/tokens", c, "", "")
+	defer lresp.Body.Close()
+	var listed struct{ Tokens []APIToken }
+	must(0, json.NewDecoder(lresp.Body).Decode(&listed))
+	if len(listed.Tokens) != 1 || listed.Tokens[0].ID != created.ID || listed.Tokens[0].Token != "" {
+		t.Fatalf("list tokens: %+v", listed.Tokens)
+	}
+	patCli := &jobclient.Client{BaseURL: ts.URL, Token: created.Token, HTTP: ts.Client()}
+	job := must(patCli.Submit(t.Context(), jobs.Spec{Objective: "pat test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}, false))
+	if job.ID == "" {
+		t.Fatal("expected job created with PAT")
+	}
+	if st := doCookieStatus(t, cli, http.MethodDelete, ts.URL+"/v1/tokens/"+created.ID, c, csrf, ""); st != http.StatusOK {
+		t.Fatalf("revoke status=%d", st)
+	}
+	if _, err := patCli.List(t.Context(), jobs.Filter{}); err == nil {
+		t.Fatal("expected revoked token to fail")
+	}
+}
+
+func TestTokensStoredHashed(t *testing.T) {
+	_, gw, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	_, c, csrf := oauthLogin(t, ts, cli)
+	cresp := doCookie(t, cli, http.MethodPost, ts.URL+"/v1/tokens", c, csrf, `{"name":"hashed"}`)
+	defer cresp.Body.Close()
+	var created APIToken
+	must(0, json.NewDecoder(cresp.Body).Decode(&created))
+	var storedHash string
+	must(0, gw.reg.store.DB.QueryRowContext(t.Context(), "SELECT token_hash FROM api_tokens WHERE id=?", created.ID).Scan(&storedHash))
+	if storedHash == "" || storedHash == created.Token || storedHash != hashToken(created.Token) {
+		t.Fatalf("storedHash=%q want sha256(%q)=%q", storedHash, created.Token, hashToken(created.Token))
+	}
+}
+
+func TestJobsScopedToOwner(t *testing.T) {
+	_, gw, ts, _ := newOAuthGatewayFixture(t, "alice", []string{"alice", "bob"})
+	aliceTok := must(gw.reg.CreateToken(t.Context(), "alice", "alice-cli"))
+	bobTok := must(gw.reg.CreateToken(t.Context(), "bob", "bob-cli"))
+	aliceCli := &jobclient.Client{BaseURL: ts.URL, Token: aliceTok.Token, HTTP: ts.Client()}
+	bobCli := &jobclient.Client{BaseURL: ts.URL, Token: bobTok.Token, HTTP: ts.Client()}
+	ajob := must(aliceCli.Submit(t.Context(), jobs.Spec{Objective: "alice job", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}, false))
+	bjob := must(bobCli.Submit(t.Context(), jobs.Spec{Objective: "bob job", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}, false))
+	if alist := must(aliceCli.List(t.Context(), jobs.Filter{})); len(alist) != 1 || alist[0].ID != ajob.ID {
+		t.Fatalf("alice list=%+v, want only %s", alist, ajob.ID)
+	}
+	if blist := must(bobCli.List(t.Context(), jobs.Filter{})); len(blist) != 1 || blist[0].ID != bjob.ID {
+		t.Fatalf("bob list=%+v, want only %s", blist, bjob.ID)
+	}
+	var se *jobclient.StatusError
+	if _, err := bobCli.Show(t.Context(), ajob.ID); !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		t.Fatalf("bob Show(alice job) err=%v, want 404", err)
+	}
+	if err := bobCli.Cancel(t.Context(), ajob.ID); !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		t.Fatalf("bob Cancel(alice job) err=%v, want 404", err)
+	}
+}
+
 func TestUnauthenticatedRouteAllowlist(t *testing.T) {
 	_, gw, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
 	allowlist := map[string]bool{

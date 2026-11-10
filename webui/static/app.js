@@ -1,5 +1,5 @@
-import { fetchSession, login, getCSRFToken, setUnauthorizedHandler, apiRequest, apiPost, apiDelete } from "./api.js";
-export { fetchSession, login, getCSRFToken, apiRequest, apiPost, apiDelete };
+import { fetchSession, login, logout, getCSRFToken, getAuthMode, setUnauthorizedHandler, apiRequest, apiPost, apiDelete } from "./api.js";
+export { fetchSession, login, logout, getCSRFToken, getAuthMode, apiRequest, apiPost, apiDelete };
 
 const TRUNCATE_LIMIT = 4096;
 const REFRESH_MS = 10000;
@@ -104,9 +104,47 @@ function renderLogin() {
       }
     },
   }, input, btn, errEl);
-  root.replaceChildren(el("section", { className: "card login-card", "data-testid": "login-view" }, el("h2", {}, "Sign in to Glue"), el("p", { className: "muted" }, "Enter the daemon token to inspect and watch jobs."), form));
+  const ghLink = el("a", { className: "btn", href: "/auth/github/login", "data-testid": "github-login-btn", hidden: getAuthMode() !== "github" }, "Sign in with GitHub");
+  root.replaceChildren(el("section", { className: "card login-card", "data-testid": "login-view" }, el("h2", {}, "Sign in to Glue"), el("p", { className: "muted" }, "Sign in with GitHub or enter the daemon token to inspect and watch jobs."), ghLink, form));
 }
 setUnauthorizedHandler(renderLogin);
+
+async function renderTokensView(root) {
+  stopBackground();
+  const listEl = el("div", { className: "jobs-list", "data-testid": "tokens-list" });
+  const bannerVal = el("pre", { className: "pre-wrap", "data-testid": "token-created-value" });
+  const bannerEl = el("div", { className: "card pending-banner", "data-testid": "token-created-banner", hidden: true }, el("strong", {}, "Copy this personal API token now (shown once):"), bannerVal);
+  const nameInput = el("input", { className: "input steer-input", type: "text", name: "name", placeholder: "Token name (e.g. cli)", required: "true", "data-testid": "token-name-input" });
+  const submitBtn = el("button", { className: "btn", type: "submit", "data-testid": "token-create-submit" }, "Create token");
+  const form = el("form", { className: "steer-form", "data-testid": "token-create-form", onsubmit: async (e) => {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    try {
+      const created = await apiPost("/v1/tokens", { name: nameInput.value.trim() });
+      nameInput.value = "";
+      bannerVal.textContent = created.token || "";
+      bannerEl.hidden = false;
+      await load();
+    } finally { submitBtn.disabled = false; }
+  } }, nameInput, submitBtn);
+  root.replaceChildren(el("section", { "data-testid": "tokens-view" },
+    el("a", { className: "back-link", href: "#/", "data-testid": "back-to-jobs" }, "← All jobs"),
+    el("div", { className: "card" }, el("h2", {}, "Personal API Tokens"), form),
+    bannerEl,
+    listEl
+  ));
+  async function load() {
+    const data = await apiRequest("/v1/tokens").catch(() => ({ tokens: [] }));
+    const toks = data.tokens || [];
+    if (!toks.length) { listEl.replaceChildren(el("p", { className: "muted", "data-testid": "tokens-empty" }, "No personal API tokens.")); return; }
+    listEl.replaceChildren(...toks.map((t) => el("div", { className: "card job-row", "data-testid": "token-row", "data-token-id": t.id },
+      el("span", { className: "badge", "data-testid": "token-prefix" }, t.prefix || "glue_pat_"),
+      el("div", { className: "job-objective", "data-testid": "token-name" }, t.name || t.id),
+      el("button", { className: "btn btn-danger", type: "button", "data-testid": "token-revoke-btn", onclick: async () => { await apiDelete(`/v1/tokens/${encodeURIComponent(t.id)}`); await load(); } }, "Revoke")
+    )));
+  }
+  await load();
+}
 
 async function renderJobsList(root) {
   stopBackground();
@@ -116,8 +154,10 @@ async function renderJobsList(root) {
     onchange: (e) => { statusFilter = e.target.value; load(); },
   }, STATUSES.map((st) => el("option", { value: st, ...(st === statusFilter ? { selected: "selected" } : {}) }, st || "All statuses")));
   const refreshBtn = el("button", { className: "btn", type: "button", "data-testid": "refresh-jobs", onclick: () => load() }, "Refresh");
+  const tokensLink = el("a", { className: "btn btn-secondary", href: "#/tokens", "data-testid": "tokens-link" }, "Tokens");
+  const logoutBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "logout-btn", onclick: async () => { await logout(); renderLogin(); } }, "Sign out");
   root.replaceChildren(el("section", { "data-testid": "jobs-view" },
-    el("div", { className: "toolbar" }, el("h2", {}, "Jobs"), el("div", { className: "toolbar-controls" }, select, refreshBtn, el("span", { className: "muted", "data-testid": "auto-refresh-label" }, "Auto-refresh: 10s"))),
+    el("div", { className: "toolbar" }, el("h2", {}, "Jobs"), el("div", { className: "toolbar-controls" }, select, refreshBtn, tokensLink, logoutBtn, el("span", { className: "muted", "data-testid": "auto-refresh-label" }, "Auto-refresh: 10s"))),
     listEl
   ));
 
@@ -555,6 +595,10 @@ async function route() {
   const session = getCSRFToken() ? { authenticated: true } : await fetchSession();
   if (!session) { renderLogin(); return; }
   setSessionBanner("Authenticated");
+  if (window.location.hash === "#/tokens") {
+    await renderTokensView(root);
+    return;
+  }
   const match = (window.location.hash || "#/").match(/^#\/jobs\/([^/?#]+)/);
   if (match) {
     await renderJobDetail(root, decodeURIComponent(match[1])).catch((err) => {

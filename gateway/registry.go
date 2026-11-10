@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -22,7 +23,8 @@ import (
 
 const (
 	registrySchema = `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, backend TEXT NOT NULL, backend_ref TEXT NOT NULL, owner TEXT NOT NULL, spec_json TEXT NOT NULL, status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', task_deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL, upstream_seq INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, login TEXT NOT NULL, github_id INTEGER NOT NULL, csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL);`
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, login TEXT NOT NULL, github_id INTEGER NOT NULL, csrf_token TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT NOT NULL DEFAULT '');`
 	jobColumns = "id,backend,backend_ref,owner,spec_json,status,status_reason,task_deleted,created_at,updated_at,last_seq,upstream_seq,result_json"
 )
 
@@ -101,7 +103,7 @@ func (r *Registry) UpsertStatus(ctx context.Context, id, backend string, spec jo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.fmtTime(time.Time{})
-	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,'dev-token',?,?,'',0,?,?,0,0,'') ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", id, backend, id, mustJSON(spec), st, now, now)
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,?,?,?,'',0,?,?,0,0,'') ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", id, backend, id, cmp.Or(ownerFromCtx(ctx), "dev-token"), mustJSON(spec), st, now, now)
 	return err
 }
 func scanRecord(row interface{ Scan(...any) error }) (Record, error) {
@@ -124,12 +126,13 @@ func (r *Registry) QueryJobs(ctx context.Context, f jobs.Filter) ([]jobs.Job, er
 	if f.Limit < 0 || f.Limit > 1000 || !slices.Contains(validStatuses, f.Status) {
 		return nil, fmt.Errorf("%w: invalid filter", jobs.ErrInvalid)
 	}
-	if _, err := r.GetJob(ctx, f.Before); f.Before != "" && err != nil {
-		return nil, fmt.Errorf("%w: before: %w", jobs.ErrInvalid, err)
+	owner := ownerFromCtx(ctx)
+	if rec, err := r.GetJob(ctx, f.Before); f.Before != "" && (err != nil || (owner != "" && rec.Owner != owner)) {
+		return nil, fmt.Errorf("%w: before: %w", jobs.ErrInvalid, cmp.Or(err, sql.ErrNoRows))
 	}
 	rows, err := r.store.DB.QueryContext(ctx,
-		"SELECT "+jobColumns+" FROM jobs WHERE (?='' OR status=?) AND (?='' OR (created_at,id)<((SELECT created_at FROM jobs WHERE id=?),?)) ORDER BY created_at DESC,id DESC LIMIT ?",
-		f.Status, f.Status, f.Before, f.Before, f.Before, cmp.Or(f.Limit, 1000))
+		"SELECT "+jobColumns+" FROM jobs WHERE (?='' OR owner=?) AND (?='' OR status=?) AND (?='' OR (created_at,id)<((SELECT created_at FROM jobs WHERE id=?),?)) ORDER BY created_at DESC,id DESC LIMIT ?",
+		owner, owner, f.Status, f.Status, f.Before, f.Before, f.Before, cmp.Or(f.Limit, 1000))
 	if err != nil {
 		return nil, err
 	}
@@ -304,4 +307,83 @@ func (r *Registry) DeleteSession(ctx context.Context, id string) error {
 	defer r.mu.Unlock()
 	_, err := r.store.DB.ExecContext(ctx, "DELETE FROM sessions WHERE id=?", id)
 	return err
+}
+
+type ownerCtxKey struct{}
+
+func WithOwner(ctx context.Context, owner string) context.Context {
+	return context.WithValue(ctx, ownerCtxKey{}, owner)
+}
+func ownerFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ownerCtxKey{}).(string)
+	return v
+}
+
+// APIToken is one personal API token row in the gateway SQLite registry.
+type APIToken struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Owner      string    `json:"owner"`
+	Prefix     string    `json:"prefix"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt string    `json:"last_used_at,omitempty"`
+	Token      string    `json:"token,omitempty"`
+}
+
+func hashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+func (r *Registry) CreateToken(ctx context.Context, owner, name string) (APIToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	raw := "glue_pat_" + randHex(32)
+	tok := APIToken{ID: "tok-" + randHex(6), Name: cmp.Or(strings.TrimSpace(name), "cli"), Owner: owner, Prefix: raw[:16], CreatedAt: r.now().UTC(), Token: raw}
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO api_tokens(id,name,owner,token_hash,prefix,created_at) VALUES(?,?,?,?,?,?)",
+		tok.ID, tok.Name, tok.Owner, hashToken(raw), tok.Prefix, r.fmtTime(tok.CreatedAt))
+	return tok, err
+}
+func (r *Registry) ListTokens(ctx context.Context, owner string) ([]APIToken, error) {
+	rows, err := r.store.DB.QueryContext(ctx, "SELECT id,name,owner,prefix,created_at,last_used_at FROM api_tokens WHERE owner=? ORDER BY created_at DESC,id DESC", owner)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []APIToken{}
+	for rows.Next() {
+		var t APIToken
+		var created string
+		if err := rows.Scan(&t.ID, &t.Name, &t.Owner, &t.Prefix, &created, &t.LastUsedAt); err != nil {
+			return nil, err
+		}
+		t.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+func (r *Registry) RevokeToken(ctx context.Context, owner, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	res, err := r.store.DB.ExecContext(ctx, "DELETE FROM api_tokens WHERE id=? AND owner=?", id, owner)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+func (r *Registry) AuthenticateToken(ctx context.Context, raw string) (APIToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var t APIToken
+	var created string
+	h := hashToken(raw)
+	if err := r.store.DB.QueryRowContext(ctx, "SELECT id,name,owner,prefix,created_at FROM api_tokens WHERE token_hash=?", h).Scan(&t.ID, &t.Name, &t.Owner, &t.Prefix, &created); err != nil {
+		return APIToken{}, err
+	}
+	t.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	t.LastUsedAt = r.fmtTime(r.now().UTC())
+	_, err := r.store.DB.ExecContext(ctx, "UPDATE api_tokens SET last_used_at=? WHERE token_hash=?", t.LastUsedAt, h)
+	return t, err
 }

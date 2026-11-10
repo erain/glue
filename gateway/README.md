@@ -30,10 +30,21 @@ state_dir: /var/lib/glue-gateway
 
 # Client authentication configuration (required).
 auth:
-  # Authentication mode. Supported value in #419: "dev-token" ("github" OAuth in #424).
-  mode: dev-token
-  # Shared bearer / login token. If omitted in YAML, read from GLUE_GATEWAY_TOKEN.
-  token: replace-with-gateway-token
+  # Authentication mode: "github" (OAuth App + allowlist) or "dev-token" (local dev only; refused on https:// public_url unless --insecure-dev is passed).
+  mode: github
+  # GitHub OAuth App credentials (required when mode: github; or set GLUE_GITHUB_CLIENT_ID / GLUE_GITHUB_CLIENT_SECRET).
+  client_id: replace-with-github-oauth-client-id
+  client_secret: replace-with-github-oauth-client-secret
+  # Case-insensitive allowlist of GitHub usernames permitted to sign in (required when mode: github; or comma-separated GLUE_ALLOWED_LOGINS).
+  allowed_logins:
+    - your-github-login
+  # Server-side browser session TTLs (optional; default to 168h absolute and 24h idle).
+  session_absolute_ttl: 168h
+  session_idle_ttl: 24h
+  # Per-IP authentication rate limit per minute (optional; defaults to 30).
+  rate_limit_per_min: 30
+  # Shared bearer / login token for mode: dev-token (or read from GLUE_GATEWAY_TOKEN).
+  # token: replace-with-gateway-token
 
 # One or more execution backends (required; unique names).
 backends:
@@ -99,10 +110,19 @@ For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-sh
 
 ## SQLite Registry and Event Cache
 
-`OpenRegistry(state_dir)` opens `<state_dir>/events.sqlite` (WAL mode) with two tables:
+`OpenRegistry(state_dir)` opens `<state_dir>/events.sqlite` (WAL mode) with four tables:
 
-- `jobs(id, backend, backend_ref, owner, spec_json, status, created_at, updated_at, last_seq, result_json)`: tracks each gateway-allocated job ID, its owning backend and backend reference, job specification, derived lifecycle status, highest mirrored sequence number, and cached completion `jobs.Result`.
+- `jobs(id, backend, backend_ref, owner, spec_json, status, created_at, updated_at, last_seq, result_json)`: tracks each gateway-allocated job ID, its owning backend and backend reference, owning user login (`owner`), job specification, derived lifecycle status, highest mirrored sequence number, and cached completion `jobs.Result`. Users only see and act on jobs where `owner` matches their authenticated login.
 - `events(run_id, seq, payload_json, PRIMARY KEY(run_id, seq))`: stores an immutable copy of every `eventlog.Envelope` streamed from the backend.
+- `sessions(id, login, github_id, csrf_token, created_at, last_seen_at, expires_at)`: stores server-side browser sessions with random 256-bit IDs, `HttpOnly; Secure; SameSite=Lax` cookies, 7-day absolute TTL, and 24-hour idle TTL. State-changing cookie requests require the `X-Glue-CSRF` double-submit header.
+- `api_tokens(id, name, owner, token_hash, prefix, created_at, last_used_at)`: stores personal API tokens as SHA-256 hashes (`token_hash`) for CLI `Authorization: Bearer <token>` authentication.
+
+## Creating a GitHub OAuth App and Personal API Tokens
+
+1. In GitHub **Settings -> Developer settings -> OAuth Apps -> New OAuth App**, set **Homepage URL** to `<public_url>` and **Authorization callback URL** to `<public_url>/auth/github/callback`.
+2. Configure `auth.mode: github`, `client_id`, `client_secret` (or `GLUE_GITHUB_CLIENT_ID` / `GLUE_GITHUB_CLIENT_SECRET`), and `allowed_logins` in `gateway.yaml`.
+3. Open `<public_url>` in a browser, click **Sign in with GitHub**, navigate to **Tokens** (`#/tokens`), and create a personal API token (shown once).
+4. Store the token for the CLI with `glue job login --server <public_url> --token <glue_pat_...>`.
 
 ## Event Stream Proxying and Offline Replay
 
