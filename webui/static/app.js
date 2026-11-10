@@ -231,6 +231,10 @@ export function applyJobEvent(state, env) {
     if (state.seenSeqs.has(seq)) return false;
     state.seenSeqs.add(seq);
     if (seq > state.lastSeq) state.lastSeq = seq;
+    if (state.transcriptEl?.dataset) {
+      state.transcriptEl.dataset.seenCount = String(state.seenSeqs.size);
+      state.transcriptEl.dataset.lastSeq = String(state.lastSeq);
+    }
   }
   const p = env?.payload || {};
   if (env.type === "text_delta") {
