@@ -346,12 +346,20 @@ func (m *Manager) resolveProvider(ctx context.Context, id string, spec Spec) (gl
 		return p, err
 	}
 	provider, err := m.options.ProviderFactory(spec.Provider)
-	if err != nil && f.EnvKey != "" && m.providerKey(f.EnvKey) == "" {
-		if err = m.waitForCredentials(ctx, id, spec, true); err != nil {
-			return nil, err
+	if err != nil && f.EnvKey != "" {
+		if m.providerKey(f.EnvKey) == "" {
+			if err = m.waitForCredentials(ctx, id, spec, true); err != nil {
+				return nil, err
+			}
+			provider, err = m.options.ProviderFactory(spec.Provider)
 		}
-		if provider, err = m.options.ProviderFactory(spec.Provider); err != nil {
-			provider, _, _, err = providers.NewWithKey(spec.Provider, m.providerKey(f.EnvKey))
+		if err != nil {
+			m.credsMu.RLock()
+			memKey := m.creds.ProviderKeys[strings.ToUpper(f.EnvKey)]
+			m.credsMu.RUnlock()
+			if memKey != "" {
+				provider, _, _, err = providers.NewWithKey(spec.Provider, memKey)
+			}
 		}
 	}
 	if err != nil {

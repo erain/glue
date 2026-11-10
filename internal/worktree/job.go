@@ -11,7 +11,10 @@ import (
 )
 
 // Options specifies an explicitly created workspace. Exactly one source is required.
-type Options struct{ Path, URL, Dir, Branch, BaseRef string }
+type Options struct {
+	Path, URL, Dir, Branch, BaseRef string
+	Env                             []string
+}
 
 // Workspace records the checkout and immutable starting revision.
 type Workspace struct{ Path, Branch, BaseSHA string }
@@ -36,7 +39,7 @@ func Prepare(ctx context.Context, opts Options) (Workspace, error) {
 			commandArgs = append([]string{"-C", at}, args...)
 		}
 		cmd := exec.CommandContext(ctx, "git", commandArgs...)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), opts.Env...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("git %s: %w", args[0], err)
@@ -56,6 +59,14 @@ func Prepare(ctx context.Context, opts Options) (Workspace, error) {
 			return result, err
 		}
 		source = dir
+	} else if _, err := git(source, "rev-parse", "--verify", "HEAD"); err != nil {
+		fetchRef := opts.BaseRef
+		if fetchRef == "" {
+			fetchRef = "HEAD"
+		}
+		if _, ferr := git(source, "fetch", "--depth=1", "origin", fetchRef); ferr == nil && opts.BaseRef != "" {
+			_, _ = git(source, "branch", "-f", opts.BaseRef, "FETCH_HEAD")
+		}
 	}
 	ref := opts.BaseRef
 	if ref == "" {

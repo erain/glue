@@ -181,6 +181,9 @@ func (m *Manager) SetCredentials(creds Credentials) {
 	for k, v := range creds.ProviderKeys {
 		if k, v = strings.ToUpper(strings.TrimSpace(k)), strings.TrimSpace(v); k != "" && v != "" {
 			keys[k] = v
+			if f, ok := providers.Lookup(strings.ToLower(k)); ok && f.EnvKey != "" {
+				keys[strings.ToUpper(f.EnvKey)] = v
+			}
 			redact.Register(v)
 		}
 	}

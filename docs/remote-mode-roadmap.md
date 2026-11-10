@@ -29,7 +29,7 @@ plan; each step is a self-contained issue with its own verification.
 | `glue serve` (protocol v2) | core module | Durable runs and jobs, resumable SSE, permissions, credentials endpoint, browser UI |
 | `webui` package | core module | Embedded HTML/CSS/JS (no build step) shared by `glue serve` and the gateway |
 | `glue job` CLI | core module | Submit, list, attach, steer, approve, result |
-| `glue-gateway` | [`gateway/`](../gateway/README.md) module | Auth (`dev-token`), SQLite job registry and event cache, embedded `webui`, `local` backend (`glue serve` over HTTP+SSE) and `ax` backend (`UpdateWorkspace`, `CreateTask`, `CreateActorEgressPolicy`, `ResumeTask`, `SuspendTask`, idle `waiting_for_input` and terminal suspend/resume with permission ID remapping, mTLS `CONNECT` router transport; retention in #422) |
+| `glue-gateway` | [`gateway/`](../gateway/README.md) module | Auth (`dev-token`), SQLite job registry and event cache, embedded `webui`, `local` backend (`glue serve` over HTTP+SSE) and `ax` backend (`UpdateWorkspace`, `CreateTask` with zero secret env vars, `CreateActorEgressPolicy`, `ResumeTask`, `SuspendTask`, runtime credential push via `POST /v1/credentials`, idle `waiting_for_input` and terminal suspend/resume with permission ID remapping, task retention and `glue job delete`, mTLS `CONNECT` router transport) |
 | Task & gateway images | [`deploy/ax`](../deploy/ax/README.md) | AX task runner image (`deploy/ax/task-image`) and `glue-gateway` image + Kubernetes manifests (`deploy/ax/gateway`) |
 | Dev cluster | [`scripts/ax-dev`](../scripts/ax-dev/README.md) | Pinned kind + Agent Substrate + AX for development and e2e tests |
 
@@ -91,6 +91,13 @@ Pinned: AX `241bc4d0c682a6898da5f718a9ec84fe7c9197f9`, Substrate
   creates one per task (GitHub, Go module proxy, model API hosts).
 - **Secrets:** no secret references; env is stored and shown in plain text
   ([google/ax#348](https://github.com/google/ax/issues/348), [google/ax#449](https://github.com/google/ax/issues/449)).
+  Glue therefore creates AX `Task` resources with zero credential environment
+  variables and pushes `github_token` and `provider_keys` over `atenet-router`
+  to `POST /v1/credentials` in memory before `start`, after each `ResumeTask`,
+  and whenever `GET /v1/jobs/{id}` reports `credentials: "absent"`; `glue serve`
+  redacts known credential values and common token shapes (`ghp_…`,
+  `github_pat_…`, `gho_…`, `AIza…`, `sk-…`) before writing events, tool outputs,
+  session files, or results to `/workspace/.glue`.
 - **Lifecycle:** new tasks start suspended; suspend keeps only `/workspace`
   and may not signal the process; resume restarts the command; a golden
   pre-boot runs the command without network; nothing auto-suspends; the exit

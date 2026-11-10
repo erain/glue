@@ -296,30 +296,39 @@ func deliverJob(ctx context.Context, job Job, goal glue.GoalResult, res *Result,
 	return err
 }
 
-func pushBranch(ctx context.Context, dir, branch, token string) error {
-	var extra []string
-	if token = strings.TrimSpace(token); token != "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		f, err := os.CreateTemp("", "glue-askpass-*")
-		if err != nil {
-			return err
-		}
-		askpass := f.Name()
-		defer os.Remove(askpass)
-		_, writeErr := fmt.Fprintf(f, "#!/bin/sh\nexec %q git-askpass \"$@\"\n", exe)
-		if err := errors.Join(writeErr, f.Close(), os.Chmod(askpass, 0o700)); err != nil {
-			return err
-		}
-		extra = []string{
-			"GLUE_GITHUB_TOKEN=" + token,
-			"GIT_ASKPASS=" + askpass, "SSH_ASKPASS=" + askpass, "GIT_ASKPASS_REQUIRE=force",
-			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
-		}
+func gitAuthEnv(token string) ([]string, func(), error) {
+	if token = strings.TrimSpace(token); token == "" {
+		return nil, func() {}, nil
 	}
-	_, err := workspaceGit(ctx, dir, extra, "push", "origin", "refs/heads/"+branch+":refs/heads/"+branch)
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err := os.CreateTemp("", "glue-askpass-*")
+	if err != nil {
+		return nil, nil, err
+	}
+	askpass := f.Name()
+	cleanup := func() { _ = os.Remove(askpass) }
+	_, writeErr := fmt.Fprintf(f, "#!/bin/sh\nexec %q git-askpass \"$@\"\n", exe)
+	if err := errors.Join(writeErr, f.Close(), os.Chmod(askpass, 0o700)); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return []string{
+		"GLUE_GITHUB_TOKEN=" + token,
+		"GIT_ASKPASS=" + askpass, "SSH_ASKPASS=" + askpass, "GIT_ASKPASS_REQUIRE=force",
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
+	}, cleanup, nil
+}
+
+func pushBranch(ctx context.Context, dir, branch, token string) error {
+	extra, cleanup, err := gitAuthEnv(token)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	_, err = workspaceGit(ctx, dir, extra, "push", "origin", "refs/heads/"+branch+":refs/heads/"+branch)
 	return err
 }
 

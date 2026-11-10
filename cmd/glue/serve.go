@@ -124,6 +124,11 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err := loadEnvFiles(envs); err != nil {
 		return err
 	}
+	if *jobFromAX && strings.TrimSpace(*tokenFile) == "" {
+		if p := filepath.Join(filepath.Dir(*stateDir), "token"); func() bool { _, err := os.Stat(p); return err == nil }() {
+			*tokenFile = p
+		}
+	}
 	token, tokenSource, err := resolveServeToken(*tokenFlag, *tokenFile)
 	if err != nil {
 		return err

@@ -27,11 +27,12 @@ const (
 const SubmitUnknown jobs.Status = "submit_unknown"
 
 var (
-	validStatuses = []jobs.Status{"", jobs.Created, SubmitUnknown, jobs.Running, jobs.WaitingForInput, jobs.Suspended, jobs.Achieved, jobs.Blocked, jobs.BudgetLimited, jobs.MaxIterations, jobs.Errored, jobs.Canceled, jobs.Interrupted}
+	validStatuses = []jobs.Status{"", jobs.Created, SubmitUnknown, jobs.Running, jobs.WaitingForInput, jobs.WaitingForCredentials, jobs.Suspended, jobs.Achieved, jobs.Blocked, jobs.BudgetLimited, jobs.MaxIterations, jobs.Errored, jobs.Canceled, jobs.Interrupted}
 	eventStatuses = map[string]jobs.Status{
 		"job_created": jobs.Created, "job_started": jobs.Running, "job_resumed": jobs.Running, "task_resumed": jobs.Running,
 		"permission_decision": jobs.Running, "permission_expired": jobs.Running,
 		"permission_request": jobs.WaitingForInput, "job_waiting": jobs.WaitingForInput,
+		"job_waiting_for_credentials": jobs.WaitingForCredentials,
 	}
 )
 
