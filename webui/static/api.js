@@ -1,13 +1,16 @@
 let csrfToken = "";
+let authMode = "dev-token";
 let onUnauthorized = null;
 
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 export const getCSRFToken = () => csrfToken;
+export const getAuthMode = () => authMode;
 
 export async function fetchSession() {
   const resp = await fetch("/v1/session", { credentials: "same-origin" });
+  const data = await resp.json().catch(() => ({}));
+  if (data?.auth_mode) authMode = data.auth_mode;
   if (!resp.ok) { csrfToken = ""; return null; }
-  const data = await resp.json();
   csrfToken = data.csrf_token || "";
   return data;
 }
@@ -45,3 +48,7 @@ export async function apiRequest(path, options = {}) {
 
 export const apiPost = (path, json) => apiRequest(path, { method: "POST", json });
 export const apiDelete = (path) => apiRequest(path, { method: "DELETE" });
+export async function logout() {
+  await apiPost("/v1/session/logout", {}).catch(() => {});
+  csrfToken = "";
+}

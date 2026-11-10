@@ -38,6 +38,7 @@ var gatewayRoutes = []Route{
 	{http.MethodGet, "/", true}, {http.MethodGet, "/index.html", true}, {http.MethodGet, "/static/app.js", true}, {http.MethodGet, "/static/api.js", true}, {http.MethodGet, "/static/app.css", true},
 	{http.MethodGet, "/healthz", true}, {http.MethodGet, "/auth/github/login", true}, {http.MethodGet, "/auth/github/callback", true},
 	{http.MethodGet, "/v1/health", false}, {http.MethodGet, "/v1/session", false}, {http.MethodPost, "/v1/session/login", false}, {http.MethodPost, "/v1/session/logout", false},
+	{http.MethodGet, "/v1/tokens", false}, {http.MethodPost, "/v1/tokens", false}, {http.MethodDelete, "/v1/tokens/{id}", false},
 	{http.MethodGet, "/v1/backends", false}, {http.MethodGet, "/v1/diagnostics", false}, {http.MethodGet, "/v1/jobs", false}, {http.MethodPost, "/v1/jobs", false},
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
 	{http.MethodGet, "/v1/jobs/{id}/permissions", false}, {http.MethodPost, "/v1/jobs/{id}/permissions/{permID}/decision", false},
@@ -444,8 +445,14 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Session, bool) {
 	if got := r.Header.Get("Authorization"); got != "" {
+		raw := strings.TrimSpace(strings.TrimPrefix(got, "Bearer "))
 		if s.cfg.Auth.Mode == "dev-token" && eqToken(got, "Bearer "+s.cfg.Auth.Token) {
 			return Session{Login: "dev-token"}, true
+		}
+		if strings.HasPrefix(got, "Bearer ") && raw != "" {
+			if tok, err := s.reg.AuthenticateToken(r.Context(), raw); err == nil && s.isAllowedLogin(tok.Owner) {
+				return Session{Login: tok.Owner}, true
+			}
 		}
 	} else if c, err := r.Cookie("glue_session"); err == nil {
 		if sess, err := s.reg.AuthenticateSession(r.Context(), c.Value, s.cfg.Auth.SessionIdleTTL); err == nil && s.isAllowedLogin(sess.Login) {
@@ -507,6 +514,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r = r.WithContext(WithOwner(r.Context(), sess.Login))
 	switch r.Method + " " + r.URL.Path {
 	case "GET /v1/session":
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "auth_mode": s.cfg.Auth.Mode, "login": sess.Login, "github_id": sess.GitHubID, "csrf_token": sess.CSRFToken})
@@ -515,8 +523,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie("glue_session"); err == nil {
 			_ = s.reg.DeleteSession(r.Context(), c.Value)
 		}
-		http.SetCookie(w, &http.Cookie{Name: "glue_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+		setCookie(w, "glue_session", "", -1)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	case "GET /v1/tokens":
+		toks, err := s.reg.ListTokens(r.Context(), sess.Login)
+		respond(w, http.StatusOK, map[string]any{"tokens": toks}, err)
+		return
+	case "POST /v1/tokens":
+		var body struct{ Name string }
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+		tok, err := s.reg.CreateToken(r.Context(), sess.Login, body.Name)
+		respond(w, http.StatusCreated, tok, err)
 		return
 	case "GET /v1/backends":
 		writeJSON(w, http.StatusOK, map[string]any{"backends": s.cfg.Backends, "default_backend": s.cfg.DefaultBackend})
@@ -557,6 +575,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusCreated, map[string]any{"job": created}, err)
 		return
 	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/tokens/") {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/tokens/")
+		respond(w, http.StatusOK, map[string]any{"id": id, "revoked": true}, s.reg.RevokeToken(r.Context(), sess.Login, id))
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 		writeErr(w, http.StatusNotFound, "not_found", "route not found")
 		return
@@ -567,6 +590,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.sweepRetention(r.Context())
 	}
 	rec, err := s.reg.GetJob(r.Context(), id)
+	if err == nil && rec.Owner != "" && rec.Owner != sess.Login {
+		err = sql.ErrNoRows
+	}
 	if err != nil {
 		respond(w, 0, nil, err)
 		return

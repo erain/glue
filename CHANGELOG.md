@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add personal API tokens (`POST /v1/tokens`, `GET /v1/tokens`,
+  `DELETE /v1/tokens/{id}`, stored as SHA-256 hashes in `api_tokens`), scope
+  gateway jobs to their `owner` login (`TestJobsScopedToOwner`), and add GitHub
+  sign-in and the `#/tokens` personal API token management view to `webui`.
+
 - Add `auth.mode: github` OAuth sign-in (`/auth/github/login` and
   `/auth/github/callback`) with `auth.allowed_logins`, server-side SQLite
   sessions (`HttpOnly; Secure; SameSite=Lax`, 7-day absolute TTL and 24-hour

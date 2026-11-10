@@ -136,6 +136,7 @@ func TestUIAssetsViewsAndSafety(t *testing.T) {
 		"steer-form", "steer-input", "steer-submit", "/messages", "/continue",
 		"cancel-job-btn", "cancel-confirm-dialog", "cancel-confirm-btn",
 		"job-result-panel", "/result", "result-pr-link", "result-diffstat", "verify-exit-code", "result-cost",
+		"/auth/github/login", "/v1/tokens", "tokens-view", "token-created-value", "token-revoke-btn", "/v1/session/logout",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("JS assets missing %q", want)
