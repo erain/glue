@@ -414,7 +414,13 @@ opt-in behind an interface:
 - **Versioned prompts** — `prompts.NewCatalog(embedFS, dir, default)` to
   A/B-test and roll back system prompts.
 - **Coding tools** — `tools/coding.Tools(...)` assembles a
-  permission-gated local coding bundle over `glue.Executor`. See
+  permission-gated local coding bundle over `glue.Executor`. `shell_exec`
+  passes a safe toolchain environment (`--shell-env-pass`, `--shell-env`)
+  while dropping `*_API_KEY`, `*_TOKEN`, `*SECRET*`, and `*PASSWORD*`
+  variables unless named in `--shell-env-secret-allow`, defaults `HOME` to
+  `<state>/home/<job-id>` when unset, spills truncated output under
+  `<state>/tmp`, and defaults to a `10m` timeout (`--shell-timeout`) with
+  per-call `timeout` overrides capped at the configured maximum. See
   [ADR-0012](adr/0012-sdk-coding-agent-peggy-boundary.md) and
   [`docs/policies.md`](policies.md) for `ask-all`, `workspace-auto`,
   `yolo`, and custom JSON permission policy profiles (`glue serve --policy`

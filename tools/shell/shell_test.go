@@ -277,3 +277,28 @@ func TestExecOutputFormattingTimeout(t *testing.T) {
 		t.Fatalf("partial output dropped: %q", text)
 	}
 }
+
+func TestExecPerCallTimeoutCappedAtHostMax(t *testing.T) {
+	fake := &fakeExecutor{}
+	tool, err := Exec(ExecOptions{Executor: fake, WorkDir: t.TempDir(), AllowedBinaries: []string{"go"}, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	for args, want := range map[string]time.Duration{
+		`{"argv":["go"],"timeout":"2s"}`:      2 * time.Second,
+		`{"argv":["go"],"timeout":3}`:         3 * time.Second,
+		`{"argv":["go"],"timeout_seconds":4}`: 4 * time.Second,
+		`{"argv":["go"],"timeout_ms":1500}`:   1500 * time.Millisecond,
+		`{"argv":["go"],"timeout":"1m"}`:      10 * time.Second,
+	} {
+		fake.commands = nil
+		if res := callTool(t, tool, args); res.IsError || fake.commands[0].Timeout != want {
+			t.Fatalf("%s res=%+v cmd=%+v", args, res, fake.commands)
+		}
+	}
+	for _, bad := range []string{`{"argv":["go"],"timeout":"-1s"}`, `{"argv":["go"],"timeout":"bad"}`, `{"argv":["go"],"timeout_seconds":-2}`} {
+		if res := callTool(t, tool, bad); !res.IsError {
+			t.Fatalf("expected error for %s", bad)
+		}
+	}
+}

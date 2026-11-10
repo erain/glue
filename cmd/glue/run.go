@@ -11,7 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"sort"
 
@@ -26,10 +28,26 @@ import (
 )
 
 type codingFlagConfig struct {
-	Enabled         bool
-	WorkDir         string
-	AllowedBinaries []string
-	AllowOverwrite  bool
+	Enabled, AllowOverwrite   bool
+	WorkDir, StateDir         string
+	AllowedBinaries, ShellEnv repeatedStrings
+	ShellEnvPass, SecretAllow string
+	ShellTimeout              time.Duration
+}
+
+func registerShellFlags(flags *flag.FlagSet, cfg *codingFlagConfig) {
+	flags.Var(&cfg.AllowedBinaries, "allow-binary", "allowed shell_exec binary basename for --coding; repeatable")
+	flags.StringVar(&cfg.ShellEnvPass, "shell-env-pass", toolscoding.DefaultShellEnvPassCSV, "comma-separated environment variables passed to shell_exec")
+	flags.Var(&cfg.ShellEnv, "shell-env", "explicit KEY=VALUE environment variable for shell_exec; repeatable")
+	flags.StringVar(&cfg.SecretAllow, "shell-env-secret-allow", "", "comma-separated secret-shaped variable names allowed in shell_exec")
+	flags.DurationVar(&cfg.ShellTimeout, "shell-timeout", 0, "per-command shell_exec timeout (default 10m for jobs and --coding, 30s otherwise)")
+}
+
+func (cfg codingFlagConfig) validate() error {
+	if cfg.ShellTimeout < 0 {
+		return errors.New("--shell-timeout must not be negative")
+	}
+	return toolscoding.ValidateShellEnv(cfg.ShellEnv)
 }
 
 type agentConfig struct {
@@ -68,10 +86,13 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	usagePricing := registerUsagePricingFlags(flags)
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
-	var allowedBinaries repeatedStrings
-	flags.Var(&allowedBinaries, "allow-binary", "allowed shell_exec binary basename for --coding; repeatable")
+	var codingCfg codingFlagConfig
+	registerShellFlags(flags, &codingCfg)
 
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := codingCfg.validate(); err != nil {
 		return err
 	}
 	markUsagePricingFlagState(flags, usagePricing)
@@ -175,12 +196,8 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		effectiveAllowOverwrite = true
 	}
 
-	tools, _, err := buildCodingTools(codingFlagConfig{
-		Enabled:         *coding,
-		WorkDir:         *workDir,
-		AllowedBinaries: append([]string(nil), allowedBinaries...),
-		AllowOverwrite:  effectiveAllowOverwrite,
-	})
+	codingCfg.Enabled, codingCfg.WorkDir, codingCfg.StateDir, codingCfg.AllowOverwrite = *coding, *workDir, *storeDir, effectiveAllowOverwrite
+	tools, _, err := buildCodingTools(codingCfg)
 	if err != nil {
 		return err
 	}
@@ -272,12 +289,9 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		var buildToolsAt func(dir string) ([]glue.Tool, error)
 		if *coding {
 			buildToolsAt = func(dir string) ([]glue.Tool, error) {
-				wtTools, _, err := buildCodingTools(codingFlagConfig{
-					Enabled:         true,
-					WorkDir:         dir,
-					AllowedBinaries: append([]string(nil), allowedBinaries...),
-					AllowOverwrite:  effectiveAllowOverwrite,
-				})
+				wtCfg := codingCfg
+				wtCfg.Enabled, wtCfg.WorkDir = true, dir
+				wtTools, _, err := buildCodingTools(wtCfg)
 				if err != nil {
 					return nil, err
 				}
@@ -486,11 +500,15 @@ func filterTools(in []glue.Tool, allowCSV string, noTools bool) ([]glue.Tool, er
 }
 
 func buildCodingTools(cfg codingFlagConfig) ([]glue.Tool, toolscoding.Options, error) {
+	var defaultHome, spoolDir string
+	if strings.TrimSpace(cfg.StateDir) != "" {
+		defaultHome, spoolDir = filepath.Join(cfg.StateDir, "home", "default"), filepath.Join(cfg.StateDir, "tmp")
+	}
 	return toolscoding.Tools(toolscoding.Options{
-		Enabled:         cfg.Enabled,
-		WorkDir:         cfg.WorkDir,
-		AllowedBinaries: append([]string(nil), cfg.AllowedBinaries...),
-		AllowOverwrite:  cfg.AllowOverwrite,
+		Enabled: cfg.Enabled, WorkDir: cfg.WorkDir, AllowedBinaries: append([]string(nil), cfg.AllowedBinaries...),
+		AllowOverwrite: cfg.AllowOverwrite, EnvPass: toolscoding.ParseCSVList(cfg.ShellEnvPass),
+		Env: append([]string(nil), cfg.ShellEnv...), SecretAllow: toolscoding.ParseCSVList(cfg.SecretAllow),
+		DefaultHome: defaultHome, SpoolDir: spoolDir, ShellTimeout: cfg.ShellTimeout,
 	})
 }
 

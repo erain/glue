@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/erain/glue"
@@ -218,7 +219,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 	if provider == nil {
 		return empty, errors.New("jobs: provider factory returned nil")
 	}
-	tools, _, err := coding.Tools(coding.Options{Enabled: true, WorkDir: workspace.Path, AllowOverwrite: true, GitDefaultBase: workspace.BaseSHA})
+	tools, _, err := coding.Tools(m.codingOptions(id, job.Spec, workspace.Path, workspace.BaseSHA))
 	if err != nil {
 		return empty, err
 	}
@@ -257,4 +258,27 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 		spec.StartIteration = run.resume.Iterations + 1
 	}
 	return agent.PursueGoal(ctx, spec)
+}
+
+func (m *Manager) codingOptions(id string, spec Spec, workspacePath, baseSHA string) coding.Options {
+	bins, envPass, timeout := slices.Clone(spec.AllowedBinaries), spec.ShellEnvPass, spec.ShellTimeout
+	if len(bins) == 0 {
+		bins = DefaultAllowedBinaries
+		if len(m.options.AllowedBinaries) > 0 {
+			bins = m.options.AllowedBinaries
+		}
+	}
+	if envPass == nil {
+		envPass = m.options.ShellEnvPass
+	}
+	if timeout <= 0 {
+		timeout = m.options.ShellTimeout
+	}
+	return coding.Options{
+		Enabled: true, WorkDir: workspacePath, AllowedBinaries: bins, AllowOverwrite: true,
+		EnvPass: envPass, Env: append(append([]string(nil), m.options.ShellEnv...), spec.ShellEnv...),
+		SecretAllow: append(append([]string(nil), m.options.ShellEnvSecretAllow...), spec.ShellEnvSecretAllow...),
+		DefaultHome: filepath.Join(m.options.StateDir, "home", id), SpoolDir: filepath.Join(m.options.StateDir, "tmp"),
+		ShellTimeout: timeout, GitDefaultBase: baseSHA,
+	}
 }

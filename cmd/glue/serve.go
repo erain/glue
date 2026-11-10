@@ -18,6 +18,7 @@ import (
 	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/providers"
+	toolscoding "github.com/erain/glue/tools/coding"
 	// Register the shipped providers so they resolve through the
 	// providers registry by name (--provider). Importing for side
 )
@@ -60,10 +61,13 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	permissionTimeout := flags.Duration("permission-timeout", 0, "permission decision timeout; 0 uses daemon default")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
-	var allowedBinaries repeatedStrings
-	flags.Var(&allowedBinaries, "allow-binary", "allowed shell_exec binary basename for --coding; repeatable")
+	var codingCfg codingFlagConfig
+	registerShellFlags(flags, &codingCfg)
 
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := codingCfg.validate(); err != nil {
 		return err
 	}
 
@@ -87,7 +91,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if strings.TrimSpace(*policyFile) != "" {
 		policy, err = jobs.LoadPolicyFile(*policyFile)
 	} else {
-		policy, err = jobs.BuiltInPolicy(*policyName, allowedBinaries...)
+		policy, err = jobs.BuiltInPolicy(*policyName, codingCfg.AllowedBinaries...)
 	}
 	if err != nil {
 		return err
@@ -121,12 +125,8 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if strings.TrimSpace(*metadataPath) == "" && tokenSource == "generated" {
 		return errors.New("metadata disabled requires --token or GLUE_DAEMON_TOKEN")
 	}
-	tools, _, err := buildCodingTools(codingFlagConfig{
-		Enabled:         *coding,
-		WorkDir:         *workDir,
-		AllowedBinaries: append([]string(nil), allowedBinaries...),
-		AllowOverwrite:  *codingAllowOverwrite,
-	})
+	codingCfg.Enabled, codingCfg.WorkDir, codingCfg.StateDir, codingCfg.AllowOverwrite = *coding, *workDir, *stateDir, *codingAllowOverwrite
+	tools, _, err := buildCodingTools(codingCfg)
 	if err != nil {
 		return err
 	}
@@ -151,7 +151,11 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	}
 	var manager *jobs.Manager
 	if *jobsEnabled {
-		manager, err = jobs.New(jobs.Options{StateDir: *stateDir, ProviderFactory: newProvider, Policy: &policy})
+		manager, err = jobs.New(jobs.Options{
+			StateDir: *stateDir, ProviderFactory: newProvider, Policy: &policy,
+			AllowedBinaries: codingCfg.AllowedBinaries, ShellEnvPass: toolscoding.ParseCSVList(codingCfg.ShellEnvPass),
+			ShellEnv: codingCfg.ShellEnv, ShellEnvSecretAllow: toolscoding.ParseCSVList(codingCfg.SecretAllow), ShellTimeout: codingCfg.ShellTimeout,
+		})
 		if err != nil {
 			return err
 		}

@@ -58,6 +58,10 @@ type execArgs struct {
 	Dir            string   `json:"dir,omitempty"`
 	Stdin          string   `json:"stdin,omitempty"`
 	MaxOutputBytes int      `json:"max_output_bytes,omitempty"`
+
+	Timeout        json.RawMessage `json:"timeout,omitempty"`
+	TimeoutSeconds float64         `json:"timeout_seconds,omitempty"`
+	TimeoutMS      int64           `json:"timeout_ms,omitempty"`
 }
 
 // Exec returns a glue.Tool named "shell_exec" that runs argv-style
@@ -113,6 +117,7 @@ func Exec(opts ExecOptions) (glue.Tool, error) {
     "argv": { "type": "array", "items": { "type": "string" }, "description": "Executable basename plus arguments, e.g. [\"go\", \"test\", \"./...\"]. argv[0] must be allowlisted." },
     "dir": { "type": "string", "description": "Optional working directory relative to the configured workspace root." },
     "stdin": { "type": "string", "description": "Optional stdin text." },
+    "timeout": { "type": "string", "description": "Optional per-command timeout duration (e.g. \"30s\", \"2m\"). May only lower the host-configured cap." },
     "max_output_bytes": { "type": "integer", "description": "Optional per-stream output cap. May only lower the host-configured cap." }
   },
   "required": ["argv"]
@@ -159,6 +164,11 @@ func buildCommand(args execArgs, workDir string, env []string, timeout time.Dura
 		dir = resolved
 	}
 
+	effectiveTimeout, err := resolveCallTimeout(args, timeout)
+	if err != nil {
+		return glue.ExecCommand{}, err
+	}
+
 	effectiveMax := maxOutput
 	if args.MaxOutputBytes < 0 {
 		return glue.ExecCommand{}, errors.New("shell: max_output_bytes must be non-negative")
@@ -176,9 +186,40 @@ func buildCommand(args execArgs, workDir string, env []string, timeout time.Dura
 		Dir:            dir,
 		Env:            append([]string(nil), env...),
 		Stdin:          stdin,
-		Timeout:        timeout,
+		Timeout:        effectiveTimeout,
 		MaxOutputBytes: effectiveMax,
 	}, nil
+}
+
+func resolveCallTimeout(args execArgs, hostMax time.Duration) (time.Duration, error) {
+	var d time.Duration
+	if raw := strings.TrimSpace(string(args.Timeout)); raw != "" && raw != "null" {
+		var s string
+		var sec float64
+		if json.Unmarshal(args.Timeout, &s) == nil {
+			if s = strings.TrimSpace(s); s != "" {
+				var err error
+				if d, err = time.ParseDuration(s); err != nil {
+					return 0, fmt.Errorf("shell: invalid timeout %q: %w", s, err)
+				}
+			}
+		} else if json.Unmarshal(args.Timeout, &sec) == nil {
+			d = time.Duration(sec * float64(time.Second))
+		} else {
+			return 0, fmt.Errorf("shell: invalid timeout %s", raw)
+		}
+	} else if args.TimeoutSeconds != 0 {
+		d = time.Duration(args.TimeoutSeconds * float64(time.Second))
+	} else if args.TimeoutMS != 0 {
+		d = time.Duration(args.TimeoutMS) * time.Millisecond
+	}
+	if d < 0 {
+		return 0, errors.New("shell: timeout must be non-negative")
+	}
+	if d > 0 && d < hostMax {
+		return d, nil
+	}
+	return hostMax, nil
 }
 
 func allowedBinaries(in []string) (map[string]struct{}, error) {

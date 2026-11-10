@@ -47,11 +47,14 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	resume := flags.Bool("resume", false, "resume the most recent unfinished goal, or the record id given as the argument")
 	var envs envFiles
 	flags.Var(&envs, "env", "env file path; repeatable")
-	var allowedBinaries repeatedStrings
-	flags.Var(&allowedBinaries, "allow-binary", "allowed shell_exec binary basename for --coding; repeatable")
+	var codingCfg codingFlagConfig
+	registerShellFlags(flags, &codingCfg)
 
 	if err := flags.Parse(args); err != nil {
 		return goalExitErrored, nil // flag package already printed the error
+	}
+	if err := codingCfg.validate(); err != nil {
+		return goalExitErrored, err
 	}
 	if err := loadEnvFiles(envs); err != nil {
 		return goalExitErrored, err
@@ -94,12 +97,9 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	}
 	effectiveAllowOverwrite := *codingAllowOverwrite || *yolo
 	buildToolsAt := func(dir string) ([]glue.Tool, error) {
-		t, _, err := buildCodingTools(codingFlagConfig{
-			Enabled:         *coding,
-			WorkDir:         dir,
-			AllowedBinaries: append([]string(nil), allowedBinaries...),
-			AllowOverwrite:  effectiveAllowOverwrite,
-		})
+		cfg := codingCfg
+		cfg.Enabled, cfg.WorkDir, cfg.StateDir, cfg.AllowOverwrite = *coding, dir, *storeDir, effectiveAllowOverwrite
+		t, _, err := buildCodingTools(cfg)
 		return t, err
 	}
 	tools, err := buildToolsAt(*workDir)

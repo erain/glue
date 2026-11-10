@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Give coding and job shells a safe default toolchain environment
+  (`--shell-env-pass`, `--shell-env`, `--shell-env-secret-allow`), filter
+  secret-shaped variables by default, create `<state>/home/<job-id>` when
+  `HOME` is unset, spill truncated outputs under `<state>/tmp`, and raise
+  the default coding/job `shell_exec` timeout to `10m` (`--shell-timeout`)
+  with per-call timeout overrides capped at the maximum.
+
 - Enforce permission policies across jobs, daemon runs (`daemon.NewPermissionPolicy`),
   and `glue serve` (`--policy` / `--policy-file`), default jobs to `workspace-auto`,
   and emit `permission_auto` audit events on automatic `allow`/`deny` decisions.

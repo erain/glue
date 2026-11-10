@@ -246,3 +246,37 @@ func TestServePolicyFlags(t *testing.T) {
 		t.Fatalf("code %d policy %q stderr %s", code, created.Spec.Policy, errs.String())
 	}
 }
+
+func TestServeJobShellEnvAndHomeDefaults(t *testing.T) {
+	for k, v := range map[string]string{"HOME": "", "GEMINI_API_KEY": "parent-gemini-secret", "ALLOWED_API_KEY": "allowed-secret-val"} {
+		t.Setenv(k, v)
+	}
+	repo, state := serveJobRepo(t), t.TempDir()
+	p := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn(`{"items":[{"title":"env"}]}`), toolCallTurn("sh1", "shell_exec", `{"argv":["env"]}`), textTurn("ran env"), textTurn(`{"done":true,"items":[{"title":"env","done":true}],"summary":"ok"}`)}}
+	var eventsBody string
+	serve := func(ctx context.Context, _ serveConfig, handler http.Handler, _ io.Writer) error {
+		ts := httptest.NewServer(handler)
+		defer ts.Close()
+		job := serveJobRequest(t, ts.URL, "/v1/jobs?start=true", jobs.Spec{Objective: "check shell env", Repo: jobs.RepoSpec{Path: repo}, Policy: "yolo", AllowedBinaries: []string{"env"}, ShellEnv: []string{"JOB_SPECIFIC=yes"}})
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/jobs/"+job.ID+"/events", nil)
+		req.Header.Set("Authorization", "Bearer fixture-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		eventsBody = string(data)
+		return nil
+	}
+	var out, errs bytes.Buffer
+	args := []string{"serve", "--coding", "--jobs", "--state-dir", state, "--store", t.TempDir(), "--work", repo, "--metadata", "", "--token", "fixture-token", "--shell-env", "DAEMON_VAR=1", "--shell-env-secret-allow", "ALLOWED_API_KEY", "--shell-timeout", "2m"}
+	if code := runCLIWithServe(context.Background(), args, &out, &errs, fakeFactory(p), serve); code != 0 || !strings.Contains(eventsBody, "event: job_done") || strings.Contains(eventsBody, "parent-gemini-secret") {
+		t.Fatalf("code %d events %s stderr %s", code, eventsBody, errs.String())
+	}
+	for _, want := range []string{"HOME=" + filepath.Join(state, "home") + "/job-", "DAEMON_VAR=1", "JOB_SPECIFIC=yes", "ALLOWED_API_KEY=allowed-secret-val"} {
+		if !strings.Contains(eventsBody, want) {
+			t.Fatalf("events missing %q:\n%s", want, eventsBody)
+		}
+	}
+}
