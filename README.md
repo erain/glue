@@ -25,7 +25,8 @@ fmt.Println(result.Text)
 - **New here and want to build an agent?** → [docs/building-agents.md](docs/building-agents.md)
 - **Just want to send a prompt?** → [Quickstart](#quickstart)
 - **Want the architecture?** → [Concepts](#concepts) · [docs/design.md](docs/design.md)
-- **Want the direction?** → [Local coding + planned AX execution](docs/project-plan.md)
+- **Want the direction?** → [Local coding + AX execution](docs/project-plan.md) · [Remote mode roadmap](docs/remote-mode-roadmap.md)
+- **See it in action:** → [Demo: use AX to develop AX with Glue](docs/demo-ax-develops-ax.md)
 
 ## Install
 
@@ -607,12 +608,13 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ## Project status & contributing
 
 Glue focuses on the **agent framework** and the **coding agent** (interactive
-TUI, coding tools, and autonomous goals). Peggy is retired. Local coding is
-available today; asynchronous remote execution through
-[AX](https://github.com/google/ax) is in planning. Execution mode is independent
-of model/provider selection. The [project plan](docs/project-plan.md) defines
-the work needed to produce the detailed roadmap under
-[tracker #392](https://github.com/erain/glue/issues/392). Releases are tagged on
+TUI, coding tools, and autonomous goals). Peggy is retired. Both local coding
+and asynchronous remote execution through [AX](https://github.com/google/ax)
+(`glue job`, `glue-gateway`, and `webui`) are available — **[see it in action](docs/demo-ax-develops-ax.md)**.
+Execution mode is independent of model/provider selection. The [project plan](docs/project-plan.md)
+and [remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
+[tracker #392](https://github.com/erain/glue/issues/392) and
+[tracker #402](https://github.com/erain/glue/issues/402). Releases are tagged on
 a `1.x` line
 (currently well past `v1.10`), but the stability stance is still the
 pre-stability one recorded in
