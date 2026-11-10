@@ -31,7 +31,7 @@ plan; each step is a self-contained issue with its own verification.
 | `glue job` CLI | core module | Submit, list, attach, steer, approve, result |
 | `glue-gateway` | `gateway/` module | Auth, job registry and event cache, UI, backends (local, AX), suspend/resume, retention |
 | Task image | `deploy/ax/task-image` | AX runner + Go toolchain + git + `glue serve --jobs --job-from-ax` |
-| Dev cluster | `scripts/ax-dev` | Pinned kind + Agent Substrate + AX for development and e2e tests |
+| Dev cluster | [`scripts/ax-dev`](../scripts/ax-dev/README.md) | Pinned kind + Agent Substrate + AX for development and e2e tests |
 
 ```
  browser / phone ──HTTPS──► Cloudflare Tunnel ──► glue-gateway
