@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `gateway.Backend`, `gateway.LocalBackend`, and `gateway.Server` with
+  resilient upstream SSE event proxying, SQLite caching, and embedded `webui`.
+
 - Add the nested `gateway` module (`Config` and SQLite `Registry`) plus
   caller-supplied job IDs (`jobs.Spec.ID`, `jobs.NewID`, `jobs.SummarizeEvents`).
 
