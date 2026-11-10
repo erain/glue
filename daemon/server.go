@@ -703,6 +703,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/credentials" {
+		s.handleCredentials(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/jobs" || strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
 		s.handleJobs(w, r)
 		return

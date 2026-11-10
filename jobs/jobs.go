@@ -19,6 +19,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/modelselection"
+	"github.com/erain/glue/internal/redact"
 	"github.com/erain/glue/providers"
 	_ "github.com/erain/glue/providers/codex"
 	_ "github.com/erain/glue/providers/deepseek"
@@ -78,7 +79,15 @@ const (
 	Errored         Status = "errored"
 	Canceled        Status = "canceled"
 	Interrupted     Status = "interrupted"
+
+	WaitingForCredentials Status = "waiting_for_credentials"
 )
+
+// Credentials holds runtime secrets pushed over POST /v1/credentials in memory only.
+type Credentials struct {
+	GitHubToken  string            `json:"github_token,omitempty"`
+	ProviderKeys map[string]string `json:"provider_keys,omitempty"`
+}
 
 // Job is a persisted specification and its execution metadata.
 type Job struct {
@@ -109,6 +118,8 @@ type Options struct {
 	ShellTimeout                                                 time.Duration
 	// AfterFunc schedules a wall-clock deadline and returns its stop function.
 	AfterFunc func(time.Duration, func()) func() bool
+	// RequireCredentials requires runtime credentials to be pushed before running jobs.
+	RequireCredentials bool
 }
 
 // Manager owns durable job state and recovers unfinished executions on startup.
@@ -122,6 +133,11 @@ type Manager struct {
 	lock         *os.File
 	store        *eventlog.Store
 	options      Options
+
+	credsMu     sync.RWMutex
+	creds       Credentials
+	hasCreds    bool
+	credsNotify chan struct{}
 }
 
 const schema = `CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,spec_json TEXT NOT NULL,status TEXT NOT NULL,base_sha TEXT NOT NULL,workspace TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_seq INTEGER NOT NULL,goal_id TEXT NOT NULL);`
@@ -150,11 +166,63 @@ func New(opts Options) (*Manager, error) {
 		releaseLock(lock)
 		return nil, err
 	}
-	m := &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}}
+	m := &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}, credsNotify: make(chan struct{})}
 	if err := m.recoverJobs(); err != nil {
 		return nil, errors.Join(err, m.Close())
 	}
 	return m, nil
+}
+
+// SetCredentials stores runtime credentials in memory, registers them for
+// redaction, and wakes any jobs waiting in waiting_for_credentials.
+func (m *Manager) SetCredentials(creds Credentials) {
+	tok, keys := strings.TrimSpace(creds.GitHubToken), make(map[string]string, len(creds.ProviderKeys))
+	redact.Register(tok)
+	for k, v := range creds.ProviderKeys {
+		if k, v = strings.ToUpper(strings.TrimSpace(k)), strings.TrimSpace(v); k != "" && v != "" {
+			keys[k] = v
+			redact.Register(v)
+		}
+	}
+	m.credsMu.Lock()
+	m.creds, m.hasCreds = Credentials{GitHubToken: tok, ProviderKeys: keys}, tok != "" || len(keys) > 0
+	close(m.credsNotify)
+	m.credsNotify = make(chan struct{})
+	m.credsMu.Unlock()
+	if list, err := m.Query(context.Background(), Filter{Status: WaitingForCredentials}); err == nil {
+		stamp := m.options.Now().UTC().Format("2006-01-02T15:04:05.000000000Z")
+		for _, job := range list {
+			if !m.missingCredentials(job.Spec, false) {
+				_, _ = m.store.DB.Exec("UPDATE jobs SET status=?,updated_at=? WHERE id=? AND status=?", Running, stamp, job.ID, WaitingForCredentials)
+			}
+		}
+	}
+}
+
+// HasCredentials reports whether runtime credentials have been pushed in memory.
+func (m *Manager) HasCredentials() bool {
+	m.credsMu.RLock()
+	defer m.credsMu.RUnlock()
+	return m.hasCreds
+}
+func (m *Manager) githubToken() string {
+	m.credsMu.RLock()
+	tok := m.creds.GitHubToken
+	m.credsMu.RUnlock()
+	if tok != "" {
+		return tok
+	}
+	return strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN"))
+}
+func (m *Manager) providerKey(name string) string {
+	name = strings.TrimSpace(name)
+	m.credsMu.RLock()
+	val := m.creds.ProviderKeys[strings.ToUpper(name)]
+	m.credsMu.RUnlock()
+	if val != "" || name == "" {
+		return val
+	}
+	return strings.TrimSpace(os.Getenv(name))
 }
 
 func (m *Manager) policyFor(name string, allowedBinaries ...string) (Policy, error) {

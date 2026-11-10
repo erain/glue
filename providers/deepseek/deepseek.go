@@ -56,6 +56,13 @@ func New(o Options) *Provider {
 	})}
 }
 
+// SetAPIKey configures the in-memory API key on the underlying provider.
+func (p *Provider) SetAPIKey(key string) {
+	if p != nil && p.inner != nil {
+		p.inner.SetAPIKey(key)
+	}
+}
+
 func (p *Provider) Stream(ctx context.Context, req loop.ProviderRequest) (<-chan loop.ProviderEvent, error) {
 	if p == nil {
 		return nil, fmt.Errorf("deepseek: nil provider")

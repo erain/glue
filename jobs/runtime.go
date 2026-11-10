@@ -137,7 +137,7 @@ func (m *Manager) appendEvent(tx *sql.Tx, id, typ string, payload any, phase str
 	if err := tx.QueryRow("SELECT last_seq,status FROM jobs WHERE id=?", id).Scan(&seq, &current); err != nil {
 		return err
 	}
-	if typ == "operator_message" && current != Created && current != Running && current != WaitingForInput {
+	if typ == "operator_message" && current != Created && current != Running && current != WaitingForInput && current != WaitingForCredentials {
 		return fmt.Errorf("%w: guidance requires a created or active job", ErrConflict)
 	}
 	if typ == "job_started" && current != Created {
@@ -221,16 +221,9 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 	if err != nil {
 		return empty, err
 	}
-	factory := m.options.ProviderFactory
-	if factory == nil {
-		factory = func(name string) (glue.Provider, error) { p, _, _, err := providers.New(name); return p, err }
-	}
-	provider, err := factory(job.Spec.Provider)
+	provider, err := m.resolveProvider(ctx, id, job.Spec)
 	if err != nil {
 		return empty, err
-	}
-	if provider == nil {
-		return empty, errors.New("jobs: provider factory returned nil")
 	}
 	tools, _, err := coding.Tools(m.codingOptions(id, job.Spec, workspace.Path, workspace.BaseSHA))
 	if err != nil {
@@ -290,11 +283,87 @@ func (m *Manager) codingOptions(id string, spec Spec, workspacePath, baseSHA str
 	secretAllow := slices.DeleteFunc(append(append([]string(nil), m.options.ShellEnvSecretAllow...), spec.ShellEnvSecretAllow...), func(s string) bool {
 		return strings.EqualFold(strings.TrimSpace(s), "GLUE_GITHUB_TOKEN")
 	})
+	env := append(append([]string(nil), m.options.ShellEnv...), spec.ShellEnv...)
+	for _, name := range secretAllow {
+		if val := m.providerKey(name); val != "" {
+			env = append(env, strings.TrimSpace(name)+"="+val)
+		}
+	}
 	return coding.Options{
 		Enabled: true, WorkDir: workspacePath, AllowedBinaries: bins, AllowOverwrite: true,
-		EnvPass: envPass, Env: append(append([]string(nil), m.options.ShellEnv...), spec.ShellEnv...),
+		EnvPass: envPass, Env: env,
 		SecretAllow: secretAllow,
 		DefaultHome: filepath.Join(m.options.StateDir, "home", id), SpoolDir: filepath.Join(m.options.StateDir, "tmp"),
 		ShellTimeout: timeout, GitDefaultBase: baseSHA,
 	}
+}
+
+func (m *Manager) missingCredentials(spec Spec, needProviderKey bool) bool {
+	if (m.options.RequireCredentials && !m.HasCredentials()) || (spec.Delivery == "draft_pr" && m.githubToken() == "") {
+		return true
+	}
+	for _, s := range append(m.options.ShellEnvSecretAllow, spec.ShellEnvSecretAllow...) {
+		if s = strings.TrimSpace(s); s != "" && !strings.EqualFold(s, "GLUE_GITHUB_TOKEN") && m.providerKey(s) == "" {
+			return true
+		}
+	}
+	f, ok := providers.Lookup(spec.Provider)
+	return (needProviderKey || m.options.ProviderFactory == nil) && ok && f.EnvKey != "" && m.providerKey(f.EnvKey) == ""
+}
+
+func (m *Manager) waitForCredentials(ctx context.Context, id string, spec Spec, needProviderKey bool) error {
+	if !m.missingCredentials(spec, needProviderKey) {
+		return nil
+	}
+	setStatus := func(from, to Status) {
+		_, _ = m.store.DB.ExecContext(ctx, "UPDATE jobs SET status=?,updated_at=? WHERE id=? AND status=?", to, m.options.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"), id, from)
+	}
+	setStatus(Running, WaitingForCredentials)
+	for m.missingCredentials(spec, needProviderKey) {
+		m.credsMu.RLock()
+		ch := m.credsNotify
+		m.credsMu.RUnlock()
+		if !m.missingCredentials(spec, needProviderKey) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+		}
+	}
+	setStatus(WaitingForCredentials, Running)
+	return nil
+}
+
+func (m *Manager) resolveProvider(ctx context.Context, id string, spec Spec) (glue.Provider, error) {
+	if err := m.waitForCredentials(ctx, id, spec, false); err != nil {
+		return nil, err
+	}
+	f, _ := providers.Lookup(spec.Provider)
+	if m.options.ProviderFactory == nil {
+		p, _, _, err := providers.NewWithKey(spec.Provider, m.providerKey(f.EnvKey))
+		return p, err
+	}
+	provider, err := m.options.ProviderFactory(spec.Provider)
+	if err != nil && f.EnvKey != "" && m.providerKey(f.EnvKey) == "" {
+		if err = m.waitForCredentials(ctx, id, spec, true); err != nil {
+			return nil, err
+		}
+		if provider, err = m.options.ProviderFactory(spec.Provider); err != nil {
+			provider, _, _, err = providers.NewWithKey(spec.Provider, m.providerKey(f.EnvKey))
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if provider == nil {
+		return nil, errors.New("jobs: provider factory returned nil")
+	}
+	if key := m.providerKey(f.EnvKey); key != "" {
+		if setter, ok := provider.(interface{ SetAPIKey(string) }); ok {
+			setter.SetAPIKey(key)
+		}
+	}
+	return provider, nil
 }

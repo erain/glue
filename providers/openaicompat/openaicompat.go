@@ -71,6 +71,13 @@ func New(o Options) *Provider {
 	}
 }
 
+// SetAPIKey configures the in-memory API key used for outgoing requests.
+func (p *Provider) SetAPIKey(key string) {
+	if p != nil {
+		p.apiKey = key
+	}
+}
+
 // Stream implements [loop.Provider].
 func (p *Provider) Stream(ctx context.Context, req loop.ProviderRequest) (<-chan loop.ProviderEvent, error) {
 	if p == nil {

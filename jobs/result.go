@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/redact"
 	"github.com/erain/glue/tools/coding"
 )
 
@@ -77,7 +78,7 @@ func (m *Manager) Result(ctx context.Context, id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if job.Status == Created || job.Status == Running || job.Status == WaitingForInput {
+	if job.Status == Created || job.Status == Running || job.Status == WaitingForInput || job.Status == WaitingForCredentials {
 		return Result{}, fmt.Errorf("%w: job is not finished", ErrConflict)
 	}
 	data, err := os.ReadFile(m.resultPath(id))
@@ -105,6 +106,11 @@ func (m *Manager) writeResult(res Result) error {
 	if res.Verify == nil {
 		res.Verify = []VerifyResult{}
 	}
+	res.Summary = redact.String(res.Summary)
+	res.DeliveryError = redact.String(res.DeliveryError)
+	for i := range res.Verify {
+		res.Verify[i].OutputTail = redact.String(res.Verify[i].OutputTail)
+	}
 	path := m.resultPath(res.JobID)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -114,6 +120,7 @@ func (m *Manager) writeResult(res Result) error {
 	if err != nil {
 		return err
 	}
+	data = redact.Bytes(data)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return err
@@ -160,7 +167,7 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 			}
 		}
 		if deliverable && res.DeliveryError == "" && (job.Spec.Delivery == "branch" || job.Spec.Delivery == "draft_pr") && res.BaseSHA != "" && res.HeadSHA != "" && res.HeadSHA != res.BaseSHA {
-			if err := deliverJob(context.Background(), job, goal, &res); err != nil {
+			if err := deliverJob(context.Background(), job, goal, &res, m.githubToken()); err != nil {
 				res.DeliveryError = sanitizeToken(err.Error())
 			}
 		}
@@ -272,8 +279,8 @@ func workspaceGit(ctx context.Context, dir string, extraEnv []string, args ...st
 	return strings.TrimSpace(string(out)), nil
 }
 
-func deliverJob(ctx context.Context, job Job, goal glue.GoalResult, res *Result) error {
-	if err := pushBranch(ctx, job.Workspace, res.Branch); err != nil || job.Spec.Delivery != "draft_pr" || res.Status != Achieved {
+func deliverJob(ctx context.Context, job Job, goal glue.GoalResult, res *Result, token string) error {
+	if err := pushBranch(ctx, job.Workspace, res.Branch, token); err != nil || job.Spec.Delivery != "draft_pr" || res.Status != Achieved {
 		return err
 	}
 	// TODO(#402): Support non-GitHub forges (such as GitLab and Gitea) for draft PR delivery.
@@ -285,13 +292,13 @@ func deliverJob(ctx context.Context, job Job, goal glue.GoalResult, res *Result)
 	if err != nil {
 		return err
 	}
-	res.PRURL, err = openGitHubDraftPR(ctx, owner, repo, job, goal, *res)
+	res.PRURL, err = openGitHubDraftPR(ctx, owner, repo, job, goal, *res, token)
 	return err
 }
 
-func pushBranch(ctx context.Context, dir, branch string) error {
+func pushBranch(ctx context.Context, dir, branch, token string) error {
 	var extra []string
-	if strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")) != "" {
+	if token = strings.TrimSpace(token); token != "" {
 		exe, err := os.Executable()
 		if err != nil {
 			return err
@@ -307,6 +314,7 @@ func pushBranch(ctx context.Context, dir, branch string) error {
 			return err
 		}
 		extra = []string{
+			"GLUE_GITHUB_TOKEN=" + token,
 			"GIT_ASKPASS=" + askpass, "SSH_ASKPASS=" + askpass, "GIT_ASKPASS_REQUIRE=force",
 			"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
 		}
@@ -346,12 +354,12 @@ func parseOriginRepo(raw string) (string, string, error) {
 	return owner, repo, nil
 }
 
-func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal glue.GoalResult, res Result) (string, error) {
+func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal glue.GoalResult, res Result, token string) (string, error) {
 	apiBase := strings.TrimRight(strings.TrimSpace(os.Getenv("GLUE_GITHUB_API_URL")), "/")
 	if apiBase == "" {
 		apiBase = defaultGitHubAPIURL
 	}
-	token := strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN"))
+	token = strings.TrimSpace(token)
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
 		Parent        *struct {
@@ -467,8 +475,5 @@ func formatPRBody(job Job, goal glue.GoalResult, res Result) string {
 }
 
 func sanitizeToken(msg string) string {
-	if token := strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")); token != "" {
-		msg = strings.ReplaceAll(msg, token, "[REDACTED]")
-	}
-	return msg
+	return redact.String(msg)
 }

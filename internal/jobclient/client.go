@@ -102,6 +102,9 @@ func doDecode[T any](ctx context.Context, c *Client, method, path string, reqBod
 	var out T
 	return out, c.doJSON(ctx, method, path, reqBody, status, &out)
 }
+func (c *Client) PushCredentials(ctx context.Context, creds jobs.Credentials) error {
+	return c.doJSON(ctx, http.MethodPost, "/v1/credentials", creds, http.StatusOK, nil)
+}
 func (c *Client) Submit(ctx context.Context, spec jobs.Spec, start bool) (jobs.Job, error) {
 	out, err := doDecode[envelope](ctx, c, http.MethodPost, fmt.Sprintf("/v1/jobs?start=%t&backend=%s", start, url.QueryEscape(strings.TrimSpace(spec.Backend))), spec, http.StatusCreated)
 	return out.Job, err

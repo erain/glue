@@ -115,6 +115,21 @@ func New(name string) (loop.Provider, string, string, error) {
 	return f.New(), f.DefaultModel, f.EnvKey, nil
 }
 
+// NewWithKey constructs a fresh provider for the registered name and sets its
+// in-memory API key when non-empty.
+func NewWithKey(name, apiKey string) (loop.Provider, string, string, error) {
+	p, defaultModel, envKey, err := New(name)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
+		if setter, ok := p.(interface{ SetAPIKey(string) }); ok {
+			setter.SetAPIKey(apiKey)
+		}
+	}
+	return p, defaultModel, envKey, nil
+}
+
 // Known returns the registered provider names, sorted for stable
 // output in error messages and CLI help text.
 func Known() []string {

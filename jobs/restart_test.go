@@ -293,3 +293,37 @@ func TestRestartPreservesBudgetLimitsAndTerminalCheckpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestJobWaitsForCredentialsAfterRestart(t *testing.T) {
+	t.Setenv("GLUE_GITHUB_TOKEN", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	m, job := restartFixture(t, Budgets{}, glue.GoalRecord{Status: glue.GoalRunning, Checklist: []glue.ChecklistItem{{Title: "A"}}})
+	stateDir := m.options.StateDir
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p := &scriptProvider{turns: [][]glue.ProviderEvent{turn("A done"), turn(`{"done":true,"items":[{"title":"A","done":true}],"summary":"completed"}`)}}
+	next, err := New(Options{StateDir: stateDir, RequireCredentials: true, ProviderFactory: func(string) (glue.Provider, error) { return p, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { next.Close() })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		detail, err := next.Inspect(context.Background(), job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.Status == WaitingForCredentials && detail.Credentials == "absent" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected waiting_for_credentials and credentials=absent, got %+v", detail)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	next.SetCredentials(Credentials{ProviderKeys: map[string]string{"GEMINI_API_KEY": "AIzaSyRestartTestKey99887766"}})
+	if detail, err := next.Inspect(context.Background(), job.ID); err != nil || detail.Credentials != "present" || waitJob(t, next, job.ID).Status != Achieved {
+		t.Fatalf("detail=%+v err=%v", detail, err)
+	}
+}

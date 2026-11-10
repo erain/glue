@@ -178,6 +178,12 @@ type recordedPRRequest struct {
 
 func runDeliveredJob(t *testing.T, repoURL, parentFullName, token string) (*Manager, string, string, Job, Result, recordedPRRequest) {
 	t.Helper()
+	t.Setenv("GLUE_GITHUB_TOKEN", token)
+	return runDeliveredJobWithCreds(t, repoURL, parentFullName, Credentials{})
+}
+
+func runDeliveredJobWithCreds(t *testing.T, repoURL, parentFullName string, creds Credentials) (*Manager, string, string, Job, Result, recordedPRRequest) {
+	t.Helper()
 	repo, bare := repoWithBareOrigin(t, repoURL)
 	var gotPR recordedPRRequest
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +212,6 @@ func runDeliveredJob(t *testing.T, repoURL, parentFullName, token string) (*Mana
 	}))
 	t.Cleanup(api.Close)
 	t.Setenv("GLUE_GITHUB_API_URL", api.URL)
-	t.Setenv("GLUE_GITHUB_TOKEN", token)
 
 	p := &scriptProvider{turns: [][]glue.ProviderEvent{
 		turn(`{"items":[{"title":"deliver feature"}]}`),
@@ -220,9 +225,16 @@ func runDeliveredJob(t *testing.T, repoURL, parentFullName, token string) (*Mana
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
+	secretAllow := []string{"GLUE_GITHUB_TOKEN"}
+	if creds.GitHubToken != "" || len(creds.ProviderKeys) > 0 {
+		m.SetCredentials(creds)
+		for k := range creds.ProviderKeys {
+			secretAllow = append(secretAllow, k)
+		}
+	}
 	job, err := m.Create(context.Background(), Spec{
 		Objective: "Implement feature.txt", Repo: RepoSpec{Path: repo, BaseRef: "main"}, Delivery: "draft_pr",
-		ShellEnvSecretAllow: []string{"GLUE_GITHUB_TOKEN"}, Verify: [][]string{{"sh", "-c", "echo verify-suite-passed; env"}},
+		ShellEnvSecretAllow: secretAllow, Verify: [][]string{{"sh", "-c", "echo verify-suite-passed; env"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -275,28 +287,79 @@ func TestDeliverToForkParent(t *testing.T) {
 	}
 }
 
+func assertNotPersisted(t *testing.T, stateDir string, secrets ...string) {
+	t.Helper()
+	if err := filepath.WalkDir(stateDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		data, err := os.ReadFile(path)
+		for _, sec := range secrets {
+			if bytes.Contains(data, []byte(sec)) {
+				t.Fatalf("secret %q leaked in state file %s", sec, path)
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCredentialsNeverPersisted(t *testing.T) {
+	t.Setenv("GLUE_GITHUB_TOKEN", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	secrets := []string{"ghp_RuntimeGitHubSecretToken99887766", "AIzaSyRuntimeGeminiKey1122334455", "custom_runtime_secret_value_55443322"}
+	_, stateDir, _, _, res, pr := runDeliveredJobWithCreds(t, "https://github.com/octocat/hello-world.git", "", Credentials{
+		GitHubToken: secrets[0], ProviderKeys: map[string]string{"GEMINI_API_KEY": secrets[1], "CUSTOM_SECRET_KEY": secrets[2]},
+	})
+	if res.Status != Achieved || res.PRURL != "https://github.com/octocat/hello-world/pull/42" || pr.Auth != "Bearer "+secrets[0] {
+		t.Fatalf("res=%+v auth=%q", res, pr.Auth)
+	}
+	assertNotPersisted(t, stateDir, secrets...)
+}
+func TestRedactsKnownValuesAndTokenShapes(t *testing.T) {
+	allSecrets := []string{"custom-known-github-credential-xyz987", "custom-known-provider-credential-abc123", "ghp_1234567890abcdefABCDEF", "github_pat_1234567890abcdef_ABCDEF", "gho_1234567890abcdefABCDEF", "AIzaSyD1234567890abcdef-ABCDEF", "sk-proj-1234567890abcdefABCDEF"}
+	combined := strings.Join(allSecrets, " ")
+	p := &scriptProvider{turns: [][]glue.ProviderEvent{
+		turn(`{"items":[{"title":"run tool"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "exec1", Name: "shell_exec", Arguments: []byte(`{"argv":["sh","-c","echo '` + combined + `'"]}`)}}, {Type: glue.ProviderEventDone}},
+		turn("tool finished with " + combined),
+		turn(`{"done":true,"items":[{"title":"run tool","done":true}],"summary":"summary with ` + combined + `"}`),
+	}}
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) { return p, nil }, Permission: glue.AllowAll{}, AllowedBinaries: []string{"sh"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	m.SetCredentials(Credentials{GitHubToken: allSecrets[0], ProviderKeys: map[string]string{"GEMINI_API_KEY": allSecrets[1]}})
+	job, err := m.Create(context.Background(), Spec{Objective: "redact check", Repo: RepoSpec{Path: repoFixture(t)}, AllowedBinaries: []string{"sh"}, Verify: [][]string{{"sh", "-c", "echo verify:" + combined}}})
+	if err != nil || m.Start(context.Background(), job.ID) != nil || waitJob(t, m, job.ID).Status != Achieved {
+		t.Fatal(err)
+	}
+	events, err := m.Events(context.Background(), job.ID, 0)
+	res, resErr := m.Result(context.Background(), job.ID)
+	if err != nil || resErr != nil || len(events) == 0 {
+		t.Fatalf("events=%d err=%v resErr=%v", len(events), err, resErr)
+	}
+	rawEvents, _ := json.Marshal(events)
+	rawRes, _ := json.Marshal(res)
+	for _, sec := range allSecrets {
+		if bytes.Contains(rawEvents, []byte(sec)) || bytes.Contains(rawRes, []byte(sec)) {
+			t.Fatalf("leaked secret %q", sec)
+		}
+	}
+	if !bytes.Contains(rawEvents, []byte("[REDACTED]")) || !strings.Contains(res.Summary, "[REDACTED]") || len(res.Verify) != 1 || !strings.Contains(res.Verify[0].OutputTail, "[REDACTED]") {
+		t.Fatalf("missing [REDACTED]: res=%+v", res)
+	}
+}
+
 func TestTokenNeverPersisted(t *testing.T) {
 	const secret = "ghp_secret_never_persisted_token_99887766"
 	m, stateDir, _, job, res, pr := runDeliveredJob(t, "https://github.com/octocat/hello-world.git", "", secret)
 	if res.Status != Achieved || pr.Auth != "Bearer "+secret {
 		t.Fatalf("status=%s auth=%q", res.Status, pr.Auth)
 	}
-	err := filepath.WalkDir(stateDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil || d.IsDir() {
-			return walkErr
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if bytes.Contains(data, []byte(secret)) {
-			t.Fatalf("token leaked in state file %s", path)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	assertNotPersisted(t, stateDir, secret)
 	events, err := m.Events(context.Background(), job.ID, 0)
 	if err != nil || len(events) == 0 {
 		t.Fatalf("events=%d err=%v", len(events), err)

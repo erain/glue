@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/redact"
 	tfs "github.com/erain/glue/tools/fs"
 )
 
@@ -250,7 +251,7 @@ func permissionTarget(call glue.ToolCall) string {
 }
 
 func formatResult(cmd glue.ExecCommand, result glue.ExecResult) glue.ToolResult {
-	text := renderResult(cmd, result)
+	text := redact.String(renderResult(cmd, result))
 	return glue.ToolResult{
 		Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: text}},
 		IsError: result.ExitCode != 0 || result.TimedOut,

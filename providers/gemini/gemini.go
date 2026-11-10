@@ -95,6 +95,13 @@ func New(options Options) *Provider {
 	}
 }
 
+// SetAPIKey configures the in-memory API key used when Client is nil.
+func (p *Provider) SetAPIKey(key string) {
+	if p != nil {
+		p.apiKey = key
+	}
+}
+
 // Stream implements [loop.Provider]. It supports text-only conversations
 // and Gemini function calling: tool specs in [loop.ProviderRequest.Tools]
 // are converted to function declarations, inbound function calls become
