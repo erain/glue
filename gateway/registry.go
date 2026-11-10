@@ -23,8 +23,11 @@ const (
 	jobColumns     = "id,backend,backend_ref,owner,spec_json,status,created_at,updated_at,last_seq,result_json"
 )
 
+// SubmitUnknown is recorded when an AX CreateTask call fails with an ambiguous error.
+const SubmitUnknown jobs.Status = "submit_unknown"
+
 var (
-	validStatuses = []jobs.Status{"", jobs.Created, jobs.Running, jobs.WaitingForInput, jobs.Achieved, jobs.Blocked, jobs.BudgetLimited, jobs.MaxIterations, jobs.Errored, jobs.Canceled, jobs.Interrupted}
+	validStatuses = []jobs.Status{"", jobs.Created, SubmitUnknown, jobs.Running, jobs.WaitingForInput, jobs.Achieved, jobs.Blocked, jobs.BudgetLimited, jobs.MaxIterations, jobs.Errored, jobs.Canceled, jobs.Interrupted}
 	eventStatuses = map[string]jobs.Status{
 		"job_created": jobs.Created, "job_started": jobs.Running, "job_resumed": jobs.Running,
 		"permission_decision": jobs.Running, "permission_expired": jobs.Running,
@@ -79,6 +82,13 @@ func (r *Registry) CreateJob(ctx context.Context, rec Record) (Record, error) {
 		return Record{}, fmt.Errorf("%w: job %s already exists", jobs.ErrConflict, rec.ID)
 	}
 	return rec, err
+}
+func (r *Registry) UpsertStatus(ctx context.Context, id, backend string, spec jobs.Spec, st jobs.Status) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := fmtTime(time.Time{})
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,'dev-token',?,?,?,?,0,'') ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", id, backend, id, mustJSON(spec), st, now, now)
+	return err
 }
 func scanRecord(row interface{ Scan(...any) error }) (Record, error) {
 	var rec Record
