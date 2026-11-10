@@ -8,6 +8,7 @@ Reproducible single-host [kind](https://kind.sigs.k8s.io/) cluster running pinne
 |---|---|---|
 | `scripts/ax-dev/prereqs.sh` | `make ax-dev-prereqs` | Verify Docker, `kubectl`, Go 1.27 toolchain, kernel >= 6.8, cgroup v2, disk >= 40 GB, `/dev/kvm`, and `inotify` limits |
 | `scripts/ax-dev/up.sh` | `make ax-dev-up` | Provision `glue-ax`, install Substrate + AX, build/push `ax-server` and `ax-task-runner` to `localhost:5001`, write `${STATE}/images.env` (idempotent) |
+| `scripts/ax-dev/build-task-image.sh` | `make ax-dev-task-image` | Build `deploy/ax/task-image/Dockerfile` from `ax-task-runner` digest, push `localhost:5001/glue-task`, record `GLUE_TASK_IMAGE` in `${STATE}/images.env` |
 | `scripts/ax-dev/status.sh` | `make ax-dev-status` | Verify `ate-system`, `ax-system`, and `ax-workers` (`GLUE_AX_WORKERS`, default 4) are Ready |
 | `scripts/ax-dev/smoke.sh` | `make ax-dev-smoke` | Run the 6-assertion platform smoke test (apply/resume/ssh, default-deny egress, `tls_passthrough` egress, `kubectl ate proxy` ingress on `:8080`, suspend/resume `/workspace` durability, delete) |
 | `scripts/ax-dev/down.sh` | `make ax-dev-down` | Tear down `glue-ax`, `kind-registry`, and any leftover port-forwards/tunnels |

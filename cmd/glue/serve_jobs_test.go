@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -278,5 +279,70 @@ func TestServeJobShellEnvAndHomeDefaults(t *testing.T) {
 		if !strings.Contains(eventsBody, want) {
 			t.Fatalf("events missing %q:\n%s", want, eventsBody)
 		}
+	}
+}
+
+func TestJobFromAXIsIdempotent(t *testing.T) {
+	state, store, work := t.TempDir(), t.TempDir(), t.TempDir()
+	tokenPath := filepath.Join(t.TempDir(), ".glue", "token")
+	t.Setenv("AX_METADATA_URL", "")
+	t.Setenv("GLUE_DAEMON_TOKEN", "")
+	t.Setenv("AX_TASK_YAML", "apiVersion: ax.io/v1alpha1\nkind: Task\nspec:\n  config:\n    objective: \"boot idempotently\"\n    repo:\n      path: "+work+"\n")
+	var tokens, ids []string
+	for boot := 1; boot <= 2; boot++ {
+		var errs bytes.Buffer
+		serve := func(_ context.Context, cfg serveConfig, h http.Handler, _ io.Writer) error {
+			tokens = append(tokens, cfg.Token)
+			req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+			req.Header.Set("Authorization", "Bearer "+cfg.Token)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			var body struct {
+				Jobs []jobs.Job `json:"jobs"`
+			}
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body.Jobs) != 1 || body.Jobs[0].Status != jobs.Created {
+				t.Fatalf("boot %d: code=%d body=%s", boot, w.Code, w.Body.String())
+			}
+			ids = append(ids, body.Jobs[0].ID)
+			return nil
+		}
+		args := []string{"serve", "--coding", "--jobs", "--job-from-ax", "--state-dir", state, "--store", store, "--work", work, "--metadata", "", "--token-file", tokenPath}
+		if code := runCLIWithServe(context.Background(), args, io.Discard, &errs, defaultProviderFactory, serve); code != 0 {
+			t.Fatalf("boot %d code %d: %s", boot, code, errs.String())
+		}
+	}
+	if ids[0] != ids[1] || tokens[0] == "" || tokens[0] != tokens[1] {
+		t.Fatalf("ids=%v tokens=%v", ids, tokens)
+	}
+	if info, err := os.Stat(tokenPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("token file stat err=%v mode=%v", err, info)
+	}
+}
+
+func TestServeStartupMakesNoOutboundCalls(t *testing.T) {
+	origTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+	failDial := func(_ context.Context, network, addr string) (net.Conn, error) {
+		t.Errorf("unexpected outbound network dial to %s %s", network, addr)
+		return nil, errors.New("outbound network disabled")
+	}
+	http.DefaultTransport = &http.Transport{DialContext: failDial, DialTLSContext: failDial}
+	t.Setenv("AX_METADATA_URL", "")
+	t.Setenv("AX_TASK_YAML", "apiVersion: ax.io/v1alpha1\nkind: Task\nspec:\n  config:\n    objective: \"no outbound calls\"\n    repo:\n      path: /workspace\n")
+	p := &scriptedProvider{}
+	serve := func(_ context.Context, _ serveConfig, h http.Handler, _ io.Writer) error {
+		req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+		req.Header.Set("Authorization", "Bearer t")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"created"`) || len(p.requests) != 0 {
+			t.Fatalf("code=%d body=%s requests=%d", w.Code, w.Body.String(), len(p.requests))
+		}
+		return nil
+	}
+	var errs bytes.Buffer
+	args := []string{"serve", "--coding", "--jobs", "--job-from-ax", "--state-dir", t.TempDir(), "--store", t.TempDir(), "--work", t.TempDir(), "--metadata", "", "--token", "t"}
+	if code := runCLIWithServe(context.Background(), args, io.Discard, &errs, fakeFactory(p), serve); code != 0 {
+		t.Fatalf("code %d: %s", code, errs.String())
 	}
 }

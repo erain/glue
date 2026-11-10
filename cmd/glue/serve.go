@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -52,11 +53,13 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, and roles")
 	coding := flags.Bool("coding", false, "enable local coding tools for daemon runs")
 	jobsEnabled := flags.Bool("jobs", false, "host durable coding jobs (default on with --coding)")
+	jobFromAX := flags.Bool("job-from-ax", false, "create a job from AX task metadata or AX_TASK_YAML on startup (idempotent)")
 	policyName := flags.String("policy", "workspace-auto", "permission policy profile: ask-all, workspace-auto, or yolo")
 	policyFile := flags.String("policy-file", "", "path to custom JSON permission policy file")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and daemon permission approval")
 	listenAddr := flags.String("listen", defaultListenAddr, "local listen address")
 	tokenFlag := flags.String("token", "", "bearer token; defaults to GLUE_DAEMON_TOKEN or a generated token")
+	tokenFile := flags.String("token-file", "", "durable bearer token file path (created with mode 0600 if missing)")
 	metadataPath := flags.String("metadata", defaultMetadataPath(), "connection metadata JSON path; empty disables metadata file")
 	permissionTimeout := flags.Duration("permission-timeout", 0, "permission decision timeout; 0 uses daemon default")
 	var envs envFiles
@@ -81,7 +84,10 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		}
 	})
 	if !jobsSet {
-		*jobsEnabled = *coding
+		*jobsEnabled = *coding || *jobFromAX
+	}
+	if *jobFromAX && !*jobsEnabled {
+		return errors.New("--job-from-ax requires --jobs")
 	}
 	if policySet && strings.TrimSpace(*policyFile) != "" {
 		return errors.New("cannot combine --policy and --policy-file")
@@ -118,7 +124,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err := loadEnvFiles(envs); err != nil {
 		return err
 	}
-	token, tokenSource, err := resolveDaemonToken(*tokenFlag)
+	token, tokenSource, err := resolveServeToken(*tokenFlag, *tokenFile)
 	if err != nil {
 		return err
 	}
@@ -160,6 +166,11 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 			return err
 		}
 		defer func() { resultErr = errors.Join(resultErr, manager.Close()) }()
+		if *jobFromAX {
+			if _, err := manager.EnsureJobFromAX(ctx, nil); err != nil {
+				return err
+			}
+		}
 	}
 	handler, err := daemon.New(daemon.Options{
 		Jobs:             manager,
@@ -210,6 +221,37 @@ func serveDaemon(ctx context.Context, cfg serveConfig, handler http.Handler, std
 
 func resolveDaemonToken(flagValue string) (token, source string, err error) {
 	return daemon.ResolveToken(flagValue)
+}
+
+func resolveServeToken(flagValue, tokenFile string) (token, source string, err error) {
+	path := strings.TrimSpace(tokenFile)
+	if path != "" && strings.TrimSpace(flagValue) == "" && strings.TrimSpace(os.Getenv("GLUE_DAEMON_TOKEN")) == "" {
+		if data, err := os.ReadFile(path); err == nil {
+			if tok := strings.TrimSpace(string(data)); tok != "" {
+				_ = os.Chmod(path, 0o600)
+				return tok, "token-file", nil
+			}
+		} else if !os.IsNotExist(err) {
+			return "", "", err
+		}
+	}
+	token, source, err = resolveDaemonToken(flagValue)
+	if err != nil || path == "" {
+		return token, source, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", "", err
+	}
+	if source == "generated" {
+		source = "token-file"
+	}
+	return token, source, nil
 }
 
 func defaultMetadataPath() string {

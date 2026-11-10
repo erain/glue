@@ -16,6 +16,14 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add the Glue AX task image (`deploy/ax/task-image/Dockerfile`,
+  `scripts/ax-dev/build-task-image.sh`, `deploy/ax/README.md`) layering Go
+  1.27.3 (SHA-256 verified), `git`, `make`, `ca-certificates`, `bash`, and
+  `glue` on the digest-pinned `ax-task-runner` image, plus `glue serve
+  --job-from-ax` and `--token-file` (`jobs.JobSpecFromAXTaskYAML`,
+  `jobs.LoadAXTaskYAML`, `(*jobs.Manager).EnsureJobFromAX`) for idempotent,
+  zero-outbound-call job creation on AX golden pre-boot and resume.
+
 - Add reproducible local kind + Agent Substrate (`v1.0.0-rc.1`) + AX (`241bc4d`)
   development cluster scripts in `scripts/ax-dev/` (`versions.env`, `prereqs.sh`,
   `up.sh`, `status.sh`, `smoke.sh`, `down.sh`, `README.md`) and `Makefile`
