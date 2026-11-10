@@ -28,9 +28,12 @@ func TestRunStartsAndShutsDownCleanly(t *testing.T) {
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "gateway.yaml")
-	yamlCfg := "listen: 127.0.0.1:0\nstate_dir: " + filepath.Join(dir, "state") + "\nauth:\n  mode: dev-token\n  token: test-gw-token\nbackends:\n  - name: local\n    type: local\n    url: " + backendTS.URL + "\n    token: local-token\ndefault_backend: local\n"
+	yamlCfg := "listen: 127.0.0.1:0\npublic_url: https://gw.example.com\nstate_dir: " + filepath.Join(dir, "state") + "\nauth:\n  mode: dev-token\n  token: test-gw-token\nbackends:\n  - name: local\n    type: local\n    url: " + backendTS.URL + "\n    token: local-token\ndefault_backend: local\n"
 	if err := os.WriteFile(cfgPath, []byte(yamlCfg), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if err := run(t.Context(), []string{"--config", cfgPath}, &bytes.Buffer{}, nil); err == nil || !strings.Contains(err.Error(), "--insecure-dev") {
+		t.Fatalf("expected https:// dev-token refusal without --insecure-dev, got %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -39,7 +42,7 @@ func TestRunStartsAndShutsDownCleanly(t *testing.T) {
 	done := make(chan error, 1)
 	var stderr bytes.Buffer
 	go func() {
-		done <- run(ctx, []string{"--config", cfgPath}, &stderr, func(addr string) { ready <- addr })
+		done <- run(ctx, []string{"--config", cfgPath, "--insecure-dev"}, &stderr, func(addr string) { ready <- addr })
 	}()
 
 	var addr string

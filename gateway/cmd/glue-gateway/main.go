@@ -32,15 +32,25 @@ func run(ctx context.Context, args []string, stderr io.Writer, onReady func(addr
 	fs := flag.NewFlagSet("glue-gateway", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var cfgPath string
+	var insecureDev bool
 	fs.StringVar(&cfgPath, "config", "", "path to gateway YAML configuration file")
+	fs.BoolVar(&insecureDev, "insecure-dev", false, "allow dev-token auth mode when public_url is https://")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(cfgPath) == "" {
 		return errors.New("--config is required")
 	}
-	cfg, err := gateway.LoadConfig(cfgPath)
+	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
+		return fmt.Errorf("gateway: read config %s: %w", cfgPath, err)
+	}
+	cfg, err := gateway.DecodeConfig(raw)
+	if err != nil {
+		return err
+	}
+	cfg.Auth.InsecureDev = cfg.Auth.InsecureDev || insecureDev
+	if cfg, err = cfg.Validate(); err != nil {
 		return err
 	}
 	srv, err := gateway.NewServer(cfg)

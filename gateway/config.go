@@ -20,9 +20,12 @@ import (
 )
 
 const (
-	DefaultSuspendAfter  = 2 * time.Minute
-	DefaultResumeTimeout = time.Minute
-	DefaultRetainTasks   = 168 * time.Hour
+	DefaultSuspendAfter       = 2 * time.Minute
+	DefaultResumeTimeout      = time.Minute
+	DefaultRetainTasks        = 168 * time.Hour
+	DefaultSessionAbsoluteTTL = 168 * time.Hour
+	DefaultSessionIdleTTL     = 24 * time.Hour
+	DefaultAuthRateLimit      = 30
 )
 
 // DefaultEgressHosts is the default TLS passthrough allowlist for AX tasks.
@@ -33,7 +36,19 @@ var DefaultEgressHosts = []string{
 }
 
 // AuthConfig configures client authentication for glue-gateway.
-type AuthConfig struct{ Mode, Token string }
+type AuthConfig struct {
+	Mode, Token        string
+	ClientID           string        `yaml:"client_id"`
+	ClientSecret       string        `yaml:"client_secret"`
+	AllowedLogins      []string      `yaml:"allowed_logins"`
+	SessionAbsoluteTTL time.Duration `yaml:"session_absolute_ttl"`
+	SessionIdleTTL     time.Duration `yaml:"session_idle_ttl"`
+	AuthorizeURL       string        `yaml:"authorize_url"`
+	TokenURL           string        `yaml:"token_url"`
+	UserURL            string        `yaml:"user_url"`
+	RateLimitPerMin    int           `yaml:"rate_limit_per_min"`
+	InsecureDev        bool          `yaml:"insecure_dev"`
+}
 
 // ResourceLimits configures CPU and memory limits for an AX task.
 type ResourceLimits struct{ CPU, Memory string }
@@ -87,12 +102,19 @@ func LoadConfig(path string) (Config, error) {
 	}
 	return ParseConfig(data)
 }
-func ParseConfig(data []byte) (Config, error) {
+func DecodeConfig(data []byte) (Config, error) {
 	var cfg Config
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return Config{}, fmt.Errorf("gateway: parse config: %w", err)
+	}
+	return cfg, nil
+}
+func ParseConfig(data []byte) (Config, error) {
+	cfg, err := DecodeConfig(data)
+	if err != nil {
+		return Config{}, err
 	}
 	return cfg.Validate()
 }
@@ -102,6 +124,17 @@ func (cfg Config) Validate() (Config, error) {
 	cfg.StateDir = strings.TrimSpace(cfg.StateDir)
 	cfg.Auth.Mode = cmp.Or(strings.TrimSpace(cfg.Auth.Mode), "dev-token")
 	cfg.Auth.Token = cmp.Or(strings.TrimSpace(cfg.Auth.Token), strings.TrimSpace(os.Getenv("GLUE_GATEWAY_TOKEN")))
+	cfg.Auth.ClientID, cfg.Auth.ClientSecret = cmp.Or(strings.TrimSpace(cfg.Auth.ClientID), strings.TrimSpace(os.Getenv("GLUE_GITHUB_CLIENT_ID"))), cmp.Or(strings.TrimSpace(cfg.Auth.ClientSecret), strings.TrimSpace(os.Getenv("GLUE_GITHUB_CLIENT_SECRET")))
+	if envAL := strings.TrimSpace(os.Getenv("GLUE_ALLOWED_LOGINS")); len(cfg.Auth.AllowedLogins) == 0 && envAL != "" {
+		cfg.Auth.AllowedLogins = strings.Split(envAL, ",")
+	}
+	for i := range cfg.Auth.AllowedLogins {
+		if cfg.Auth.AllowedLogins[i] = strings.TrimSpace(cfg.Auth.AllowedLogins[i]); cfg.Auth.AllowedLogins[i] == "" {
+			return Config{}, errors.New("gateway: invalid empty entry in auth.allowed_logins")
+		}
+	}
+	cfg.Auth.SessionAbsoluteTTL, cfg.Auth.SessionIdleTTL, cfg.Auth.RateLimitPerMin = cmp.Or(cfg.Auth.SessionAbsoluteTTL, DefaultSessionAbsoluteTTL), cmp.Or(cfg.Auth.SessionIdleTTL, DefaultSessionIdleTTL), cmp.Or(cfg.Auth.RateLimitPerMin, DefaultAuthRateLimit)
+	cfg.Auth.AuthorizeURL, cfg.Auth.TokenURL, cfg.Auth.UserURL = cmp.Or(strings.TrimSpace(cfg.Auth.AuthorizeURL), "https://github.com/login/oauth/authorize"), cmp.Or(strings.TrimSpace(cfg.Auth.TokenURL), "https://github.com/login/oauth/access_token"), cmp.Or(strings.TrimSpace(cfg.Auth.UserURL), "https://api.github.com/user")
 	cfg.Credentials.GitHubToken = cmp.Or(strings.TrimSpace(cfg.Credentials.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")))
 	if cfg.Credentials.ProviderKeys == nil {
 		cfg.Credentials.ProviderKeys = map[string]string{}
@@ -129,7 +162,11 @@ func (cfg Config) Validate() (Config, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.RetainTasks < 0 || cfg.StateDir == "" || cfg.Auth.Mode != "dev-token" || cfg.Auth.Token == "" || len(cfg.Backends) == 0 {
+	if cfg.Auth.Mode == "dev-token" && strings.HasPrefix(strings.ToLower(cfg.PublicURL), "https://") && !cfg.Auth.InsecureDev {
+		return Config{}, errors.New("gateway: dev-token mode is not allowed when public_url is https:// unless --insecure-dev is passed")
+	}
+	authOK := (cfg.Auth.Mode == "dev-token" && cfg.Auth.Token != "") || (cfg.Auth.Mode == "github" && cfg.PublicURL != "" && cfg.Auth.ClientID != "" && cfg.Auth.ClientSecret != "" && len(cfg.Auth.AllowedLogins) > 0)
+	if cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.RetainTasks < 0 || cfg.Auth.SessionAbsoluteTTL <= 0 || cfg.Auth.SessionIdleTTL <= 0 || cfg.Auth.RateLimitPerMin <= 0 || cfg.StateDir == "" || !authOK || len(cfg.Backends) == 0 {
 		return Config{}, fmt.Errorf("gateway: invalid config (state_dir=%q, auth.mode=%q, has_token=%v, backends=%d)", cfg.StateDir, cfg.Auth.Mode, cfg.Auth.Token != "", len(cfg.Backends))
 	}
 	seen := make(map[string]bool, len(cfg.Backends))

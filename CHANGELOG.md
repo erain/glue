@@ -16,6 +16,14 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `auth.mode: github` OAuth sign-in (`/auth/github/login` and
+  `/auth/github/callback`) with `auth.allowed_logins`, server-side SQLite
+  sessions (`HttpOnly; Secure; SameSite=Lax`, 7-day absolute TTL and 24-hour
+  idle TTL, `POST /v1/session/logout`), double-submit `X-Glue-CSRF` enforcement,
+  auth endpoint rate limiting, `/healthz` and strict unauthenticated route
+  allowlisting (`(*gateway.Server).Routes`), and refuse `dev-token` mode on
+  `https://` `public_url` unless `--insecure-dev` is set.
+
 - Push runtime credentials (`github_token` and `provider_keys`) from
   `glue-gateway` to AX tasks over `atenet-router` (`POST /v1/credentials`)
   before `POST /v1/jobs/{id}/start`, after each `ResumeTask`, and whenever

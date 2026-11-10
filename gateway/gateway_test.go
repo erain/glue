@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,19 +39,24 @@ func must[T any](v T, err error) T {
 func TestConfigParseAndValidate(t *testing.T) {
 	t.Setenv("GLUE_GATEWAY_TOKEN", "env-secret")
 	cfgPath := filepath.Join(t.TempDir(), "gateway.yaml")
-	raw := "public_url: https://gw.example.com/\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\ndefault_backend: local\nbackends:\n  - name: local\n    type: local\n    url: http://127.0.0.1:8787/\n    token: backend-token\n  - name: ax\n    type: ax\n    image: localhost:5001/glue-task@sha256:1234\n    resources:\n      limits:\n        cpu: \"2\"\n        memory: 4Gi\n"
+	raw := "public_url: http://gw.example.com/\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\ndefault_backend: local\nbackends:\n  - name: local\n    type: local\n    url: http://127.0.0.1:8787/\n    token: backend-token\n  - name: ax\n    type: ax\n    image: localhost:5001/glue-task@sha256:1234\n    resources:\n      limits:\n        cpu: \"2\"\n        memory: 4Gi\n"
 	must(0, os.WriteFile(cfgPath, []byte(raw), 0o600))
 	cfg := must(LoadConfig(cfgPath))
-	if cfg.Listen != "127.0.0.1:8800" || cfg.PublicURL != "https://gw.example.com" || cfg.Auth.Token != "env-secret" || cfg.DefaultBackend != "local" || cfg.Backends[0].URL != "http://127.0.0.1:8787" {
+	if cfg.Listen != "127.0.0.1:8800" || cfg.PublicURL != "http://gw.example.com" || cfg.Auth.Token != "env-secret" || cfg.DefaultBackend != "local" || cfg.Backends[0].URL != "http://127.0.0.1:8787" {
 		t.Fatalf("unexpected normalized config: %+v", cfg)
 	}
 	if axCfg := cfg.Backends[1]; axCfg.Atespace != "default" || axCfg.AXServer != "ax-server.ax-system:8080" || axCfg.Router != "atenet-router.ate-system:8444" || axCfg.Resources.CPU != "2" || axCfg.Resources.Memory != "4Gi" || len(axCfg.EgressHosts) != len(DefaultEgressHosts) {
 		t.Fatalf("unexpected normalized ax backend config: %+v", axCfg)
 	}
+	ghCfg := must(ParseConfig([]byte("public_url: https://gw.example.com/\nstate_dir: /tmp\nauth:\n  mode: github\n  client_id: cid\n  client_secret: csec\n  allowed_logins: [alice]\nbackends:\n  - name: l\n    type: local\n    url: http://x\n    token: t\n")))
+	if ghCfg.Auth.Mode != "github" || ghCfg.Auth.SessionAbsoluteTTL != 168*time.Hour || ghCfg.Auth.SessionIdleTTL != 24*time.Hour {
+		t.Fatalf("unexpected github auth config: %+v", ghCfg.Auth)
+	}
 	t.Setenv("GLUE_GATEWAY_TOKEN", "")
 	for _, tc := range []struct{ yaml, want string }{
 		{"unknown_key: 1\n", "field unknown_key"},
 		{"auth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "state_dir=\"\""},
+		{"public_url: https://gw.example.com\nstate_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "--insecure-dev"},
 		{"state_dir: /tmp\nauth: {mode: github, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.mode=\"github\""},
 		{"state_dir: /tmp\nauth: {mode: dev-token}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "has_token=false"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\n", "backends=0"},
@@ -552,5 +558,166 @@ func TestOrphanTasksReportedNotDeleted(t *testing.T) {
 	must(0, json.NewDecoder(resp.Body).Decode(&diag))
 	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(diag.OrphanTasks, []string{"glue-job-orphan000001"}) || h.deletes.Load() != 0 {
 		t.Fatalf("status=%d diag=%+v deletes=%d", resp.StatusCode, diag, h.deletes.Load())
+	}
+}
+
+func newOAuthGatewayFixture(t *testing.T, login string, allowed []string) (*fakeAXHarness, *Server, *httptest.Server, *http.Client) {
+	t.Helper()
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/login/oauth/access_token" && r.FormValue("client_id") == "cid" && r.FormValue("client_secret") == "csec" && r.FormValue("code") == "code-1" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "gho_test_token"})
+		} else if r.URL.Path == "/user" && r.Header.Get("Authorization") == "Bearer gho_test_token" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 4242, "login": login})
+		} else {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	t.Cleanup(gh.Close)
+	h := &fakeAXHarness{}
+	h.now.Store(time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC).UnixNano())
+	gw := must(NewServer(Config{
+		PublicURL: "https://gw.example.com", StateDir: t.TempDir(), Now: h.Now,
+		Auth:           AuthConfig{Mode: "github", ClientID: "cid", ClientSecret: "csec", AllowedLogins: allowed, AuthorizeURL: gh.URL + "/login/oauth/authorize", TokenURL: gh.URL + "/login/oauth/access_token", UserURL: gh.URL + "/user", RateLimitPerMin: 5},
+		Backends:       []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}},
+		CustomBackends: map[string]Backend{"ax": h},
+	}))
+	ts := httptest.NewServer(gw)
+	t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+	return h, gw, ts, &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func doCookie(t *testing.T, cli *http.Client, method, rawURL string, c *http.Cookie, csrf, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), method, rawURL, strings.NewReader(body))
+	if c != nil {
+		req.AddCookie(c)
+	}
+	if csrf != "" {
+		req.Header.Set("X-Glue-CSRF", csrf)
+	}
+	return must(cli.Do(req))
+}
+func oauthLogin(t *testing.T, ts *httptest.Server, cli *http.Client) (*http.Response, *http.Cookie, string) {
+	t.Helper()
+	r1 := must(cli.Get(ts.URL + "/auth/github/login"))
+	r1.Body.Close()
+	u := must(url.Parse(r1.Header.Get("Location")))
+	if r1.StatusCode != http.StatusFound || u.Query().Get("redirect_uri") != "https://gw.example.com/auth/github/callback" || len(r1.Cookies()) == 0 {
+		t.Fatalf("login redirect: status=%d loc=%s cookies=%v", r1.StatusCode, r1.Header.Get("Location"), r1.Cookies())
+	}
+	r2 := doCookie(t, cli, http.MethodGet, ts.URL+"/auth/github/callback?code=code-1&state="+u.Query().Get("state"), r1.Cookies()[0], "", "")
+	r2.Body.Close()
+	for _, c := range r2.Cookies() {
+		if c.Name == "glue_session" && c.Value != "" {
+			sresp := doCookie(t, cli, http.MethodGet, ts.URL+"/v1/session", c, "", "")
+			defer sresp.Body.Close()
+			var body struct {
+				CSRFToken string `json:"csrf_token"`
+			}
+			_ = json.NewDecoder(sresp.Body).Decode(&body)
+			return r2, c, body.CSRFToken
+		}
+	}
+	return r2, nil, ""
+}
+
+func TestOAuthAllowlistedLoginSucceeds(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	resp, c, csrf := oauthLogin(t, ts, cli)
+	if resp.StatusCode != http.StatusFound || c == nil || len(c.Value) != 64 || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || csrf == "" {
+		t.Fatalf("oauth callback: status=%d cookie=%+v csrf=%q", resp.StatusCode, c, csrf)
+	}
+}
+
+func TestOAuthNonAllowlistedRejected(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "mallory", []string{"alice"})
+	if resp, c, _ := oauthLogin(t, ts, cli); resp.StatusCode != http.StatusForbidden || c != nil {
+		t.Fatalf("expected 403 and no session cookie, got status=%d cookie=%+v", resp.StatusCode, c)
+	}
+}
+
+func doCookieStatus(t *testing.T, cli *http.Client, method, rawURL string, c *http.Cookie, csrf, body string) int {
+	resp := doCookie(t, cli, method, rawURL, c, csrf, body)
+	resp.Body.Close()
+	return resp.StatusCode
+}
+func TestOAuthStateMismatchRejected(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	r1 := must(cli.Get(ts.URL + "/auth/github/login"))
+	r1.Body.Close()
+	if st := doCookieStatus(t, cli, http.MethodGet, ts.URL+"/auth/github/callback?code=code-1&state=tampered", r1.Cookies()[0], "", ""); st != http.StatusBadRequest {
+		t.Fatalf("expected 400 on state mismatch, got %d", st)
+	}
+}
+
+func TestSessionExpiry(t *testing.T) {
+	h, gw, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	_, c, _ := oauthLogin(t, ts, cli)
+	check := func() int { return doCookieStatus(t, cli, http.MethodGet, ts.URL+"/v1/session", c, "", "") }
+	h.Advance(23*time.Hour, gw)
+	if st := check(); st != http.StatusOK {
+		t.Fatalf("before idle TTL: status=%d", st)
+	}
+	h.Advance(25*time.Hour, gw)
+	if st := check(); st != http.StatusUnauthorized {
+		t.Fatalf("after 24h idle TTL: status=%d, want 401", st)
+	}
+	_, c, _ = oauthLogin(t, ts, cli)
+	for range 8 {
+		h.Advance(20*time.Hour, gw)
+		_ = check()
+	}
+	if check() != http.StatusOK {
+		t.Fatal("expected 200 before 7d absolute TTL")
+	}
+	h.Advance(10*time.Hour, gw)
+	if st := check(); st != http.StatusUnauthorized {
+		t.Fatalf("after 7d absolute TTL: status=%d, want 401", st)
+	}
+}
+
+func TestLogout(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	_, c, csrf := oauthLogin(t, ts, cli)
+	if doCookieStatus(t, cli, http.MethodPost, ts.URL+"/v1/session/logout", c, csrf, "") != http.StatusOK || doCookieStatus(t, cli, http.MethodGet, ts.URL+"/v1/session", c, "", "") != http.StatusUnauthorized {
+		t.Fatal("unexpected logout statuses")
+	}
+}
+
+func TestCSRFRequiredForCookieAuth(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	_, c, csrf := oauthLogin(t, ts, cli)
+	post := func(hdr string) int {
+		return doCookieStatus(t, cli, http.MethodPost, ts.URL+"/v1/jobs", c, hdr, `{"objective":"csrf","repo":{"url":"https://github.com/erain/glue-sandbox"}}`)
+	}
+	if post("") != http.StatusForbidden || post("wrong") != http.StatusForbidden || post(csrf) != http.StatusCreated {
+		t.Fatal("unexpected CSRF statuses")
+	}
+}
+
+func TestAuthRateLimit(t *testing.T) {
+	_, _, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	for range 5 {
+		_ = doCookieStatus(t, cli, http.MethodGet, ts.URL+"/auth/github/login", nil, "", "")
+	}
+	if st := doCookieStatus(t, cli, http.MethodGet, ts.URL+"/auth/github/login", nil, "", ""); st != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on 6th auth request, got %d", st)
+	}
+}
+
+func TestUnauthenticatedRouteAllowlist(t *testing.T) {
+	_, gw, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	allowlist := map[string]bool{
+		"GET /": true, "GET /index.html": true, "GET /static/app.js": true, "GET /static/api.js": true, "GET /static/app.css": true,
+		"GET /healthz": true, "GET /auth/github/login": true, "GET /auth/github/callback": true,
+	}
+	rpl := strings.NewReplacer("{id}", "job-000000000001", "{permID}", "perm-1")
+	for _, rt := range gw.Routes() {
+		key := rt.Method + " " + rt.Path
+		st := doCookieStatus(t, cli, rt.Method, ts.URL+rpl.Replace(rt.Path), nil, "", "")
+		if (st != http.StatusUnauthorized) != allowlist[key] || rt.Public != allowlist[key] {
+			t.Fatalf("route %s: status=%d public=%v allowlist=%v", key, st, rt.Public, allowlist[key])
+		}
 	}
 }
