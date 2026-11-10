@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add the end-to-end showcase runbook, recorded live AX execution (`job-628de8c215a8`
+  opening draft PR `erain/glue-sandbox#5`), four recorded failure drills (verify
+  failure `blocked`, phone cancel, 2-minute disconnect replay via `Last-Event-ID`,
+  and mid-job `glue-gateway` restart recovery), and upstream AX feedback in
+  `docs/demo-ax-develops-ax.md` with a "See it in action" link in `README.md`.
+
 - Harden `glue-gateway` for public exposure behind Cloudflare Tunnel with HSTS
   (`Strict-Transport-Security`), configurable `trust_forwarded_proto` for
   `Secure` cookies and redirect URLs, `max_body_bytes` (default 1 MiB, returning
