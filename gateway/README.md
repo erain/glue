@@ -25,6 +25,12 @@ listen: 127.0.0.1:8800
 # External base URL used when constructing public links (optional; trailing "/" trimmed).
 public_url: http://127.0.0.1:8800
 
+# Trust X-Forwarded-Proto: https from Cloudflare Tunnel / reverse proxy to set HSTS and Secure cookies (optional; or GLUE_TRUST_FORWARDED_PROTO=1).
+trust_forwarded_proto: false
+
+# Maximum HTTP request body size in bytes (optional; defaults to 1048576 / 1 MiB).
+max_body_bytes: 1048576
+
 # Directory storing the SQLite registry database (events.sqlite) (required).
 state_dir: /var/lib/glue-gateway
 
@@ -123,6 +129,14 @@ For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-sh
 2. Configure `auth.mode: github`, `client_id`, `client_secret` (or `GLUE_GITHUB_CLIENT_ID` / `GLUE_GITHUB_CLIENT_SECRET`), and `allowed_logins` in `gateway.yaml`.
 3. Open `<public_url>` in a browser, click **Sign in with GitHub**, navigate to **Tokens** (`#/tokens`), and create a personal API token (shown once).
 4. Store the token for the CLI with `glue job login --server <public_url> --token <glue_pat_...>`.
+
+## Public Exposure and Hardening (`deploy/cloudflared`)
+
+When exposed publicly behind a named Cloudflare Tunnel (see [`deploy/cloudflared`](../deploy/cloudflared/README.md) and [`docs/runbooks/public-gateway.md`](../docs/runbooks/public-gateway.md)):
+
+- **HSTS & trusted `X-Forwarded-Proto`:** Responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains` and session cookies carry `Secure` whenever `public_url` starts with `https://`, TLS is terminated directly, or `trust_forwarded_proto: true` with `X-Forwarded-Proto: https`.
+- **Request limits & HTTP timeouts:** Request bodies are capped at `max_body_bytes` (default `1 MiB`, rejecting larger payloads with `413 Request Entity Too Large`), and `NewHTTPServer` configures `ReadHeaderTimeout: 10s`, `ReadTimeout: 30s`, and `IdleTimeout: 120s`.
+- **Redacted structured access logs & `/healthz`:** Every request logs `method`, `path` (without query parameters), `status`, `duration_ms`, and `remote_ip`, never logging bearer tokens, cookies, or OAuth secrets. `GET /healthz` returns `{"ok":true}` with no version or internal details.
 
 ## Event Stream Proxying and Offline Replay
 

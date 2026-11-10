@@ -788,3 +788,76 @@ func TestUnauthenticatedRouteAllowlist(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicHardeningHSTSAndForwardedProto(t *testing.T) {
+	_, _, httpsTS, httpsCli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	resp := must(httpsCli.Get(httpsTS.URL + "/"))
+	resp.Body.Close()
+	if got := resp.Header.Get("Strict-Transport-Security"); got != HSTSHeader {
+		t.Fatalf("https public_url HSTS = %q, want %q", got, HSTSHeader)
+	}
+	for _, trust := range []bool{false, true} {
+		gw := must(NewServer(Config{
+			StateDir: t.TempDir(), TrustForwardedProto: trust,
+			Auth:           AuthConfig{Mode: "dev-token", Token: "gw-token"},
+			Backends:       []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}},
+			CustomBackends: map[string]Backend{"ax": &fakeAXHarness{}},
+		}))
+		ts := httptest.NewServer(gw)
+		t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/session/login", strings.NewReader(`{"token":"gw-token"}`))
+		req.Header.Set("X-Forwarded-Proto", "https")
+		r := must(ts.Client().Do(req))
+		r.Body.Close()
+		if (r.Header.Get("Strict-Transport-Security") == HSTSHeader) != trust || len(r.Cookies()) == 0 || r.Cookies()[0].Secure != trust {
+			t.Fatalf("trust=%v: HSTS=%q cookies=%+v", trust, r.Header.Get("Strict-Transport-Security"), r.Cookies())
+		}
+	}
+}
+
+func TestPublicHardeningBodyLimitsAndTimeouts(t *testing.T) {
+	_, gw, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	httpSrv := NewHTTPServer("127.0.0.1:0", gw)
+	if httpSrv.ReadHeaderTimeout != 10*time.Second || httpSrv.ReadTimeout != 30*time.Second || httpSrv.IdleTimeout != 120*time.Second {
+		t.Fatalf("unexpected server timeouts: %+v", httpSrv)
+	}
+	hresp := must(cli.Get(ts.URL + "/healthz"))
+	defer hresp.Body.Close()
+	var hbody map[string]any
+	must(0, json.NewDecoder(hresp.Body).Decode(&hbody))
+	if hresp.StatusCode != http.StatusOK || !reflect.DeepEqual(hbody, map[string]any{"ok": true}) {
+		t.Fatalf("/healthz status=%d body=%+v", hresp.StatusCode, hbody)
+	}
+	tok := must(gw.reg.CreateToken(t.Context(), "alice", "cli"))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/v1/jobs", strings.NewReader(`{"objective":"`+strings.Repeat("x", DefaultMaxBodyBytes+64)+`"}`))
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	resp := must(cli.Do(req))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized POST /v1/jobs status=%d, want 413", resp.StatusCode)
+	}
+}
+
+func TestStructuredAccessLogRedactsSecrets(t *testing.T) {
+	var logBuf bytes.Buffer
+	origOut := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origOut) })
+	_, gw, ts, cli := newOAuthGatewayFixture(t, "alice", []string{"alice"})
+	_, cookie, _ := oauthLogin(t, ts, cli)
+	tok := must(gw.reg.CreateToken(t.Context(), "alice", "secret-check"))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/v1/jobs?token="+tok.Token, nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	must(cli.Do(req)).Body.Close()
+	logs := logBuf.String()
+	for _, want := range []string{"gateway: access method=GET path=/auth/github/login status=302", "gateway: access method=GET path=/auth/github/callback status=302", "gateway: access method=GET path=/v1/jobs status=200"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("missing %q in access logs:\n%s", want, logs)
+		}
+	}
+	for _, secret := range []string{tok.Token, cookie.Value, "code-1", "csec", "gho_test_token"} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("secret %q leaked in access logs:\n%s", secret, logs)
+		}
+	}
+}

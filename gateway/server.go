@@ -373,14 +373,21 @@ func (s *Server) allowAuthRate(r *http.Request) bool {
 	s.rateHits[ip] = append(hits, now)
 	return true
 }
+func (s *Server) isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.HasPrefix(strings.ToLower(s.cfg.PublicURL), "https://") || (s.cfg.TrustForwardedProto && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+}
 func (s *Server) callbackURL(r *http.Request) string {
 	if s.cfg.PublicURL != "" {
 		return s.cfg.PublicURL + "/auth/github/callback"
 	}
-	return "http://" + cmp.Or(r.Host, "127.0.0.1") + "/auth/github/callback"
+	scheme := "http://"
+	if s.isHTTPS(r) {
+		scheme = "https://"
+	}
+	return scheme + cmp.Or(r.Host, "127.0.0.1") + "/auth/github/callback"
 }
-func setCookie(w http.ResponseWriter, name, val string, maxAge int) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+func (s *Server) setCookie(w http.ResponseWriter, r *http.Request, name, val string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: s.isHTTPS(r), SameSite: http.SameSiteLaxMode})
 }
 func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.allowAuthRate(r) {
@@ -388,7 +395,7 @@ func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := randHex(32)
-	setCookie(w, "glue_oauth_state", state, 600)
+	s.setCookie(w, r, "glue_oauth_state", state, 600)
 	q := url.Values{"client_id": {s.cfg.Auth.ClientID}, "redirect_uri": {s.callbackURL(r)}, "state": {state}}
 	http.Redirect(w, r, s.cfg.Auth.AuthorizeURL+"?"+q.Encode(), http.StatusFound)
 }
@@ -415,7 +422,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
 	c, err := r.Cookie("glue_oauth_state")
-	setCookie(w, "glue_oauth_state", "", -1)
+	s.setCookie(w, r, "glue_oauth_state", "", -1)
 	if err != nil || !eqToken(state, c.Value) || code == "" {
 		writeErr(w, http.StatusBadRequest, "invalid_oauth_state", "missing or mismatched OAuth state")
 		return
@@ -433,11 +440,17 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.isAllowedLogin(user.Login) {
+		if strings.Contains(r.Header.Get("Accept"), "text/html") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `<!doctype html><html><head><meta charset="utf-8"><title>Access Denied — Glue</title><link rel="stylesheet" href="/static/app.css"></head><body><main class="container"><section class="card" data-testid="access-denied-view"><h2>Access Denied</h2><p class="error-text">Your GitHub account is not in the gateway allowlist (<code>allowed_logins</code>).</p><p><a class="btn btn-secondary" href="/">Back to sign in</a></p></section></main></body></html>`)
+			return
+		}
 		writeErr(w, http.StatusForbidden, "forbidden", "GitHub login is not in allowed_logins")
 		return
 	}
 	if sess, err := s.reg.CreateSession(r.Context(), user.Login, user.ID, s.cfg.Auth.SessionAbsoluteTTL); err == nil {
-		setCookie(w, "glue_session", sess.ID, int(s.cfg.Auth.SessionAbsoluteTTL.Seconds()))
+		s.setCookie(w, r, "glue_session", sess.ID, int(s.cfg.Auth.SessionAbsoluteTTL.Seconds()))
 		http.Redirect(w, r, "/", http.StatusFound)
 	} else {
 		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -467,8 +480,60 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Session, boo
 	return Session{}, false
 }
 
+// NewHTTPServer returns an http.Server configured with public-facing timeouts.
+func NewHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+func isTooLarge(w http.ResponseWriter, err error) bool {
+	var mbe *http.MaxBytesError
+	if errors.As(err, &mbe) {
+		writeErr(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
+		return true
+	}
+	return false
+}
+
 // ServeHTTP routes browser UI, session, health, backend list, and job requests.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := s.cfg.Now()
+	recW := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	w = recW
+	defer func() {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		log.Printf("gateway: access method=%s path=%s status=%d duration_ms=%d remote_ip=%s", r.Method, r.URL.Path, recW.status, s.cfg.Now().Sub(start).Milliseconds(), cmp.Or(host, r.RemoteAddr, "local"))
+	}()
+	if s.isHTTPS(r) {
+		w.Header().Set("Strict-Transport-Security", HSTSHeader)
+	}
+	limit := cmp.Or(s.cfg.MaxBodyBytes, int64(DefaultMaxBodyBytes))
+	if r.ContentLength > limit {
+		writeErr(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
+		return
+	}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+	}
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" || strings.HasPrefix(r.URL.Path, "/static/") {
 		webui.Handler().ServeHTTP(w, r)
 		return
@@ -497,7 +562,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct{ Token string }
-		if s.cfg.Auth.Mode != "dev-token" || json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body) != nil || !eqToken(body.Token, s.cfg.Auth.Token) {
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if isTooLarge(w, err) {
+			return
+		}
+		if s.cfg.Auth.Mode != "dev-token" || err != nil || !eqToken(body.Token, s.cfg.Auth.Token) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid token")
 			return
 		}
@@ -506,7 +575,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "glue_session", Value: sess.ID, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode, MaxAge: int(s.cfg.Auth.SessionAbsoluteTTL.Seconds())})
+		s.setCookie(w, r, "glue_session", sess.ID, int(s.cfg.Auth.SessionAbsoluteTTL.Seconds()))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "auth_mode": s.cfg.Auth.Mode, "login": sess.Login, "csrf_token": sess.CSRFToken})
 		return
 	}
@@ -523,7 +592,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if c, err := r.Cookie("glue_session"); err == nil {
 			_ = s.reg.DeleteSession(r.Context(), c.Value)
 		}
-		setCookie(w, "glue_session", "", -1)
+		s.setCookie(w, r, "glue_session", "", -1)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	case "GET /v1/tokens":
@@ -532,7 +601,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case "POST /v1/tokens":
 		var body struct{ Name string }
-		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); isTooLarge(w, err) {
+			return
+		}
 		tok, err := s.reg.CreateToken(r.Context(), sess.Login, body.Name)
 		respond(w, http.StatusCreated, tok, err)
 		return
@@ -550,7 +621,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case "POST /v1/jobs":
 		var spec jobs.Spec
-		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&spec)
+		err := json.NewDecoder(r.Body).Decode(&spec)
+		if isTooLarge(w, err) {
+			return
+		}
 		name := cmp.Or(strings.TrimSpace(r.URL.Query().Get("backend")), strings.TrimSpace(spec.Backend), s.cfg.DefaultBackend)
 		b := s.backends[name]
 		if err != nil || b == nil {
@@ -691,7 +765,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		if r.Method == http.MethodPost && (sub == "messages" || sub == "continue" || (len(parts) == 4 && parts[1] == "permissions" && parts[3] == "decision")) {
-			body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+			body, err := io.ReadAll(r.Body)
+			if isTooLarge(w, err) {
+				return
+			}
 			allPerms, _ := s.reg.Permissions(r.Context(), id, "")
 			if err := s.wakeIfSuspended(r.Context(), id, sub); err != nil {
 				respond(w, 0, nil, err)

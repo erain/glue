@@ -31,6 +31,7 @@ metadata:
 data:
   config.yaml: |
     listen: 0.0.0.0:8080
+    trust_forwarded_proto: true
     state_dir: /var/lib/glue-gateway
     auth:
       mode: dev-token
@@ -87,13 +88,13 @@ spec:
               containerPort: 8080
           readinessProbe:
             httpGet:
-              path: /v1/health
+              path: /healthz
               port: 8080
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /v1/health
+              path: /healthz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
