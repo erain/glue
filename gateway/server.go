@@ -70,7 +70,7 @@ func NewServer(cfg Config) (*Server, error) {
 		name := b.Name
 		axb, err := ax.NewBackend(ax.Options{
 			Atespace: b.Atespace, Image: b.Image, CPU: b.Resources.CPU, Memory: b.Resources.Memory, EgressHosts: b.EgressHosts,
-			AXServer: b.AXServer, Substrate: b.Substrate, Router: b.Router, CertFile: b.CertFile, CAFile: b.CAFile, TokenFile: b.TokenFile, Secret: cfg.Auth.Token,
+			AXServer: b.AXServer, Substrate: b.Substrate, Router: b.Router, CertFile: b.CertFile, CAFile: b.CAFile, TokenFile: b.TokenFile, Secret: cfg.Auth.Token, Credentials: cfg.Credentials,
 			GetJob: func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error) {
 				r, e := reg.GetJob(ctx, id)
 				return r.Spec, r.Status, e
@@ -108,7 +108,7 @@ func (s *Server) Close() error {
 }
 func (s *Server) Poke() { s.mu.Lock(); close(s.notify); s.notify = make(chan struct{}); s.mu.Unlock() }
 func isTerminal(st jobs.Status) bool {
-	return st != "" && st != jobs.Created && st != SubmitUnknown && st != jobs.Running && st != jobs.WaitingForInput && st != jobs.Suspended
+	return st != "" && st != jobs.Created && st != SubmitUnknown && st != jobs.Running && st != jobs.WaitingForInput && st != jobs.WaitingForCredentials && st != jobs.Suspended
 }
 func (s *Server) addViewer(id string, delta int) {
 	s.mu.Lock()

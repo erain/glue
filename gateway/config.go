@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erain/glue/jobs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,12 +63,13 @@ type BackendConfig struct {
 
 // Config is the top-level YAML configuration for glue-gateway.
 type Config struct {
-	Listen         string          `yaml:"listen"`
-	PublicURL      string          `yaml:"public_url"`
-	StateDir       string          `yaml:"state_dir"`
-	Auth           AuthConfig      `yaml:"auth"`
-	Backends       []BackendConfig `yaml:"backends"`
-	DefaultBackend string          `yaml:"default_backend"`
+	Listen         string           `yaml:"listen"`
+	PublicURL      string           `yaml:"public_url"`
+	StateDir       string           `yaml:"state_dir"`
+	Auth           AuthConfig       `yaml:"auth"`
+	Credentials    jobs.Credentials `yaml:"credentials" json:"-"`
+	Backends       []BackendConfig  `yaml:"backends"`
+	DefaultBackend string           `yaml:"default_backend"`
 	// Task suspension, retention settings, and test hooks.
 	SuspendAfter    time.Duration      `yaml:"suspend_after"`
 	ResumeTimeout   time.Duration      `yaml:"resume_timeout"`
@@ -100,6 +102,15 @@ func (cfg Config) Validate() (Config, error) {
 	cfg.StateDir = strings.TrimSpace(cfg.StateDir)
 	cfg.Auth.Mode = cmp.Or(strings.TrimSpace(cfg.Auth.Mode), "dev-token")
 	cfg.Auth.Token = cmp.Or(strings.TrimSpace(cfg.Auth.Token), strings.TrimSpace(os.Getenv("GLUE_GATEWAY_TOKEN")))
+	cfg.Credentials.GitHubToken = cmp.Or(strings.TrimSpace(cfg.Credentials.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")))
+	if cfg.Credentials.ProviderKeys == nil {
+		cfg.Credentials.ProviderKeys = map[string]string{}
+	}
+	for p, env := range map[string]string{"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "nvidia": "NVIDIA_API_KEY"} {
+		if cfg.Credentials.ProviderKeys[p] = cmp.Or(strings.TrimSpace(cfg.Credentials.ProviderKeys[p]), strings.TrimSpace(os.Getenv(env))); cfg.Credentials.ProviderKeys[p] == "" {
+			delete(cfg.Credentials.ProviderKeys, p)
+		}
+	}
 	if envSA := strings.TrimSpace(os.Getenv("GLUE_SUSPEND_AFTER")); cfg.SuspendAfter == 0 && envSA != "" {
 		if d, err := time.ParseDuration(envSA); err == nil && d > 0 {
 			cfg.SuspendAfter = d

@@ -11,9 +11,9 @@ source "${AX_DEV_DIR}/versions.env"
 
 REPO_URL="${GLUE_E2E_REPO:-https://github.com/erain/glue-sandbox}"
 BASE_REF="${GLUE_E2E_BASE:-main}"
-OBJECTIVE="${GLUE_E2E_OBJECTIVE:-Add a short Overview section to README.md}"
+OBJECTIVE="${GLUE_E2E_OBJECTIVE:-Add a short paragraph to README.md describing this sandbox repository}"
 MODEL="${GLUE_E2E_MODEL:-gemini-3-flash-preview}"
-THINKING="${GLUE_E2E_THINKING:-minimal}"
+THINKING="${GLUE_E2E_THINKING:-medium}"
 SUSPEND_AFTER="${GLUE_SUSPEND_AFTER:-5s}"
 
 log() { printf '\n==> %s\n' "$*"; }

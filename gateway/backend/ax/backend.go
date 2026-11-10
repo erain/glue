@@ -41,6 +41,7 @@ func TaskName(jobID string) string      { return "glue-" + jobID }
 type Options struct {
 	Atespace, Image, CPU, Memory, AXServer, Substrate, Router, CertFile, CAFile, TokenFile, Secret string
 	EgressHosts                                                                                    []string
+	Credentials                                                                                    jobs.Credentials
 	PollInterval                                                                                   time.Duration
 	AXClient                                                                                       v1alpha1.AXClient
 	SubstrateClient                                                                                ateapipb.ControlClient
@@ -96,6 +97,52 @@ func (b *Backend) taskToken(jobID string) string {
 func (b *Backend) jobClient(jobID string) *jobclient.Client {
 	return &jobclient.Client{BaseURL: fmt.Sprintf("http://%s:%d", TaskName(jobID), DefaultTaskPort), Token: b.taskToken(jobID), HTTP: b.http}
 }
+func (b *Backend) credentials() jobs.Credentials {
+	c := b.opts.Credentials
+	c.GitHubToken = cmp.Or(strings.TrimSpace(c.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")))
+	pks := make(map[string]string, len(c.ProviderKeys)+4)
+	for k, v := range c.ProviderKeys {
+		if k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v); k != "" && v != "" {
+			pks[k] = v
+		}
+	}
+	for p, env := range map[string]string{"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "nvidia": "NVIDIA_API_KEY"} {
+		if pks[p] == "" {
+			if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+				pks[p] = v
+			}
+		}
+	}
+	if len(pks) > 0 {
+		c.ProviderKeys = pks
+	}
+	return c
+}
+
+// PushCredentials sends runtime credentials to the task over atenet-router.
+func (b *Backend) PushCredentials(ctx context.Context, id string) error {
+	cli, creds := b.jobClient(id), b.credentials()
+	for attempt := 0; ; attempt++ {
+		err := cli.PushCredentials(ctx, creds)
+		if err == nil {
+			return nil
+		}
+		if attempt >= 20 || ctx.Err() != nil {
+			return fmt.Errorf("ax: push credentials for %s through router: %w", id, cmp.Or(ctx.Err(), err))
+		}
+		time.Sleep(b.opts.PollInterval)
+	}
+}
+
+// EnsureCredentials pushes credentials when GET /v1/jobs/<id> reports credentials: "absent".
+func (b *Backend) EnsureCredentials(ctx context.Context, id string) error {
+	if d, err := b.jobClient(id).Show(ctx, id); err != nil {
+		return err
+	} else if d.Credentials == "absent" || d.Status == jobs.WaitingForCredentials {
+		return b.PushCredentials(ctx, id)
+	}
+	return nil
+}
 
 // Create provisions the AX Workspace and Task (reconciling via GetTask first if submit_unknown).
 func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.Job, error) {
@@ -125,18 +172,17 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	rawCfg, _ := json.Marshal(taskCfgSpec)
 	var cfgMap map[string]any
 	_ = json.Unmarshal(rawCfg, &cfgMap)
-	cfgStruct, _ := structpb.NewStruct(cfgMap)
-	var envVars []*v1alpha1.EnvVar
-	for _, k := range []string{"GLUE_GITHUB_TOKEN", "GEMINI_API_KEY", "OPENROUTER_API_KEY"} {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			envVars = append(envVars, &v1alpha1.EnvVar{Name: k, Value: v})
-		}
+	if taskCfgSpec.Budgets == (jobs.Budgets{}) {
+		delete(cfgMap, "budgets")
+	} else if bm, ok := cfgMap["budgets"].(map[string]any); ok && taskCfgSpec.Budgets.TokenBudget == 0 {
+		delete(bm, "token_budget")
 	}
+	cfgStruct, _ := structpb.NewStruct(cfgMap)
 	if _, err := b.axClient.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: TaskName(id), Atespace: b.opts.Atespace},
 		Spec: &v1alpha1.TaskSpec{
-			Image: b.opts.Image, Command: []string{"glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state", "--token-file", "/workspace/.glue/token"},
-			Workspace: &v1alpha1.WorkspaceRef{Name: WorkspaceName(id), Path: "/workspace"}, Resources: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Cpu: b.opts.CPU, Memory: b.opts.Memory}}, Env: envVars, Config: cfgStruct,
+			Image: b.opts.Image, Command: []string{"glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state"},
+			Workspace: &v1alpha1.WorkspaceRef{Name: WorkspaceName(id), Path: "/workspace"}, Resources: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Cpu: b.opts.CPU, Memory: b.opts.Memory}}, Config: cfgStruct,
 		},
 	}}); err != nil && status.Code(err) != codes.AlreadyExists {
 		if c := status.Code(err); errors.Is(err, context.DeadlineExceeded) || c == codes.DeadlineExceeded || c == codes.Unavailable || c == codes.Unknown {
@@ -184,7 +230,7 @@ func (b *Backend) Resume(ctx context.Context, id string) error {
 		if t.GetStatus().GetPhase() == "Running" && slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
 			return c.GetType() == "WorkspaceReady" && c.GetStatus() == "True"
 		}) {
-			return nil
+			return b.PushCredentials(ctx, id)
 		}
 		time.Sleep(b.opts.PollInterval)
 	}
@@ -225,7 +271,13 @@ func (b *Backend) Status(ctx context.Context, id string) (jobs.Status, error) {
 	return cmp.Or(st, jobs.Created), err
 }
 func (b *Backend) Stream(ctx context.Context, id string, after int64, h func(eventlog.Envelope) error) error {
-	return b.jobClient(id).StreamEvents(ctx, id, after, h)
+	_ = b.EnsureCredentials(ctx, id)
+	return b.jobClient(id).StreamEvents(ctx, id, after, func(ev eventlog.Envelope) error {
+		if ev.Type == "job_waiting_for_credentials" {
+			_ = b.PushCredentials(ctx, id)
+		}
+		return h(ev)
+	})
 }
 func (b *Backend) Result(ctx context.Context, id string) (jobs.Result, error) {
 	return b.jobClient(id).Result(ctx, id)
@@ -267,7 +319,9 @@ func (b *Backend) ListTasks(ctx context.Context) ([]string, error) {
 }
 func (b *Backend) Do(ctx context.Context, method, subpath string, body []byte) (int, []byte, error) {
 	subpath = strings.TrimLeft(subpath, "/")
-	cli := b.jobClient(strings.SplitN(subpath, "/", 2)[0])
+	jobID := strings.SplitN(subpath, "/", 2)[0]
+	_ = b.EnsureCredentials(ctx, jobID)
+	cli := b.jobClient(jobID)
 	req, _ := http.NewRequestWithContext(ctx, method, cli.BaseURL+"/v1/jobs/"+subpath, strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bearer "+cli.Token)
 	req.Header.Set("Content-Type", "application/json")

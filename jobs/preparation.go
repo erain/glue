@@ -55,7 +55,12 @@ func (m *Manager) prepareWorkspace(ctx context.Context, job Job) (worktree.Works
 		if job.BaseSHA != "" {
 			return result, fmt.Errorf("jobs: prepared workspace is missing")
 		}
-		result, err = worktree.Prepare(ctx, worktree.Options{Path: job.Spec.Repo.Path, URL: job.Spec.Repo.URL, BaseRef: job.Spec.Repo.BaseRef, Dir: job.Workspace, Branch: result.Branch})
+		authEnv, cleanup, aerr := gitAuthEnv(m.githubToken())
+		if aerr != nil {
+			return result, aerr
+		}
+		defer cleanup()
+		result, err = worktree.Prepare(ctx, worktree.Options{Path: job.Spec.Repo.Path, URL: job.Spec.Repo.URL, BaseRef: job.Spec.Repo.BaseRef, Dir: job.Workspace, Branch: result.Branch, Env: authEnv})
 		if err != nil {
 			return result, err
 		}

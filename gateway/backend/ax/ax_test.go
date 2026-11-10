@@ -4,7 +4,9 @@ package ax
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -174,7 +176,7 @@ func TestAXSubmitSequence(t *testing.T) {
 	if job, err := b.Submit(t.Context(), id, spec); err != nil || job.ID != id || job.Status != jobs.Running {
 		t.Fatalf("Submit: job=%+v err=%v", job, err)
 	}
-	want := []string{"UpdateWorkspace", "CreateTask", "CreateActorEgressPolicy", "ResumeTask", "GetTask", "GetTask", "POST /v1/jobs/" + id + "/start"}
+	want := []string{"UpdateWorkspace", "CreateTask", "CreateActorEgressPolicy", "ResumeTask", "GetTask", "GetTask", "POST /v1/credentials", "POST /v1/jobs/" + id + "/start"}
 	if !reflect.DeepEqual(cp.steps, want) {
 		t.Fatalf("steps = %v, want %v", cp.steps, want)
 	}
@@ -184,8 +186,75 @@ func TestAXSubmitSequence(t *testing.T) {
 	if cfg := cp.tasks[TaskName(id)].GetSpec().GetConfig().AsMap(); cfg["id"] != id || strings.Contains(fmt.Sprint(cfg), b.taskToken(id)) {
 		t.Fatalf("unexpected task config: %+v", cfg)
 	}
-	if caps := router.Captures(); len(caps) != 1 || caps[0].TargetActor != "default/"+TaskName(id) {
+	if caps := router.Captures(); len(caps) != 2 || caps[0].TargetActor != "default/"+TaskName(id) || caps[1].TargetActor != "default/"+TaskName(id) {
 		t.Fatalf("unexpected router captures: %+v", caps)
+	}
+}
+func TestCredentialsPushedAtRuntimeAndOmittedFromTaskEnv(t *testing.T) {
+	t.Setenv("GLUE_GITHUB_TOKEN", "ghp_envtoken1234567890")
+	t.Setenv("GEMINI_API_KEY", "AIzaEnvGeminiKey1234567890")
+	cp, _, opts, _ := newFakeAXEnv(t)
+	var pushed []jobs.Credentials
+	var credState atomic.Value
+	credState.Store("absent")
+	router := startFakeConnectRouter(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cp.mu.Lock()
+		cp.steps = append(cp.steps, r.Method+" "+r.URL.Path)
+		cp.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/credentials" {
+			data, _ := io.ReadAll(r.Body)
+			var c jobs.Credentials
+			_ = json.Unmarshal(data, &c)
+			cp.mu.Lock()
+			pushed = append(pushed, c)
+			cp.mu.Unlock()
+			credState.Store("present")
+			_, _ = w.Write([]byte(`{"ok":true,"credentials":"present"}`))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
+			jobID := strings.TrimPrefix(r.URL.Path, "/v1/jobs/")
+			_, _ = fmt.Fprintf(w, `{"id":%q,"status":"running","credentials":%q}`, jobID, credState.Load().(string))
+			return
+		}
+		jobID := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")[0]
+		_, _ = fmt.Fprintf(w, `{"job":{"id":%q,"status":"running"}}`, jobID)
+	}))
+	opts.Router, opts.CertFile, opts.CAFile = router.Addr, router.BundleFile, router.CAFile
+	b, err := NewBackend(opts)
+	if err != nil {
+		t.Fatalf("NewBackend: %v", err)
+	}
+	id, spec := "job-credpush0001", jobs.Spec{Objective: "Verify runtime credentials", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}
+	if _, err := b.Submit(t.Context(), id, spec); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if env := cp.tasks[TaskName(id)].GetSpec().GetEnv(); len(env) != 0 {
+		t.Fatalf("expected zero Env entries in AX TaskSpec, got %+v", env)
+	}
+	if s := strings.ToLower(fmt.Sprint(cp.tasks[TaskName(id)])); strings.Contains(s, "token") || strings.Contains(s, "api_key") || strings.Contains(s, "aiza") || strings.Contains(s, "ghp_") {
+		t.Fatalf("Task spec leaked token/credential string: %s", s)
+	}
+	if len(pushed) != 1 || pushed[0].GitHubToken != "ghp_envtoken1234567890" || pushed[0].ProviderKeys["gemini"] != "AIzaEnvGeminiKey1234567890" {
+		t.Fatalf("unexpected initial pushed credentials: %+v", pushed)
+	}
+	if err := b.Suspend(t.Context(), id); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	credState.Store("absent")
+	if err := b.Resume(t.Context(), id); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(pushed) != 2 || credState.Load().(string) != "present" {
+		t.Fatalf("expected credentials pushed after Resume, got len=%d state=%v", len(pushed), credState.Load())
+	}
+	credState.Store("absent")
+	if _, _, err := b.Do(t.Context(), http.MethodPost, id+"/messages", []byte(`{"text":"hi"}`)); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(pushed) != 3 || credState.Load().(string) != "present" {
+		t.Fatalf("expected credentials pushed when GET /v1/jobs/%s reports absent, got len=%d state=%v", id, len(pushed), credState.Load())
 	}
 }
 func TestAXSubmitIdempotentAfterRestart(t *testing.T) {

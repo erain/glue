@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Push runtime credentials (`github_token` and `provider_keys`) from
+  `glue-gateway` to AX tasks over `atenet-router` (`POST /v1/credentials`)
+  before `POST /v1/jobs/{id}/start`, after each `ResumeTask`, and whenever
+  `GET /v1/jobs/{id}` reports `credentials: "absent"`, and omit credential
+  environment variables from AX `Task` specs (`gateway.Config.Credentials`,
+  `(*ax.Backend).PushCredentials`, `(*ax.Backend).EnsureCredentials`).
+
 - Add `POST /v1/credentials` on `glue serve` to hold `github_token` and
   `provider_keys` in memory only, wait in `waiting_for_credentials` (and report
   `credentials: "absent" | "present"` in `GET /v1/jobs/{id}`) until required

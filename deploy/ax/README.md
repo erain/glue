@@ -17,6 +17,7 @@ glue serve --coding --jobs --job-from-ax --listen :8080 --state-dir /workspace/.
 
 - `--job-from-ax` reads `$AX_METADATA_URL/metadata/v1alpha1/ax/task` (or `AX_TASK_YAML`), leniently decodes it, validates the 31 KiB task YAML and 16 KiB `spec.config` limits, and creates the job in `created` status if none exists in `--state-dir`. Startup is idempotent across restarts, makes no outbound network calls, and starts no work during AX's golden pre-boot.
 - `--token-file /workspace/.glue/token` generates a 256-bit bearer token once, stores it on `/workspace` (`0600`), and reuses it across suspend/resume.
+- **Runtime credentials & redaction:** AX `Task` specs contain zero credential environment variables. Instead, `glue-gateway` pushes `github_token` and `provider_keys` in memory over `atenet-router` (`POST /v1/credentials`) before `POST /v1/jobs/{id}/start`, after each `ResumeTask`, and whenever `GET /v1/jobs/{id}` reports `credentials: "absent"`. `glue serve` holds credentials in memory only and redacts known credential values and common token shapes (`ghp_…`, `github_pat_…`, `gho_…`, `AIza…`, `sk-…`) before persisting events, tool outputs, session files, or results under `/workspace/.glue`.
 
 ## Gateway Image and Manifests (`deploy/ax/gateway`)
 
