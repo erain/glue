@@ -29,6 +29,9 @@ func (m *Manager) recoverJobs() error {
 		}
 		plan, err := m.recoverJob(ctx, job)
 		if err != nil {
+			if writeErr := m.finalize(job.ID, glue.GoalResult{}, Errored); writeErr != nil {
+				return writeErr
+			}
 			if writeErr := m.record(job.ID, "job_done", map[string]any{"status": Errored, "error": err.Error()}, "", nil, Errored); writeErr != nil {
 				return writeErr
 			}
@@ -130,6 +133,9 @@ func (m *Manager) recoverJob(ctx context.Context, job Job) (*recovery, error) {
 	}
 	if status != "" {
 		result := glue.GoalResult{Objective: rec.Objective, Status: glue.GoalStatus(status), Iterations: rec.Iterations, Checklist: rec.Checklist, Usage: rec.Usage, Summary: rec.Summary}
+		if err := m.finalize(job.ID, result, status); err != nil {
+			return nil, err
+		}
 		return nil, m.record(job.ID, "job_done", map[string]any{"status": status, "result": result}, "", nil, status)
 	}
 	job.Spec.Budgets.MaxIterations = remaining

@@ -88,6 +88,9 @@ func (m *Manager) Cancel(ctx context.Context, id string) error {
 		return err
 	}
 	if job.Status == Created {
+		if err := m.finalize(id, glue.GoalResult{}, Canceled); err != nil {
+			return err
+		}
 		return m.record(id, "job_done", map[string]any{"status": Canceled}, "", nil, Canceled)
 	}
 	if run := m.active[id]; run != nil {
@@ -188,6 +191,14 @@ func (m *Manager) execute(ctx context.Context, id string, run *execution) {
 		payload["error"] = writeErr.Error()
 		status = Errored
 		payload["status"] = status
+	}
+	if finErr := m.finalize(id, result, status); finErr != nil {
+		run.mu.Lock()
+		run.writeErr = errors.Join(run.writeErr, finErr)
+		run.mu.Unlock()
+		m.mu.Lock()
+		m.closeErr = errors.Join(m.closeErr, finErr)
+		m.mu.Unlock()
 	}
 	if writeErr := m.record(id, "job_done", payload, "", nil, status); writeErr != nil {
 		run.mu.Lock()

@@ -687,6 +687,8 @@ remain event driven. Keepalives do not replay the preceding event batch.
 - `GET /v1/jobs/{id}/permissions?state=pending`: `{ "permissions": [...] }`.
 - `POST /v1/jobs/{id}/permissions/{pid}/decision`: required boolean `allow`,
   optional `reason` and `remember_for`; returns `permission_id` and `accepted`.
+- `GET /v1/jobs/{id}/result`: durable completion record from `<state>/jobs/<id>/result.json`
+  for terminal jobs (`409 conflict` while `created`, `running`, or `waiting_for_input`).
 - `DELETE /v1/jobs/{id}`: 202 with `job_id` and `canceled`.
 
 Unknown jobs return 404, invalid requests 400 `invalid_request`, and conflicting

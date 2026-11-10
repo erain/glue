@@ -67,7 +67,7 @@ func createHTTPJob(t *testing.T, s *Server, repo string, start bool) string {
 	body := jobHTTP(t, s, http.MethodPost, path, string(data), 201)
 	return body["job"].(map[string]any)["id"].(string)
 }
-func TestJobHTTPCreateInspectAndCancel(t *testing.T) {
+func TestJobHTTPCreateInspectResultAndCancel(t *testing.T) {
 	s, _, repo := jobHTTPFixture(t, nil)
 	jobHTTP(t, eventServer(t, t.TempDir()), http.MethodGet, "/v1/jobs", "", 404)
 	w := httptest.NewRecorder()
@@ -75,7 +75,7 @@ func TestJobHTTPCreateInspectAndCancel(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatal(w.Code)
 	}
-	for _, path := range []string{"/v1/jobs/missing", "/v1/jobs/missing/events", "/v1/jobs/missing/permissions"} {
+	for _, path := range []string{"/v1/jobs/missing", "/v1/jobs/missing/events", "/v1/jobs/missing/permissions", "/v1/jobs/missing/result"} {
 		jobHTTP(t, s, http.MethodGet, path, "", 404)
 	}
 	jobHTTP(t, s, http.MethodPost, "/v1/jobs/missing/start", "", 404)
@@ -106,13 +106,18 @@ func TestJobHTTPCreateInspectAndCancel(t *testing.T) {
 		t.Fatal(permissions)
 	}
 	jobHTTP(t, s, http.MethodGet, path+"/permissions?state=bad", "", 400)
+	jobHTTP(t, s, http.MethodGet, path+"/result", "", 409)
 	jobHTTP(t, s, http.MethodDelete, path, "", 202)
 	detail = jobHTTP(t, s, http.MethodGet, path, "", 200)
 	if detail["status"] != "canceled" {
 		t.Fatal(detail)
 	}
+	canceledResult := jobHTTP(t, s, http.MethodGet, path+"/result", "", 200)
+	if canceledResult["job_id"] != id || canceledResult["status"] != "canceled" {
+		t.Fatal(canceledResult)
+	}
 	jobHTTP(t, s, http.MethodPost, path+"/start", "", 409)
-	for _, tc := range []struct{ method, suffix string }{{http.MethodGet, "/start"}, {http.MethodPost, "/events"}, {http.MethodPost, "/permissions"}} {
+	for _, tc := range []struct{ method, suffix string }{{http.MethodGet, "/start"}, {http.MethodPost, "/events"}, {http.MethodPost, "/permissions"}, {http.MethodPost, "/result"}} {
 		jobHTTP(t, s, tc.method, path+tc.suffix, "", 405)
 	}
 }
@@ -211,6 +216,10 @@ func TestJobHTTPPermissionDecision(t *testing.T) {
 	detail := jobHTTP(t, s, http.MethodGet, path, "", 200)
 	if detail["status"] != "achieved" {
 		t.Fatal(detail)
+	}
+	result := jobHTTP(t, s, http.MethodGet, path+"/result", "", 200)
+	if result["job_id"] != id || result["status"] != "achieved" || result["branch"] != "glue/"+id || !strings.Contains(result["diffstat"].(string), "hello.txt") {
+		t.Fatal(result)
 	}
 }
 func TestJobHTTPIdleKeepalive(t *testing.T) {
