@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -36,10 +37,12 @@ type Server struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	mu       sync.Mutex
+	sweepMu  sync.Mutex
 	watchers map[string]bool
 	viewers  map[string]int
 	waiting  map[string]time.Time
 	remap    map[string]string
+	orphans  []string
 	notify   chan struct{}
 }
 
@@ -53,6 +56,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	reg.now = cfg.Now
 	backends := make(map[string]Backend, len(cfg.Backends))
 	for _, b := range cfg.Backends {
 		if cb := cfg.CustomBackends[b.Name]; cb != nil {
@@ -82,10 +86,13 @@ func NewServer(cfg Config) (*Server, error) {
 		backends[b.Name] = axb
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
+	s := &Server{
 		cfg: cfg, reg: reg, backends: backends, ctx: ctx, cancel: cancel, watchers: map[string]bool{},
-		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, notify: make(chan struct{}),
-	}, nil
+		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, orphans: []string{}, notify: make(chan struct{}),
+	}
+	s.reconcileOrphans(ctx)
+	s.wg.Go(s.retentionLoop)
+	return s, nil
 }
 
 // Close stops active upstream stream watchers and closes the registry.
@@ -121,6 +128,85 @@ func (s *Server) gwEvent(ctx context.Context, jobID, typ, reason string) error {
 	_, err := s.reg.AppendEvent(ctx, jobID, eventlog.Envelope{Time: s.cfg.Now().UTC(), Type: typ, Payload: map[string]any{"reason": reason}})
 	s.Poke()
 	return err
+}
+
+// deleteJobTask persists the job completion result in the registry before
+// deleting the backend sandbox task so DeleteTask never loses /workspace first.
+func (s *Server) deleteJobTask(ctx context.Context, id string) error {
+	s.sweepMu.Lock()
+	defer s.sweepMu.Unlock()
+	rec, err := s.reg.GetJob(ctx, id)
+	if err != nil || rec.TaskDeleted {
+		return err
+	}
+	b := s.backends[rec.Backend]
+	if rec.Result == nil {
+		res, err := b.Result(ctx, rec.BackendRef)
+		if err != nil {
+			return err
+		}
+		if err := s.reg.SaveResult(ctx, id, res); err != nil {
+			return err
+		}
+	}
+	if td, ok := b.(TaskDeleter); ok {
+		if err := td.DeleteTask(ctx, rec.BackendRef); err != nil {
+			return err
+		}
+	}
+	return s.reg.MarkTaskDeleted(ctx, id)
+}
+
+func (s *Server) sweepRetention(ctx context.Context) {
+	if s.cfg.RetainTasks <= 0 {
+		return
+	}
+	recs, _ := s.reg.ActiveTaskJobs(ctx)
+	for _, rec := range recs {
+		if isTerminal(rec.Status) && s.cfg.Now().Sub(rec.UpdatedAt) >= s.cfg.RetainTasks {
+			_ = s.deleteJobTask(ctx, rec.ID)
+		}
+	}
+}
+func (s *Server) retentionLoop() {
+	for s.ctx.Err() == nil {
+		s.mu.Lock()
+		notify := s.notify
+		s.mu.Unlock()
+		s.sweepRetention(s.ctx)
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-notify:
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+func (s *Server) reconcileOrphans(ctx context.Context) []string {
+	found := []string{}
+	for _, b := range s.backends {
+		if tl, ok := b.(TaskLister); ok {
+			names, _ := tl.ListTasks(ctx)
+			for _, name := range names {
+				if strings.HasPrefix(name, "glue-") {
+					if _, err := s.reg.GetJob(ctx, strings.TrimPrefix(name, "glue-")); errors.Is(err, sql.ErrNoRows) {
+						found = append(found, name)
+					}
+				}
+			}
+		}
+	}
+	slices.Sort(found)
+	found = slices.Compact(found)
+	s.mu.Lock()
+	for _, name := range found {
+		if !slices.Contains(s.orphans, name) {
+			log.Printf("gateway: orphan task %s has no registry row", name)
+		}
+	}
+	s.orphans = slices.Clone(found)
+	s.mu.Unlock()
+	return found
 }
 
 func (s *Server) ensureWatcher(jobID string, b Backend) {
@@ -295,7 +381,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET /v1/backends":
 		writeJSON(w, http.StatusOK, map[string]any{"backends": s.cfg.Backends, "default_backend": s.cfg.DefaultBackend})
 		return
+	case "GET /v1/diagnostics":
+		writeJSON(w, http.StatusOK, map[string]any{"orphan_tasks": s.reconcileOrphans(r.Context())})
+		return
 	case "GET /v1/jobs":
+		s.sweepRetention(r.Context())
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		list, err := s.reg.QueryJobs(r.Context(), jobs.Filter{Status: jobs.Status(r.URL.Query().Get("status")), Limit: cmp.Or(limit, 50), Before: r.URL.Query().Get("before")})
 		respond(w, http.StatusOK, map[string]any{"jobs": list}, err)
@@ -333,6 +423,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/"), "/")
 	id, sub := parts[0], strings.Join(parts[1:], "/")
+	if r.Method == http.MethodGet && sub == "" {
+		s.sweepRetention(r.Context())
+	}
 	rec, err := s.reg.GetJob(r.Context(), id)
 	if err != nil {
 		respond(w, 0, nil, err)
@@ -341,7 +434,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b := s.backends[rec.Backend]
 	switch r.Method + " " + sub {
 	case "GET ":
-		if _, isAX := b.(*ax.Backend); isAX && !isTerminal(rec.Status) && rec.Status != jobs.Suspended {
+		if _, isAX := b.(*ax.Backend); isAX && !isTerminal(rec.Status) && rec.Status != jobs.Suspended && !rec.TaskDeleted {
 			if st, serr := b.Status(r.Context(), id); serr == nil && st != "" && st != rec.Status {
 				_ = s.reg.UpsertStatus(r.Context(), id, rec.Backend, rec.Spec, st)
 			}
@@ -349,6 +442,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		detail, err := s.reg.Inspect(r.Context(), id)
 		respond(w, http.StatusOK, detail, err)
 	case "DELETE ":
+		if purge, _ := strconv.ParseBool(r.URL.Query().Get("purge")); purge {
+			if !rec.TaskDeleted {
+				if td, ok := b.(TaskDeleter); ok {
+					if err := td.DeleteTask(r.Context(), rec.BackendRef); err != nil {
+						respond(w, 0, nil, err)
+						return
+					}
+				}
+			}
+			respond(w, http.StatusOK, map[string]any{"job_id": id, "deleted": true}, s.reg.PurgeJob(r.Context(), id))
+			return
+		}
 		if err := s.wakeIfSuspended(r.Context(), id, "cancel"); err != nil {
 			respond(w, 0, nil, err)
 			return
@@ -371,7 +476,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		res, err := b.Result(r.Context(), rec.BackendRef)
-		_ = s.reg.SaveResult(r.Context(), id, res)
+		if err == nil {
+			_ = s.reg.SaveResult(r.Context(), id, res)
+		}
 		respond(w, http.StatusOK, res, err)
 	case "GET events":
 		q := r.URL.Query()

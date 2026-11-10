@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	registrySchema = `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, backend TEXT NOT NULL, backend_ref TEXT NOT NULL, owner TEXT NOT NULL, spec_json TEXT NOT NULL, status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL, upstream_seq INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL);`
-	jobColumns     = "id,backend,backend_ref,owner,spec_json,status,status_reason,created_at,updated_at,last_seq,upstream_seq,result_json"
+	registrySchema = `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, backend TEXT NOT NULL, backend_ref TEXT NOT NULL, owner TEXT NOT NULL, spec_json TEXT NOT NULL, status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', task_deleted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seq INTEGER NOT NULL, upstream_seq INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL);`
+	jobColumns     = "id,backend,backend_ref,owner,spec_json,status,status_reason,task_deleted,created_at,updated_at,last_seq,upstream_seq,result_json"
 )
 
 // SubmitUnknown is recorded when an AX CreateTask call fails with an ambiguous error.
@@ -41,6 +41,7 @@ type Record struct {
 	Spec                           jobs.Spec
 	Status                         jobs.Status
 	StatusReason                   string
+	TaskDeleted                    bool
 	CreatedAt, UpdatedAt           time.Time
 	LastSeq, UpstreamSeq           int64
 	Result                         *jobs.Result
@@ -49,12 +50,13 @@ type Record struct {
 func (r Record) Job() jobs.Job {
 	spec := r.Spec
 	spec.Backend = r.Backend
-	return jobs.Job{ID: r.ID, Spec: spec, Status: r.Status, StatusReason: r.StatusReason, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, LastSeq: r.LastSeq}
+	return jobs.Job{ID: r.ID, Spec: spec, Status: r.Status, StatusReason: r.StatusReason, TaskDeleted: r.TaskDeleted, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, LastSeq: r.LastSeq}
 }
 
 type Registry struct {
 	mu    sync.Mutex
 	store *eventlog.Store
+	now   func() time.Time
 }
 
 func OpenRegistry(stateDir string) (*Registry, error) {
@@ -64,21 +66,28 @@ func OpenRegistry(stateDir string) (*Registry, error) {
 	store, err := eventlog.Open(stateDir, registrySchema)
 	if err == nil {
 		store.DB.SetMaxOpenConns(1)
+		_, _ = store.DB.Exec("ALTER TABLE jobs ADD COLUMN task_deleted INTEGER NOT NULL DEFAULT 0")
 	}
-	return &Registry{store: store}, err
+	return &Registry{store: store, now: time.Now}, err
 }
 func (r *Registry) Close() error { return r.store.DB.Close() }
-func fmtTime(t time.Time) string { return cmp.Or(t, time.Now()).UTC().Format(time.RFC3339Nano) }
-func mustJSON(v any) string      { b, _ := json.Marshal(v); return string(b) }
+func (r *Registry) fmtTime(t time.Time) string {
+	now := time.Now
+	if r != nil && r.now != nil {
+		now = r.now
+	}
+	return cmp.Or(t, now()).UTC().Format(time.RFC3339Nano)
+}
+func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
 func (r *Registry) CreateJob(ctx context.Context, rec Record) (Record, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec.Status = cmp.Or(rec.Status, jobs.Created)
-	rec.CreatedAt = cmp.Or(rec.CreatedAt, time.Now()).UTC()
+	rec.CreatedAt = cmp.Or(rec.CreatedAt, r.now()).UTC()
 	rec.UpdatedAt = cmp.Or(rec.UpdatedAt, rec.CreatedAt).UTC()
-	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,?,?,?,?,?,?,?,?,'')",
-		rec.ID, rec.Backend, rec.BackendRef, rec.Owner, mustJSON(rec.Spec), rec.Status, rec.StatusReason,
-		fmtTime(rec.CreatedAt), fmtTime(rec.UpdatedAt), rec.LastSeq, rec.UpstreamSeq)
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'')",
+		rec.ID, rec.Backend, rec.BackendRef, rec.Owner, mustJSON(rec.Spec), rec.Status, rec.StatusReason, rec.TaskDeleted,
+		r.fmtTime(rec.CreatedAt), r.fmtTime(rec.UpdatedAt), rec.LastSeq, rec.UpstreamSeq)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return Record{}, fmt.Errorf("%w: job %s already exists", jobs.ErrConflict, rec.ID)
 	}
@@ -87,14 +96,14 @@ func (r *Registry) CreateJob(ctx context.Context, rec Record) (Record, error) {
 func (r *Registry) UpsertStatus(ctx context.Context, id, backend string, spec jobs.Spec, st jobs.Status) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := fmtTime(time.Time{})
-	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,'dev-token',?,?,'',?,?,0,0,'') ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", id, backend, id, mustJSON(spec), st, now, now)
+	now := r.fmtTime(time.Time{})
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,'dev-token',?,?,'',0,?,?,0,0,'') ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", id, backend, id, mustJSON(spec), st, now, now)
 	return err
 }
 func scanRecord(row interface{ Scan(...any) error }) (Record, error) {
 	var rec Record
 	var specJSON, created, updated, resultJSON string
-	err := row.Scan(&rec.ID, &rec.Backend, &rec.BackendRef, &rec.Owner, &specJSON, &rec.Status, &rec.StatusReason, &created, &updated, &rec.LastSeq, &rec.UpstreamSeq, &resultJSON)
+	err := row.Scan(&rec.ID, &rec.Backend, &rec.BackendRef, &rec.Owner, &specJSON, &rec.Status, &rec.StatusReason, &rec.TaskDeleted, &created, &updated, &rec.LastSeq, &rec.UpstreamSeq, &resultJSON)
 	_ = json.Unmarshal([]byte(specJSON), &rec.Spec)
 	rec.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	rec.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
@@ -139,7 +148,7 @@ func (r *Registry) SaveResult(ctx context.Context, id string, result jobs.Result
 	}
 	res, err := r.store.DB.ExecContext(ctx,
 		"UPDATE jobs SET result_json=?,status=CASE WHEN ? != '' THEN ? ELSE status END,updated_at=? WHERE id=?",
-		mustJSON(result), result.Status, result.Status, fmtTime(time.Time{}), id)
+		mustJSON(result), result.Status, result.Status, r.fmtTime(time.Time{}), id)
 	if err != nil {
 		return err
 	}
@@ -147,6 +156,39 @@ func (r *Registry) SaveResult(ctx context.Context, id string, result jobs.Result
 		return sql.ErrNoRows
 	}
 	return nil
+}
+func (r *Registry) MarkTaskDeleted(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := r.store.DB.ExecContext(ctx, "UPDATE jobs SET task_deleted=1 WHERE id=?", id)
+	return err
+}
+func (r *Registry) PurgeJob(ctx context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err1 := r.store.DB.ExecContext(ctx, "DELETE FROM events WHERE run_id=?", id)
+	res, err2 := r.store.DB.ExecContext(ctx, "DELETE FROM jobs WHERE id=?", id)
+	if err := errors.Join(err1, err2); err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+func (r *Registry) ActiveTaskJobs(ctx context.Context) ([]Record, error) {
+	rows, err := r.store.DB.QueryContext(ctx, "SELECT "+jobColumns+" FROM jobs WHERE task_deleted=0 ORDER BY updated_at ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Record
+	for rows.Next() {
+		if rec, err := scanRecord(rows); err == nil {
+			out = append(out, rec)
+		}
+	}
+	return out, rows.Err()
 }
 func (r *Registry) AppendEvent(ctx context.Context, jobID string, ev eventlog.Envelope) (bool, error) {
 	r.mu.Lock()
@@ -172,7 +214,7 @@ func (r *Registry) AppendEvent(ctx context.Context, jobID string, ev eventlog.En
 	}
 	_, err = r.store.DB.ExecContext(ctx,
 		"UPDATE jobs SET status=CASE WHEN ?='' THEN status ELSE ? END,status_reason=CASE WHEN ? != '' THEN ? WHEN ? != '' THEN '' ELSE status_reason END,last_seq=?,upstream_seq=?,updated_at=? WHERE id=?",
-		st, st, reason, reason, st, ev.Seq, upSeq, fmtTime(ev.Time), jobID)
+		st, st, reason, reason, st, ev.Seq, upSeq, r.fmtTime(ev.Time), jobID)
 	return err == nil, err
 }
 func statusFromEvent(ev eventlog.Envelope) jobs.Status {

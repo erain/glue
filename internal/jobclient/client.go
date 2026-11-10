@@ -139,6 +139,10 @@ func (c *Client) Continue(ctx context.Context, id, text string, maxIterations in
 func (c *Client) Cancel(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(id), nil, http.StatusAccepted, nil)
 }
+func (c *Client) Delete(ctx context.Context, id string) error {
+	_ = os.Remove(SeqPath(c.BaseURL, id))
+	return c.doJSON(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(id)+"?purge=true", nil, http.StatusOK, nil)
+}
 func SeqPath(serverURL, id string) string {
 	sum := sha256.Sum256([]byte(NormalizeURL(serverURL)))
 	return filepath.Join(ConfigDir(), "jobs", hex.EncodeToString(sum[:8]), id+".seq")

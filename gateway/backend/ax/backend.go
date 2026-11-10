@@ -233,6 +233,38 @@ func (b *Backend) Result(ctx context.Context, id string) (jobs.Result, error) {
 func (b *Backend) Cancel(ctx context.Context, id string) error {
 	return b.jobClient(id).Cancel(ctx, id)
 }
+
+// DeleteTask deletes the AX Task, Workspace, and per-actor EgressPolicy, ignoring NotFound errors.
+func (b *Backend) DeleteTask(ctx context.Context, id string) error {
+	if _, err := b.axClient.DeleteTask(ctx, &v1alpha1.DeleteTaskRequest{Atespace: b.opts.Atespace, Name: TaskName(id)}); err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("ax: delete task %s: %w", TaskName(id), err)
+	}
+	if _, err := b.axClient.DeleteWorkspace(ctx, &v1alpha1.DeleteWorkspaceRequest{Atespace: b.opts.Atespace, Name: WorkspaceName(id)}); err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("ax: delete workspace %s: %w", WorkspaceName(id), err)
+	}
+	if _, err := b.subClient.DeleteActorEgressPolicy(ctx, &ateapipb.DeleteActorEgressPolicyRequest{
+		Actor: &ateapipb.ObjectRef{Atespace: b.opts.Atespace, Name: TaskName(id)},
+		Name:  "default",
+	}); err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("ax: delete egress policy for %s: %w", TaskName(id), err)
+	}
+	return nil
+}
+
+// ListTasks returns the names of all AX tasks in the configured atespace.
+func (b *Backend) ListTasks(ctx context.Context) ([]string, error) {
+	resp, err := b.axClient.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: b.opts.Atespace})
+	if err != nil {
+		return nil, fmt.Errorf("ax: list tasks in %s: %w", b.opts.Atespace, err)
+	}
+	var names []string
+	for _, t := range resp.GetTasks() {
+		if name := strings.TrimSpace(t.GetMetadata().GetName()); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
 func (b *Backend) Do(ctx context.Context, method, subpath string, body []byte) (int, []byte, error) {
 	subpath = strings.TrimLeft(subpath, "/")
 	cli := b.jobClient(strings.SplitN(subpath, "/", 2)[0])

@@ -28,7 +28,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|approve|deny|say|continue|cancel> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|approve|deny|say|continue|cancel|delete> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -157,6 +157,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return c.Continue(ctx, pos[0], strings.TrimSpace(strings.Join(pos[1:], " ")), *maxIter)
 	case "cancel":
 		return c.Cancel(ctx, pos[0])
+	case "delete":
+		return c.Delete(ctx, pos[0])
 	default:
 		return fmt.Errorf("unknown job subcommand %q", sub)
 	}

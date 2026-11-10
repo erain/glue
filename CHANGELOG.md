@@ -16,6 +16,14 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Persist job completion results in the `glue-gateway` SQLite registry before
+  any AX task deletion, automatically delete terminal AX Tasks, Workspaces, and
+  EgressPolicies after `retain_tasks` (default `168h` or `GLUE_RETAIN_TASKS`)
+  while keeping the registry record (`task_deleted: true`), events, and result,
+  add `glue job delete <id>` (`DELETE /v1/jobs/{id}?purge=true`) to delete the
+  task and purge all gateway data for a job, and reconcile orphan `glue-*` AX
+  tasks on gateway startup and via `GET /v1/diagnostics` without deleting them.
+
 - Suspend AX tasks while jobs wait for human input (`suspend_after` default
   `2m`, or `GLUE_SUSPEND_AFTER`, when no live SSE viewer is attached) and when
   jobs finish (`suspend_on_finish` default `true`), serve read-only inspection
