@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `glue job attach <id>` and `glue job submit --attach` with per-server
+  sequence cursor replay (`~/.config/glue/jobs/<server-hash>/<id>.seq`), inline
+  permission prompts, Ctrl-C detach without cancelling the job, and automatic
+  `Last-Event-ID` reconnect backoff.
+
 - Add `internal/jobclient` and the `glue job` control and inspection CLI
   (`login`, `submit` with `--select`, `start`, `list`, `show`, `result`,
   `approve`, `deny`, `say`, `continue`, `cancel`), storing server tokens in

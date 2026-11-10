@@ -85,4 +85,6 @@ terminal `job_done` event:
 
 ## CLI (`glue job`)
 
-`glue job` speaks `/v1/jobs` against `--server`/`GLUE_SERVER` using `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`), `start`, `list`, `show`, `result [--json]`, `approve`, `deny`, `say`, `continue`, and `cancel`.
+`glue job` speaks `/v1/jobs` against `--server`/`GLUE_SERVER` using `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`, `--attach`), `start`, `list`, `show`, `attach`, `result [--json]`, `approve`, `deny`, `say`, `continue`, and `cancel`.
+
+`glue job attach <id>` (and `glue job submit ... --attach`) replays events strictly after the last seen sequence cached in `~/.config/glue/jobs/<server-hash>/<id>.seq` (`0600`), renders the transcript (`plan`, `iteration_start`, `text_delta`, `tool_start`, `tool_end`, `verdict`, `operator_message`, `run_interrupted`, `job_resumed`, `job_done`), prompts inline for pending permissions, detaches on Ctrl-C without cancelling the server job, and reconnects with `Last-Event-ID` backoff when the stream drops before `job_done`.

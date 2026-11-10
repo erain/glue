@@ -8,15 +8,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
+	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/jobs"
 	filestore "github.com/erain/glue/stores/file"
@@ -136,6 +139,140 @@ func TestJobSubmitSelect(t *testing.T) {
 	out := mustJobCLI(t, "submit", "--repo", repo, "--objective", "test select", "--select", "--start=false")
 	if job := must(mgr.Get(context.Background(), strings.TrimSpace(out))); gotInitial.Provider != "gemini" || gotInitial.Model != "gemini-3.8-flash" || job.Spec.Provider != "deepseek" || job.Spec.Model != "deepseek-flash" || job.Spec.Thinking != "high" {
 		t.Fatalf("initial=%+v job=%+v", gotInitial, job)
+	}
+}
+
+type detachAfterFirstApprovalReader struct {
+	sent   bool
+	cancel context.CancelFunc
+	ctx    context.Context
+}
+
+func (r *detachAfterFirstApprovalReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, "a\n"), nil
+	}
+	r.cancel()
+	<-r.ctx.Done()
+	return 0, io.EOF
+}
+func TestJobAttachReplayPermissionsAndDetach(t *testing.T) {
+	for _, k := range []string{"XDG_CONFIG_HOME", "GLUE_CONFIG_DIR"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("HOME", t.TempDir())
+	repo := serveJobRepo(t)
+	p := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		textTurn(`{"items":[{"title":"add Makefile"}]}`),
+		toolCallTurn("call-1", "write_file", `{"path":"Makefile","content":"test:\n\t@true\n"}`),
+		toolCallTurn("call-2", "write_file", `{"path":"extra.txt","content":"skip\n"}`),
+		textTurn("wrote Makefile"),
+		textTurn(`{"done":false,"items":[{"title":"add Makefile","done":false}],"summary":"waiting for confirmation"}`),
+		textTurn("confirmed Makefile"),
+		textTurn(`{"done":true,"items":[{"title":"add Makefile","done":true,"evidence":"Makefile present"}],"summary":"Add Makefile test target"}`),
+	}}
+	ts, mgr := newTestJobDaemon(t, p)
+	t.Setenv("GLUE_SERVER", ts.URL)
+	t.Setenv("GLUE_TOKEN", "job-token")
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	var out1, err1 bytes.Buffer
+	if code := runCLIWithDeps(ctx1, []string{"job", "submit", "--repo", repo, "--objective", "add a Makefile with a test target", "--policy", "ask-all", "--max-iterations", "1", "--attach"}, &detachAfterFirstApprovalReader{cancel: cancel1, ctx: ctx1}, &out1, &err1, fakeFactory(nil), serveDaemon, nil); code != 0 {
+		t.Fatalf("first attach failed (%d): %s", code, err1.String())
+	}
+	jobID := strings.TrimSpace(strings.Split(out1.String(), "\n")[0])
+	if !strings.Contains(mustJobCLI(t, "list"), jobID+"\twaiting_for_input") {
+		t.Fatalf("expected job still waiting_for_input after detach, got: %s", mustJobCLI(t, "list"))
+	}
+	if info := must(os.Stat(jobclient.SeqPath(ts.URL, jobID))); info.Mode().Perm() != 0o600 {
+		t.Fatalf("seq file mode=%v", info.Mode().Perm())
+	}
+	mustJobCLI(t, "say", jobID, "keep Makefile minimal")
+
+	var out2, err2 bytes.Buffer
+	if code := runCLIWithDeps(context.Background(), []string{"job", "attach", jobID}, strings.NewReader("d\n"), &out2, &err2, fakeFactory(nil), serveDaemon, nil); code != 0 {
+		t.Fatalf("second attach failed (%d): %s", code, err2.String())
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out1.String()), "\n") {
+		if line = strings.TrimSpace(line); line != "" && strings.Contains(out2.String(), line) {
+			t.Fatalf("duplicate line %q across attaches:\nout1:\n%s\nout2:\n%s", line, out1.String(), out2.String())
+		}
+	}
+	if !strings.Contains(out1.String(), "plan (1 items):") || !strings.Contains(out1.String(), "[tool done] write_file") {
+		t.Fatalf("out1=%q", out1.String())
+	}
+	if !strings.Contains(out2.String(), "operator: keep Makefile minimal") || !strings.Contains(out2.String(), "[tool error] write_file: permission denied by user") || !strings.Contains(out2.String(), "wrote Makefile") || !strings.Contains(out2.String(), "job max_iterations") {
+		t.Fatalf("out2=%q", out2.String())
+	}
+	mustJobCLI(t, "continue", jobID, "proceed", "--max-iterations", "1")
+	var out3, err3 bytes.Buffer
+	if code := runCLIWithDeps(context.Background(), []string{"job", "attach", jobID}, strings.NewReader(""), &out3, &err3, fakeFactory(nil), serveDaemon, nil); code != 0 {
+		t.Fatalf("third attach failed (%d): %s", code, err3.String())
+	}
+	if !strings.Contains(out3.String(), "resumed: iteration 2 (continue)") || !strings.Contains(out3.String(), "confirmed Makefile") || !strings.Contains(out3.String(), "job achieved — Add Makefile test target") || strings.Contains(out3.String(), "— iteration 1") || strings.Contains(out3.String(), "wrote Makefile") {
+		t.Fatalf("out3=%q", out3.String())
+	}
+	if out4 := mustJobCLI(t, "attach", jobID); out4 != "" {
+		t.Fatalf("attach after terminal seq should be empty, got %q", out4)
+	}
+	_ = mgr
+}
+func TestAttachReconnectsAfterDrop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var attempts atomic.Int32
+	var gotLastEventID atomic.Value
+	events := []eventlog.Envelope{
+		{Version: 2, Seq: 1, Type: string(glue.GoalEventPlan), Payload: glue.GoalEvent{Type: glue.GoalEventPlan, Checklist: []glue.ChecklistItem{{Title: "add Makefile"}}}},
+		{Version: 2, Seq: 2, Type: string(glue.GoalEventIterationStart), Payload: glue.GoalEvent{Type: glue.GoalEventIterationStart, Iteration: 1}},
+		{Version: 2, Seq: 3, Type: "run_interrupted", Payload: map[string]any{"reason": "node restart"}},
+		{Version: 2, Seq: 4, Type: "job_resumed", Payload: map[string]any{"from_iteration": 1, "reason": "restart"}},
+		{Version: 2, Seq: 5, Type: string(glue.EventToolStart), Payload: glue.Event{Type: glue.EventToolStart, ToolName: "write_file", ToolCall: &glue.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"Makefile"}`)}}},
+		{Version: 2, Seq: 6, Type: string(glue.EventToolEnd), Payload: glue.Event{Type: glue.EventToolEnd, ToolName: "write_file", ToolResult: &glue.ToolResult{Content: []glue.ContentPart{{Type: glue.ContentTypeText, Text: "ok"}}}}},
+		{Version: 2, Seq: 7, Type: string(glue.EventTextDelta), Phase: "maker", Payload: glue.Event{Type: glue.EventTextDelta, Delta: "wrote Makefile\n"}},
+		{Version: 2, Seq: 8, Type: string(glue.GoalEventVerdict), Payload: glue.GoalEvent{Type: glue.GoalEventVerdict, Checklist: []glue.ChecklistItem{{Title: "add Makefile", Done: true}}, Message: "done"}},
+		{Version: 2, Seq: 9, Type: "job_done", Payload: map[string]any{"status": jobs.Achieved, "result": glue.GoalResult{Summary: "Makefile ready"}}},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		gotLastEventID.Store(r.Header.Get("Last-Event-ID"))
+		var after int64
+		_, _ = fmt.Sscan(r.Header.Get("Last-Event-ID"), &after)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for _, ev := range events {
+			if ev.Seq <= after {
+				continue
+			}
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.Seq, data)
+			flusher.Flush()
+			if n == 1 && ev.Seq == 4 {
+				return
+			}
+		}
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("GLUE_SERVER", ts.URL)
+	t.Setenv("GLUE_TOKEN", "job-token")
+	out := mustJobCLI(t, "attach", "job-drop-1")
+	if attempts.Load() < 2 || gotLastEventID.Load() != "4" {
+		t.Fatalf("attempts=%d Last-Event-ID=%v", attempts.Load(), gotLastEventID.Load())
+	}
+	for _, want := range []string{
+		"plan (1 items):",
+		"— iteration 1 (0 tokens so far)",
+		"interrupted: node restart",
+		"resumed: iteration 1 (restart)",
+		`[tool] write_file {"path":"Makefile"}`,
+		"[tool done] write_file: ok",
+		"wrote Makefile",
+		"verdict: 1/1 ✓ — done",
+		"job achieved — Makefile ready",
+	} {
+		if c := strings.Count(out, want); c != 1 {
+			t.Fatalf("expected %q once (got %d) in:\n%s", want, c, out)
+		}
 	}
 }
 func waitJob(t *testing.T, mgr *jobs.Manager, jobID string, want jobs.Status) string {

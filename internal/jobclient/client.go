@@ -4,9 +4,12 @@
 package jobclient
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,11 +17,22 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/erain/glue/daemon"
+	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
 )
+
+var ErrDone = errors.New("jobclient: stream done")
+
+type StatusError struct {
+	Method, Path, Message string
+	Code                  int
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%s %s: %s", e.Method, e.Path, e.Message) }
 
 type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
@@ -125,6 +139,66 @@ func (c *Client) Continue(ctx context.Context, id, text string, maxIterations in
 func (c *Client) Cancel(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(id), nil, http.StatusAccepted, nil)
 }
+func SeqPath(serverURL, id string) string {
+	sum := sha256.Sum256([]byte(NormalizeURL(serverURL)))
+	return filepath.Join(ConfigDir(), "jobs", hex.EncodeToString(sum[:8]), id+".seq")
+}
+func (c *Client) LoadSeq(id string) int64 {
+	data, err := os.ReadFile(SeqPath(c.BaseURL, id))
+	if err != nil {
+		return 0
+	}
+	seq, _ := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	return max(0, seq)
+}
+func (c *Client) SaveSeq(id string, seq int64) error {
+	path := SeqPath(c.BaseURL, id)
+	return errors.Join(os.MkdirAll(filepath.Dir(path), 0o700), os.WriteFile(path, []byte(strconv.FormatInt(seq, 10)+"\n"), 0o600), os.Chmod(path, 0o600))
+}
+func (c *Client) StreamEvents(ctx context.Context, id string, after int64, handle func(eventlog.Envelope) error) error {
+	path := "/v1/jobs/" + url.PathEscape(id) + "/events"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "text/event-stream")
+	if after > 0 {
+		req.Header.Set("Last-Event-ID", strconv.FormatInt(after, 10))
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return decodeStatusErr(http.MethodGet, path, resp)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var ev eventlog.Envelope
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+			return err
+		}
+		if err := handle(ev); err != nil {
+			if errors.Is(err, ErrDone) {
+				return nil
+			}
+			return err
+		}
+	}
+	return scanner.Err()
+}
+func decodeStatusErr(method, path string, resp *http.Response) error {
+	var e struct{ Error struct{ Message string } }
+	_ = json.NewDecoder(resp.Body).Decode(&e)
+	return &StatusError{Method: method, Path: path, Code: resp.StatusCode, Message: cmp.Or(e.Error.Message, resp.Status)}
+}
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, wantStatus int, respBody any) error {
 	data, _ := json.Marshal(reqBody)
 	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(data))
@@ -139,9 +213,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, w
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != wantStatus {
-		var e struct{ Error struct{ Message string } }
-		_ = json.NewDecoder(resp.Body).Decode(&e)
-		return fmt.Errorf("%s %s: %s", method, path, cmp.Or(e.Error.Message, resp.Status))
+		return decodeStatusErr(method, path, resp)
 	}
 	if respBody == nil {
 		return nil

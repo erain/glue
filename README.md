@@ -489,6 +489,12 @@ go run ./cmd/glue connect --prompt "Say hi" --id demo
 go run ./cmd/glue goal --coding --yolo --worktree "Make the linter pass on ./..."
 go run ./cmd/glue goal --list
 go run ./cmd/glue goal --resume
+
+# Fire and forget a coding job (detach with Ctrl-C, reattach from any terminal):
+go run ./cmd/glue serve --coding --state-dir .glue/state --listen 127.0.0.1:8787 --token "$GLUE_TOKEN" &
+id=$(go run ./cmd/glue job submit --server http://127.0.0.1:8787 --repo . --objective "Add a Makefile test target")
+go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without cancelling
+go run ./cmd/glue job result "$id"
 ```
 
 **Interactive mode** (designed in [ADR-0014](docs/adr/0014-coding-agent-tui.md)).
