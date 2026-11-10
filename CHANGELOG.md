@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Run post-goal `verify` commands in the job environment, commit workspace edits
+  on `glue/<job-id>` with `GLUE_GIT_AUTHOR_NAME`/`GLUE_GIT_AUTHOR_EMAIL` (or
+  repository config fallback), persist `<state>/jobs/<id>/result.json`, and
+  serve completion records at `GET /v1/jobs/{id}/result`.
+
 - Give coding and job shells a safe default toolchain environment
   (`--shell-env-pass`, `--shell-env`, `--shell-env-secret-allow`), filter
   secret-shaped variables by default, create `<state>/home/<job-id>` when

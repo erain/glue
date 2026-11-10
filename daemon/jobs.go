@@ -175,6 +175,17 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"permissions": permissions})
 			return
+		case "result":
+			if !jobMethod(w, r, http.MethodGet) {
+				return
+			}
+			result, err := s.jobs.Result(r.Context(), id)
+			if err != nil {
+				jobError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+			return
 		}
 	}
 	if len(parts) == 4 && parts[1] == "permissions" && parts[2] != "" && parts[3] == "decision" {
