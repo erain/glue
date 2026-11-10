@@ -63,10 +63,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, onReady func(addr
 	if err != nil {
 		return err
 	}
-	httpSrv := &http.Server{
-		Handler:           srv,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpSrv := gateway.NewHTTPServer(cfg.Listen, srv)
 	errCh := make(chan error, 1)
 	go func() {
 		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

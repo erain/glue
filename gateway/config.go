@@ -26,6 +26,8 @@ const (
 	DefaultSessionAbsoluteTTL = 168 * time.Hour
 	DefaultSessionIdleTTL     = 24 * time.Hour
 	DefaultAuthRateLimit      = 30
+	DefaultMaxBodyBytes       = 1 << 20
+	HSTSHeader                = "max-age=31536000; includeSubDomains"
 )
 
 // DefaultEgressHosts is the default TLS passthrough allowlist for AX tasks.
@@ -78,13 +80,15 @@ type BackendConfig struct {
 
 // Config is the top-level YAML configuration for glue-gateway.
 type Config struct {
-	Listen         string           `yaml:"listen"`
-	PublicURL      string           `yaml:"public_url"`
-	StateDir       string           `yaml:"state_dir"`
-	Auth           AuthConfig       `yaml:"auth"`
-	Credentials    jobs.Credentials `yaml:"credentials" json:"-"`
-	Backends       []BackendConfig  `yaml:"backends"`
-	DefaultBackend string           `yaml:"default_backend"`
+	Listen              string           `yaml:"listen"`
+	PublicURL           string           `yaml:"public_url"`
+	TrustForwardedProto bool             `yaml:"trust_forwarded_proto"`
+	MaxBodyBytes        int64            `yaml:"max_body_bytes"`
+	StateDir            string           `yaml:"state_dir"`
+	Auth                AuthConfig       `yaml:"auth"`
+	Credentials         jobs.Credentials `yaml:"credentials" json:"-"`
+	Backends            []BackendConfig  `yaml:"backends"`
+	DefaultBackend      string           `yaml:"default_backend"`
 	// Task suspension, retention settings, and test hooks.
 	SuspendAfter    time.Duration      `yaml:"suspend_after"`
 	ResumeTimeout   time.Duration      `yaml:"resume_timeout"`
@@ -121,6 +125,10 @@ func ParseConfig(data []byte) (Config, error) {
 func (cfg Config) Validate() (Config, error) {
 	cfg.Listen = cmp.Or(strings.TrimSpace(cfg.Listen), "127.0.0.1:8800")
 	cfg.PublicURL = strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/")
+	if envTFP := strings.TrimSpace(os.Getenv("GLUE_TRUST_FORWARDED_PROTO")); !cfg.TrustForwardedProto && envTFP != "" {
+		cfg.TrustForwardedProto = envTFP == "1" || strings.EqualFold(envTFP, "true")
+	}
+	cfg.MaxBodyBytes = cmp.Or(cfg.MaxBodyBytes, int64(DefaultMaxBodyBytes))
 	cfg.StateDir = strings.TrimSpace(cfg.StateDir)
 	cfg.Auth.Mode = cmp.Or(strings.TrimSpace(cfg.Auth.Mode), "dev-token")
 	cfg.Auth.Token = cmp.Or(strings.TrimSpace(cfg.Auth.Token), strings.TrimSpace(os.Getenv("GLUE_GATEWAY_TOKEN")))
@@ -166,7 +174,7 @@ func (cfg Config) Validate() (Config, error) {
 		return Config{}, errors.New("gateway: dev-token mode is not allowed when public_url is https:// unless --insecure-dev is passed")
 	}
 	authOK := (cfg.Auth.Mode == "dev-token" && cfg.Auth.Token != "") || (cfg.Auth.Mode == "github" && cfg.PublicURL != "" && cfg.Auth.ClientID != "" && cfg.Auth.ClientSecret != "" && len(cfg.Auth.AllowedLogins) > 0)
-	if cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.RetainTasks < 0 || cfg.Auth.SessionAbsoluteTTL <= 0 || cfg.Auth.SessionIdleTTL <= 0 || cfg.Auth.RateLimitPerMin <= 0 || cfg.StateDir == "" || !authOK || len(cfg.Backends) == 0 {
+	if cfg.MaxBodyBytes <= 0 || cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.RetainTasks < 0 || cfg.Auth.SessionAbsoluteTTL <= 0 || cfg.Auth.SessionIdleTTL <= 0 || cfg.Auth.RateLimitPerMin <= 0 || cfg.StateDir == "" || !authOK || len(cfg.Backends) == 0 {
 		return Config{}, fmt.Errorf("gateway: invalid config (state_dir=%q, auth.mode=%q, has_token=%v, backends=%d)", cfg.StateDir, cfg.Auth.Mode, cfg.Auth.Token != "", len(cfg.Backends))
 	}
 	seen := make(map[string]bool, len(cfg.Backends))

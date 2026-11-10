@@ -1,0 +1,21 @@
+[Unit]
+Description=Glue Gateway (host mode behind Cloudflare Tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=glue
+Group=glue
+EnvironmentFile=-/etc/glue-gateway/gateway.env
+ExecStart=/usr/local/bin/glue-gateway --config /etc/glue-gateway/gateway.yaml
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/glue-gateway
+
+[Install]
+WantedBy=multi-user.target

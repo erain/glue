@@ -16,6 +16,15 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Harden `glue-gateway` for public exposure behind Cloudflare Tunnel with HSTS
+  (`Strict-Transport-Security`), configurable `trust_forwarded_proto` for
+  `Secure` cookies and redirect URLs, `max_body_bytes` (default 1 MiB, returning
+  `413 Request Entity Too Large`), `gateway.NewHTTPServer` timeouts
+  (`ReadHeaderTimeout`, `ReadTimeout`, `IdleTimeout`), structured access logs
+  that omit query strings, tokens, and cookies, an HTML `403 Access Denied` page
+  for non-allowlisted browser OAuth sign-ins, `deploy/cloudflared/` Kubernetes
+  and `systemd` manifests, and `docs/runbooks/public-gateway.md`.
+
 - Add personal API tokens (`POST /v1/tokens`, `GET /v1/tokens`,
   `DELETE /v1/tokens/{id}`, stored as SHA-256 hashes in `api_tokens`), scope
   gateway jobs to their `owner` login (`TestJobsScopedToOwner`), and add GitHub
