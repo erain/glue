@@ -130,6 +130,7 @@ func TestUIAssetsViewsAndSafety(t *testing.T) {
 		"EventSource", "seenSeqs", "login-view", "jobs-view", "status-filter", "job-detail-view",
 		"job-checklist", "job-transcript", "tool-show-more", "permission-card", "goal-divider",
 		"iteration_start", "verdict", "operator_message", "run_interrupted", "job_resumed", "job_done",
+		"task_suspended", "task_resumed", "Suspended – waiting for you", "suspended-note",
 		"permission-allow-once", "permission-allow-session", "permission-deny", "permission-reason",
 		"pending-permissions-banner", "job-pending-permissions", "permissions?state=pending",
 		"steer-form", "steer-input", "steer-submit", "/messages", "/continue",

@@ -207,7 +207,7 @@ func (s *Server) remapPerm(ctx context.Context, id, permID string, all []jobs.Pe
 	for i >= 0 {
 		perms, _ := s.reg.Permissions(rctx, id, "pending")
 		if j := slices.IndexFunc(perms, func(p jobs.PermissionInfo) bool {
-			return p.ID != permID && p.Request.Tool == all[i].Request.Tool && p.Request.Target == all[i].Request.Target
+			return p.ID != permID && ((p.Request.Tool == all[i].Request.Tool && p.Request.Target == all[i].Request.Target) || len(perms) == 1)
 		}); j >= 0 {
 			s.mu.Lock()
 			s.remap[id+"\x00"+perms[j].ID] = permID

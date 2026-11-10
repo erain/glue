@@ -3,9 +3,9 @@ export { fetchSession, login, getCSRFToken, apiRequest, apiPost, apiDelete };
 
 const TRUNCATE_LIMIT = 4096;
 const REFRESH_MS = 10000;
-const STATUSES = ["", "created", "running", "waiting_for_input", "achieved", "blocked", "budget_limited", "max_iterations", "errored", "canceled", "interrupted"];
+const STATUSES = ["", "created", "running", "waiting_for_input", "suspended", "achieved", "blocked", "budget_limited", "max_iterations", "errored", "canceled", "interrupted"];
 const SSE_EVENT_TYPES = [
-  "message", "job_created", "job_started", "job_waiting", "job_resumed", "job_done",
+  "message", "job_created", "job_started", "job_waiting", "job_resumed", "job_done", "task_suspended", "task_resumed",
   "plan", "iteration_start", "maker_done", "verdict", "done", "blocked", "budget_limited", "max_iterations",
   "operator_message", "operator_message_delivered", "run_interrupted",
   "permission_request", "permission_decision", "permission_expired", "permission_auto",
@@ -17,7 +17,8 @@ let listTimer = null;
 let activeStream = null;
 let statusFilter = "";
 
-const isActiveStatus = (st) => st === "created" || st === "running" || st === "waiting_for_input";
+const isActiveStatus = (st) => st === "created" || st === "running" || st === "waiting_for_input" || st === "suspended";
+const formatStatusLabel = (st) => (st === "suspended" ? "Suspended – waiting for you" : st);
 const shortSHA = (sha) => (sha ? String(sha).slice(0, 12) : "—");
 
 function el(tag, attrs = {}, ...children) {
@@ -133,7 +134,7 @@ async function renderJobsList(root) {
         const maxIter = j.spec?.budgets?.max_iterations || 10;
         const pendingCount = Number(j.pending_permission_count || 0);
         return el("a", { className: "card job-row", href: `#/jobs/${encodeURIComponent(j.id)}`, "data-testid": "job-row", "data-job-id": j.id },
-          el("span", { className: `badge status-${j.status}`, "data-testid": "job-status" }, j.status),
+          el("span", { className: `badge status-${j.status}`, "data-testid": "job-status" }, formatStatusLabel(j.status)),
           el("div", {},
             el("div", { className: "job-objective", "data-testid": "job-objective", title: j.spec?.objective || "" }, truncate(j.spec?.objective || j.id, 80)),
             el("div", { className: "job-meta" }, el("span", { "data-testid": "job-repo" }, formatRepo(j.spec)), el("span", { "data-testid": "job-model" }, formatModel(j.spec)))
@@ -206,6 +207,7 @@ export function upsertPermissionCard(state, permId, req = {}, permState = "pendi
       setPermissionCardState(state, permId, nextState);
       const anyPending = [...state.permissionCards.values()].some((c) => c.stateBadge.textContent === "pending");
       state.updateStatus?.(anyPending ? "waiting_for_input" : "running");
+      state.onAction?.();
     } catch (err) {
       errEl.textContent = err.message || "Decision failed";
       errEl.hidden = false;
@@ -292,6 +294,7 @@ export function applyJobEvent(state, env) {
   if (env.type === "permission_decision" || env.type === "permission_expired") {
     const nextState = env.type === "permission_expired" ? "expired" : p.decision?.allow ? "allowed" : "denied";
     setPermissionCardState(state, p.permission_id || "", nextState);
+    if (p.original_permission_id) setPermissionCardState(state, p.original_permission_id, nextState);
     const anyPending = [...state.permissionCards.values()].some((c) => c.stateBadge.textContent === "pending");
     state.updateStatus?.(anyPending ? "waiting_for_input" : "running");
     return true;
@@ -314,6 +317,15 @@ export function applyJobEvent(state, env) {
       state.finished = false;
       state.updateStatus?.("running");
       return `Resumed at iteration ${p.from_iteration || iter || 1} (${p.reason || "resumed"})`;
+    },
+    task_suspended: () => {
+      if (p.reason === "waiting_for_input") state.updateStatus?.("suspended");
+      return `Task suspended (${p.reason || "idle"})`;
+    },
+    task_resumed: () => {
+      state.finished = false;
+      state.updateStatus?.("running");
+      return `Task resumed (${p.reason || "on_demand"})`;
     },
     job_done: () => {
       const st = p.status || "achieved";
@@ -374,7 +386,8 @@ async function renderJobDetail(root, jobId) {
   ]);
   let currentStatus = detail.status;
   const maxIter = detail.spec?.budgets?.max_iterations || 10;
-  const statusEl = el("span", { className: `badge status-${detail.status}`, "data-testid": "detail-status" }, detail.status);
+  const statusEl = el("span", { className: `badge status-${detail.status}`, "data-testid": "detail-status" }, formatStatusLabel(detail.status));
+  const suspendedNoteEl = el("p", { className: "muted suspended-note", "data-testid": "suspended-note", hidden: detail.status !== "suspended" }, "Suspended – waiting for you. The first action may take a few seconds while the task resumes.");
   const iterEl = el("span", { "data-testid": "detail-iteration" }, `iter ${detail.iteration ?? 0}/${maxIter}`);
   const usageEl = el("span", { "data-testid": "detail-usage" }, formatUsage(detail.usage));
   const streamEl = el("span", { className: "muted", "data-testid": "stream-status" }, "connecting…");
@@ -409,15 +422,17 @@ async function renderJobDetail(root, jobId) {
       steerSubmitBtn.disabled = steerInputEl.disabled = true;
       try {
         if (isActiveStatus(currentStatus)) {
+          const wasSuspended = currentStatus === "suspended";
           await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/messages`, { text });
           steerInputEl.value = "";
+          if (wasSuspended) { state.updateStatus("running"); openSSE(true, true); }
         } else {
           await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/continue`, { text });
           steerInputEl.value = "";
           state.finished = false;
           resultPanelEl.hidden = true;
           state.updateStatus("running");
-          openSSE(true);
+          openSSE(true, true);
         }
       } catch (err) {
         steerErrEl.textContent = err.message || "Request failed";
@@ -432,6 +447,7 @@ async function renderJobDetail(root, jobId) {
   function syncControls(st) {
     currentStatus = st;
     const active = isActiveStatus(st);
+    suspendedNoteEl.hidden = st !== "suspended";
     cancelBtn.hidden = !active;
     if (!active) cancelDialogEl.hidden = true;
     steerCardEl.hidden = st === "achieved";
@@ -455,7 +471,8 @@ async function renderJobDetail(root, jobId) {
         el("span", { className: "muted" }, " — " + pending.map((p) => `${p.toolLabel}${p.target ? " (" + p.target + ")" : ""}`).join(", "))
       );
     },
-    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = st; syncControls(st); },
+    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = formatStatusLabel(st); syncControls(st); },
+    onAction: () => { openSSE(true, true); },
     onJobDone: () => { loadResult(); },
     updateIteration: (n) => { iterEl.textContent = `iter ${n}/${maxIter}`; },
     updateUsage: (u) => { usageEl.textContent = formatUsage(u); },
@@ -479,6 +496,7 @@ async function renderJobDetail(root, jobId) {
     bannerEl,
     el("div", { className: "card", "data-testid": "job-header" },
       el("div", { className: "detail-header-top" }, statusEl, el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId), cancelBtn),
+      suspendedNoteEl,
       cancelDialogEl,
       el("div", { className: "detail-meta" }, iterEl, el("span", { "data-testid": "detail-model" }, formatModel(detail.spec)), el("span", { "data-testid": "detail-repo" }, formatRepo(detail.spec)), usageEl, streamEl)
     ),
@@ -492,12 +510,15 @@ async function renderJobDetail(root, jobId) {
 
   let es = null;
   let retryTimer = null;
-  function openSSE(useAfter = false) {
+  function openSSE(useAfter = false, forceLive = false) {
     if (state.finished) return;
     if (es) es.close();
-    const suffix = useAfter && state.lastSeq > 0 ? `?after=${state.lastSeq}` : "";
-    es = new EventSource(`/v1/jobs/${encodeURIComponent(jobId)}/events${suffix}`);
-    es.onopen = () => { streamEl.textContent = "live"; };
+    const params = new URLSearchParams();
+    if (useAfter && state.lastSeq > 0) params.set("after", String(state.lastSeq));
+    if (!forceLive && currentStatus === "suspended") params.set("cached", "1");
+    const q = params.toString();
+    es = new EventSource(`/v1/jobs/${encodeURIComponent(jobId)}/events${q ? "?" + q : ""}`);
+    es.onopen = () => { streamEl.textContent = currentStatus === "suspended" && !forceLive ? "cached" : "live"; };
     const handle = (ev) => {
       try {
         const env = JSON.parse(ev.data);
@@ -508,10 +529,10 @@ async function renderJobDetail(root, jobId) {
     };
     for (const t of SSE_EVENT_TYPES) es.addEventListener(t, handle);
     es.onerror = () => {
-      if (state.finished) { es.close(); return; }
+      if (state.finished || (currentStatus === "suspended" && !forceLive)) { es.close(); return; }
       streamEl.textContent = "reconnecting…";
       if (es.readyState === EventSource.CLOSED && !retryTimer) {
-        retryTimer = setTimeout(() => { retryTimer = null; openSSE(true); }, 1000);
+        retryTimer = setTimeout(() => { retryTimer = null; openSSE(true, forceLive); }, 1000);
       }
     };
   }

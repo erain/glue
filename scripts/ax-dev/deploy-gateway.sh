@@ -23,6 +23,10 @@ if [[ -z "${GITHUB_TOKEN}" ]] && command -v gh >/dev/null 2>&1; then
   GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
 fi
 [[ -n "${GITHUB_TOKEN}" ]] || fail "GLUE_GITHUB_TOKEN is unset and 'gh auth token' returned empty"
+if [[ -z "${GEMINI_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" && -f "${HOME}/.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a; source "${HOME}/.env"; set +a
+fi
 [[ -n "${GEMINI_API_KEY:-}" || -n "${OPENROUTER_API_KEY:-}" ]] || fail "GEMINI_API_KEY (or OPENROUTER_API_KEY) must be set in the environment"
 GATEWAY_TOKEN="${GLUE_GATEWAY_TOKEN:-$(openssl rand -hex 24)}"
 
@@ -40,7 +44,8 @@ docker build --build-arg "TARGETARCH=${GOARCH}" --build-arg "GO_VERSION=${GO_TOO
   -t "${TAG}" -f "${REPO_ROOT}/deploy/ax/gateway/Dockerfile" "${REPO_ROOT}" >&2
 docker push -q "${TAG}" >/dev/null
 GLUE_GATEWAY_IMAGE="$(docker inspect --format='{{index .RepoDigests 0}}' "${TAG}")"
-export GLUE_GATEWAY_IMAGE GLUE_TASK_IMAGE AX_SYSTEM_NAMESPACE
+GLUE_SUSPEND_AFTER="${GLUE_SUSPEND_AFTER:-2m}"
+export GLUE_GATEWAY_IMAGE GLUE_TASK_IMAGE AX_SYSTEM_NAMESPACE GLUE_SUSPEND_AFTER
 
 {
   [[ -n "${AX_SERVER_IMAGE:-}" ]] && printf 'export AX_SERVER_IMAGE="%s"\n' "${AX_SERVER_IMAGE}"
@@ -65,7 +70,7 @@ k -n glue-system create secret generic glue-gateway-secrets \
   --dry-run=client -o yaml | k apply -f - >/dev/null
 
 # shellcheck disable=SC2016
-envsubst '${GLUE_GATEWAY_IMAGE} ${GLUE_TASK_IMAGE} ${AX_SYSTEM_NAMESPACE}' \
+envsubst '${GLUE_GATEWAY_IMAGE} ${GLUE_TASK_IMAGE} ${AX_SYSTEM_NAMESPACE} ${GLUE_SUSPEND_AFTER}' \
   < "${REPO_ROOT}/deploy/ax/gateway/manifests.yaml" | k apply -f -
 k -n glue-system rollout status deployment/glue-gateway --timeout=120s
 log "glue-gateway ready (${GLUE_GATEWAY_IMAGE}); token saved in ${STATE}/gateway.env"
