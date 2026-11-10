@@ -1,0 +1,18 @@
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: glue-smoke-task
+  atespace: default
+spec:
+  workspace:
+    name: glue-workspace
+    path: /workspace
+  command: ["glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state", "--token-file", "/workspace/.glue/token"]
+  config:
+    objective: "Verify Glue AX task image golden boot"
+    repo:
+      path: /workspace
+    policy: workspace-auto
+    delivery: draft_pr
+    verify:
+      - ["go", "test", "./..."]

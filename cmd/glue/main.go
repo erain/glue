@@ -255,7 +255,7 @@ func printUsage(w io.Writer) {
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]
   glue job <login|submit|start|list|show|attach|result|approve|deny|say|continue|cancel> [flags]
-  glue serve [--jobs] [--provider <name>] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
+  glue serve [--jobs] [--job-from-ax] [--provider <name>] [--listen 127.0.0.1:0] [--token-file <path>] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -309,6 +309,10 @@ Flags:
              Run/serve --coding mode: allow write_file overwrites when the model also sets overwrite=true.
   --listen   Serve listen address. Defaults to 127.0.0.1:0.
   --token    Serve bearer token. Defaults to GLUE_DAEMON_TOKEN or a generated token.
+  --token-file
+             Serve mode: durable bearer token file path (created with mode 0600 if missing).
+  --job-from-ax
+             Serve mode: create a job from AX task metadata or AX_TASK_YAML on startup (idempotent).
   --metadata Serve connection metadata JSON. Defaults to the user config directory.
   --base-url Connect daemon base URL override.
   --role     Connect role override.
