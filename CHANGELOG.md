@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `deploy/ax/gateway/Dockerfile` and `deploy/ax/gateway/manifests.yaml` for
+  running `glue-gateway` in `glue-system` with projected Substrate pod
+  certificates and `ate-token` volumes, plus `scripts/ax-dev/deploy-gateway.sh`
+  and `scripts/ax-dev/e2e/submit.sh` for end-to-end AX job submission and draft
+  PR delivery verification on kind.
+
 - Add `gateway/backend/ax.Backend` submit/reconcile pipeline (`UpdateWorkspace`
   with `dir: "."`, `depth: 1` -> `CreateTask` -> `CreateActorEgressPolicy`
   before resume -> `ResumeTask` + poll `GetTask` until `Running` +

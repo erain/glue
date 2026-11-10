@@ -39,16 +39,49 @@ auth:
 backends:
   - # Logical backend identifier used in job specs and ?backend=<name> (required).
     name: local
-    # Backend implementation type. Supported value in #419: "local" ("ax" in #420).
+    # Backend implementation type ("local" or "ax").
     type: local
-    # Base HTTP URL of the upstream glue serve instance (required).
+    # Base HTTP URL of the upstream glue serve instance (required for type: local).
     url: http://127.0.0.1:8787
-    # Bearer token for authenticating upstream requests to glue serve (required).
+    # Bearer token for authenticating upstream requests to glue serve (required for type: local).
     token: replace-with-local-daemon-token
+
+  - name: ax
+    type: ax
+    # AX atespace where Workspaces, Tasks, and EgressPolicies are created (defaults to "default").
+    atespace: default
+    # Digest-pinned AX task image reference (required for type: ax).
+    image: localhost:5001/glue-task@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    # Per-task resource limits (defaults to cpu: "4", memory: "8Gi").
+    resources:
+      cpu: "4"
+      memory: "8Gi"
+    # Optional TLS passthrough port-443 egress allowlist (defaults to GitHub, Go module proxy, Gemini, and OpenRouter hosts).
+    egress_hosts:
+      - github.com
+      - api.github.com
+      - codeload.github.com
+      - proxy.golang.org
+      - sum.golang.org
+      - storage.googleapis.com
+      - generativelanguage.googleapis.com
+      - openrouter.ai
+    # Control-plane and router endpoints (optional; default to in-cluster service DNS names).
+    ax_server: ax-server.ax-system.svc.cluster.local:8080
+    substrate: api.ate-system.svc.cluster.local:443
+    router: atenet-router.ate-system.svc.cluster.local:8444
 
 # Default backend when a job submission omits backend (optional; defaults to backends[0].name).
 default_backend: local
 ```
+
+## AX Backend (`gateway/backend/ax`)
+
+For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-shot AX `Task` (`glue-<job-id>`) backed by an AX `Workspace` (`glue-<job-id>-ws`):
+
+1. **Ordered provisioning:** `Create` calls `UpdateWorkspace` (`dir: "."`, `depth: 1`, and `.glue/token`) and `CreateTask` (`glue serve --coding --jobs --job-from-ax --listen :8080 --state-dir /workspace/.glue/state --token-file /workspace/.glue/token`, with `spec.ID` in `Task.spec.config` and no task bearer token in `Task.spec.config`). `Start` applies `CreateActorEgressPolicy` (`tls_passthrough:443`) before calling `ResumeTask`, polls `GetTask` until `Running` + `WorkspaceReady=True`, and calls `POST /v1/jobs/{id}/start` through the router.
+2. **Ambiguous submit reconciliation:** If `CreateTask` fails with a deadline or transport error, the job is marked `submit_unknown` and reconciled via `GetTask` before retrying so duplicate tasks are never created.
+3. **mTLS HTTP `CONNECT` router transport:** `RouterTransport` dials `atenet-router.ate-system.svc.cluster.local:8444` with the gateway pod's `podidentity.podcert.ate.dev/identity` mTLS certificate and sends `CONNECT glue-<job-id>:8080 HTTP/1.1` with header `ate-target-actor: <atespace>/glue-<job-id>`. Status reads (`GET /v1/jobs`, `GET /v1/jobs/{id}`) read only the gateway SQLite registry and AX `GetTask` so inspecting a job never wakes a suspended task.
 
 ## SQLite Registry and Event Cache
 
