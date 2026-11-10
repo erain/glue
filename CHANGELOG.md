@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add reproducible local kind + Agent Substrate (`v1.0.0-rc.1`) + AX (`241bc4d`)
+  development cluster scripts in `scripts/ax-dev/` (`versions.env`, `prereqs.sh`,
+  `up.sh`, `status.sh`, `smoke.sh`, `down.sh`, `README.md`) and `Makefile`
+  targets (`ax-dev-up`, `ax-dev-status`, `ax-dev-smoke`, `ax-dev-down`).
+
 - Add a headless Chrome end-to-end browser test (`TestE2EJobBrowserWorkflow` in
   `webui/e2e_test.go`, gated by `GLUE_E2E_BROWSER=1` with strict `CI=true`
   precondition enforcement and failure screenshot/console artifact capture) plus
