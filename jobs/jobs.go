@@ -44,6 +44,7 @@ type Budgets struct {
 
 // Spec describes a coding objective and its execution settings.
 type Spec struct {
+	ID        string     `json:"id,omitempty"`
 	Objective string     `json:"objective"`
 	Repo      RepoSpec   `json:"repo"`
 	Provider  string     `json:"provider"`
@@ -171,6 +172,10 @@ func (m *Manager) policyFor(name string, allowedBinaries ...string) (Policy, err
 }
 
 func (m *Manager) validate(s Spec) (Spec, error) {
+	s.ID = strings.TrimSpace(s.ID)
+	if s.ID != "" && (!strings.HasPrefix(s.ID, "job-") || len(s.ID) <= 4 || strings.ContainsAny(s.ID, " \t\r\n/\\")) {
+		return s, invalid("id", "must start with job-")
+	}
 	s.Objective = strings.TrimSpace(s.Objective)
 	if s.Objective == "" {
 		return s, invalid("objective", "required")
@@ -234,6 +239,13 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 	return s, nil
 }
 
+// NewID allocates a random job identifier ("job-" + 12 hex characters).
+func NewID() (string, error) {
+	var random [6]byte
+	_, err := rand.Read(random[:])
+	return "job-" + hex.EncodeToString(random[:]), err
+}
+
 // Create atomically writes a validated specification and its first event.
 func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 	var job Job
@@ -241,12 +253,14 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 	if err != nil {
 		return job, err
 	}
-	var random [6]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return job, err
+	id := spec.ID
+	if spec.ID = ""; id == "" {
+		if id, err = NewID(); err != nil {
+			return job, err
+		}
 	}
 	now := m.options.Now().UTC()
-	job = Job{ID: "job-" + hex.EncodeToString(random[:]), Spec: spec, Status: Created, CreatedAt: now, UpdatedAt: now, LastSeq: 1}
+	job = Job{ID: id, Spec: spec, Status: Created, CreatedAt: now, UpdatedAt: now, LastSeq: 1}
 	data, err := json.Marshal(spec)
 	if err != nil {
 		return Job{}, err
@@ -258,6 +272,9 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 	defer tx.Rollback()
 	stamp := now.Format("2006-01-02T15:04:05.000000000Z")
 	if _, err := tx.ExecContext(ctx, "INSERT INTO jobs("+columns+") VALUES(?,?,?,'','',?,?,1,'')", job.ID, string(data), Created, stamp, stamp); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			err = fmt.Errorf("%w: job %s already exists", ErrConflict, job.ID)
+		}
 		return Job{}, err
 	}
 	if err := eventlog.Insert(tx, eventlog.Envelope{Version: 2, ID: job.ID + ":1", RunID: job.ID, Seq: 1, Time: now, Type: "job_created", Payload: spec}); err != nil {

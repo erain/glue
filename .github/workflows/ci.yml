@@ -50,6 +50,10 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Gateway
+        working-directory: gateway
+        run: go build ./... && go vet ./... && go test ./... -count=1 -race
+
   live:
     name: live (gemini)
     needs: test
