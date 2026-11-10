@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add browser UI views in `webui/static` (`index.html`, `app.js`, `app.css`) for
+  daemon token login, status-filtered jobs list with 10-second auto-refresh, and
+  live SSE job detail transcripts (checklist, merged `text_delta` messages,
+  collapsible tool calls with 4 KiB output truncation, goal dividers, highlighted
+  permission cards, `Last-Event-ID` reconnect, and `seq` deduplication).
+
 - Add `webui` (`webui.Handler()`) serving `/` and `/static/*` with strict
   browser security headers (`Content-Security-Policy: default-src 'self'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,

@@ -92,3 +92,9 @@ terminal `job_done` event:
 ## Browser UI (`webui`) and Session Auth
 
 `glue serve` mounts `webui.Handler()` at `/` and `/static/*` with `Content-Security-Policy: default-src 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`. Browsers authenticate via `POST /v1/session/login` (`{"token": "<daemon-token>"}`), which sets an `HttpOnly; SameSite=Strict` cookie (`glue_session`, `Secure` over TLS). Authenticated routes accept either `Authorization: Bearer <token>` or the session cookie; state-changing cookie-authenticated requests require `X-Glue-CSRF` matching `csrf_token` from `GET /v1/session` (else `403 Forbidden`).
+
+Opening `http://<listen-addr>/` in a browser renders three dependency-free ES-module views (`webui/static/index.html`, `app.js`, `app.css`):
+
+- **Login view:** prompts for the daemon token, calls `POST /v1/session/login`, and fetches `csrf_token` from `GET /v1/session`.
+- **Jobs list view (`#/`):** shows each job's status badge, truncated objective, repository, model, iteration (`iter X/Y`), and updated timestamp, with status filtering and 10-second auto-refresh.
+- **Job detail view (`#/jobs/<id>`):** renders the job header (objective, status, iteration/max, model, repository, token usage), checklist with `[x]`/`[ ]` completion marks, and live SSE transcript over `EventSource(/v1/jobs/{id}/events)` (merged `text_delta` assistant blocks, collapsible tool calls with 4 KiB output truncation and "Show more", goal/lifecycle dividers, and highlighted permission requests) with `Last-Event-ID` reconnection and client-side `seq` deduplication. Responsive layout collapses to a single column below `700px`.

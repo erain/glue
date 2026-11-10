@@ -108,3 +108,33 @@ func assertNoInlineScript(t *testing.T, htmlDoc string) {
 		t.Fatal("expected at least one <script src=...> tag")
 	}
 }
+
+func TestUIAssetsViewsAndSafety(t *testing.T) {
+	jsBytes, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsBytes)
+	for _, forbidden := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"} {
+		if strings.Contains(js, forbidden) {
+			t.Fatalf("app.js must not use %s for untrusted content", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"/v1/session/login", "/v1/session", "X-Glue-CSRF", "REFRESH_MS = 10000", "TRUNCATE_LIMIT = 4096",
+		"EventSource", "seenSeqs", "login-view", "jobs-view", "status-filter", "job-detail-view",
+		"job-checklist", "job-transcript", "tool-show-more", "permission-card", "goal-divider",
+		"iteration_start", "verdict", "operator_message", "run_interrupted", "job_resumed", "job_done",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	cssBytes, err := staticFS.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cssBytes), "@media (max-width: 700px)") {
+		t.Fatal("app.css missing @media (max-width: 700px) responsive breakpoint")
+	}
+}
