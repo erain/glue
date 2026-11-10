@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `gateway/backend/ax.Backend` submit/reconcile pipeline (`UpdateWorkspace`
+  with `dir: "."`, `depth: 1` -> `CreateTask` -> `CreateActorEgressPolicy`
+  before resume -> `ResumeTask` + poll `GetTask` until `Running` +
+  `WorkspaceReady` -> `POST /v1/jobs/{id}/start` through `RouterTransport`),
+  `submit_unknown` reconciliation via `GetTask`, and control-plane status reads
+  that never touch task HTTP.
+
 - Add `type: ax` gateway backend configuration (`atespace`, `image`,
   `resources`, `egress_hosts`, `ax_server`, `substrate`, `router`),
   `gateway/backend/ax.RouterTransport` (`http.RoundTripper` tunneling over HTTP

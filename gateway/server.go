@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erain/glue/gateway/backend/ax"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/jobs"
@@ -50,7 +51,27 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	backends := make(map[string]Backend, len(cfg.Backends))
 	for _, b := range cfg.Backends {
-		backends[b.Name] = NewLocalBackend(b, nil)
+		if b.Type != "ax" {
+			backends[b.Name] = NewLocalBackend(b, nil)
+			continue
+		}
+		name := b.Name
+		axb, err := ax.NewBackend(ax.Options{
+			Atespace: b.Atespace, Image: b.Image, CPU: b.Resources.CPU, Memory: b.Resources.Memory, EgressHosts: b.EgressHosts,
+			AXServer: b.AXServer, Substrate: b.Substrate, Router: b.Router, CertFile: b.CertFile, CAFile: b.CAFile, TokenFile: b.TokenFile, Secret: cfg.Auth.Token,
+			GetJob: func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error) {
+				r, e := reg.GetJob(ctx, id)
+				return r.Spec, r.Status, e
+			},
+			SetStatus: func(ctx context.Context, id string, s jobs.Spec, st jobs.Status) error {
+				return reg.UpsertStatus(ctx, id, name, s, st)
+			},
+		})
+		if err != nil {
+			_ = reg.Close()
+			return nil, err
+		}
+		backends[b.Name] = axb
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
@@ -63,10 +84,15 @@ func NewServer(cfg Config) (*Server, error) {
 func (s *Server) Close() error {
 	s.cancel()
 	s.wg.Wait()
+	for _, b := range s.backends {
+		if c, ok := b.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
 	return s.reg.Close()
 }
 func isTerminal(st jobs.Status) bool {
-	return st != "" && st != jobs.Created && st != jobs.Running && st != jobs.WaitingForInput
+	return st != "" && st != jobs.Created && st != SubmitUnknown && st != jobs.Running && st != jobs.WaitingForInput
 }
 
 func (s *Server) ensureWatcher(jobID string, b Backend) {
@@ -193,13 +219,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id, _ := jobs.NewID()
 		created, err := b.Create(r.Context(), cmp.Or(strings.TrimSpace(spec.ID), id), spec)
-		if err == nil {
+		_, isAX := b.(*ax.Backend)
+		if err == nil && !isAX {
 			_, err = s.reg.CreateJob(r.Context(), Record{ID: created.ID, Backend: name, BackendRef: created.ID, Owner: "dev-token", Spec: created.Spec, Status: created.Status, CreatedAt: created.CreatedAt, UpdatedAt: created.UpdatedAt})
 		}
 		if err == nil {
-			s.ensureWatcher(created.ID, b)
 			if start, _ := strconv.ParseBool(r.URL.Query().Get("start")); start {
 				created, err = b.Start(r.Context(), created.ID)
+			}
+			if err == nil {
+				s.ensureWatcher(created.ID, b)
 			}
 		}
 		created.Spec.Backend = name
@@ -220,14 +249,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b := s.backends[rec.Backend]
 	switch r.Method + " " + sub {
 	case "GET ":
+		if _, isAX := b.(*ax.Backend); isAX && !isTerminal(rec.Status) {
+			if st, serr := b.Status(r.Context(), id); serr == nil && st != "" {
+				_ = s.reg.UpsertStatus(r.Context(), id, rec.Backend, rec.Spec, st)
+			}
+		}
 		detail, err := s.reg.Inspect(r.Context(), id)
 		respond(w, http.StatusOK, detail, err)
 	case "DELETE ":
 		s.ensureWatcher(id, b)
 		respond(w, http.StatusAccepted, map[string]any{"job_id": id, "canceled": true}, b.Cancel(r.Context(), rec.BackendRef))
 	case "POST start":
-		s.ensureWatcher(id, b)
 		job, err := b.Start(r.Context(), rec.BackendRef)
+		if err == nil {
+			s.ensureWatcher(id, b)
+		}
 		job.Spec.Backend = rec.Backend
 		respond(w, http.StatusOK, map[string]any{"job": job}, err)
 	case "GET permissions":
