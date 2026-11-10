@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +24,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
+	"github.com/erain/glue/webui"
 )
 
 const protocolVersion = 2
@@ -679,6 +679,10 @@ func New(opts Options) (*Server, error) {
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" || r.URL.Path == "/index.html" || strings.HasPrefix(r.URL.Path, "/static/") {
+		webui.Handler().ServeHTTP(w, r)
+		return
+	}
 	if r.URL.Path == "/v1/health" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", false)
@@ -687,8 +691,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": protocolVersion})
 		return
 	}
-	if !s.authorized(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", false)
+	if r.URL.Path == "/v1/session/login" {
+		s.handleSessionLogin(w, r)
+		return
+	}
+	if !s.authorize(w, r) {
+		return
+	}
+	if r.URL.Path == "/v1/session" {
+		s.handleSession(w, r)
 		return
 	}
 
@@ -887,12 +898,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusNotFound, "not_found", "route not found", false)
-}
-
-func (s *Server) authorized(r *http.Request) bool {
-	want := "Bearer " + s.token
-	got := r.Header.Get("Authorization")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {

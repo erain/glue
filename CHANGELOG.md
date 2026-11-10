@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `webui` (`webui.Handler()`) serving `/` and `/static/*` with strict
+  browser security headers (`Content-Security-Policy: default-src 'self'`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`), plus `POST /v1/session/login` (`HttpOnly; SameSite=Strict`
+  cookie) and `GET /v1/session` (`X-Glue-CSRF` double-submit protection on
+  state-changing cookie requests) in `daemon`.
+
 - Add `glue job attach <id>` and `glue job submit --attach` with per-server
   sequence cursor replay (`~/.config/glue/jobs/<server-hash>/<id>.seq`), inline
   permission prompts, Ctrl-C detach without cancelling the job, and automatic

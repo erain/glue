@@ -1,0 +1,12 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --border: #334155;
+  --text: #f8fafc;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+.topbar { display: flex; justify-content: space-between; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); background: var(--panel); }
+.brand { color: var(--text); font-weight: 600; text-decoration: none; }
+.container { max-width: 1100px; margin: 0 auto; padding: 1.25rem; }
