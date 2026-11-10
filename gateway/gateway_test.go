@@ -235,3 +235,188 @@ func TestGatewayServesCachedEventsWhenBackendDown(t *testing.T) {
 		t.Fatalf("Show with backend down: %+v", detail)
 	}
 }
+
+type fakeAXHarness struct {
+	mu                            sync.Mutex
+	now                           atomic.Int64
+	pendingPerm, decidedID        string
+	suspends, resumes, routerHits atomic.Int32
+	events                        []eventlog.Envelope
+}
+
+func (h *fakeAXHarness) Now() time.Time { return time.Unix(0, h.now.Load()).UTC() }
+func (h *fakeAXHarness) Advance(d time.Duration, gw *Server) {
+	h.now.Add(int64(d))
+	gw.Poke()
+}
+func (h *fakeAXHarness) emit(pairs ...any) {
+	for i := 0; i < len(pairs); i += 2 {
+		h.events = append(h.events, eventlog.Envelope{Version: 2, Seq: int64(len(h.events) + 1), Time: h.Now(), Type: pairs[i].(string), Payload: pairs[i+1]})
+	}
+}
+func (h *fakeAXHarness) Create(_ context.Context, id string, spec jobs.Spec) (jobs.Job, error) {
+	return jobs.Job{ID: id, Spec: spec, Status: jobs.Created, CreatedAt: h.Now()}, nil
+}
+func (h *fakeAXHarness) Start(ctx context.Context, id string) (jobs.Job, error) {
+	_ = h.Resume(ctx, id)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pendingPerm = "perm-1"
+	h.emit("job_created", jobs.Spec{Objective: "ax test"}, "job_started", nil, "permission_request", map[string]any{"permission_id": "perm-1", "request": glue.PermissionRequest{Tool: "write_file", Action: "write_file", Target: "hello.txt"}}, "job_waiting", nil)
+	return jobs.Job{ID: id, Status: jobs.Running}, nil
+}
+func (h *fakeAXHarness) Suspend(context.Context, string) error { h.suspends.Add(1); return nil }
+func (h *fakeAXHarness) Resume(context.Context, string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.resumes.Add(1) > 1 && h.pendingPerm == "perm-1" {
+		h.pendingPerm = "perm-2"
+		h.emit("permission_expired", map[string]any{"permission_id": "perm-1"}, "job_resumed", map[string]any{"from_iteration": 1, "reason": "restart"}, "permission_request", map[string]any{"permission_id": "perm-2", "request": glue.PermissionRequest{Tool: "write_file", Action: "write_file", Target: "hello.txt"}}, "job_waiting", nil)
+	}
+	return nil
+}
+func (h *fakeAXHarness) Stream(_ context.Context, _ string, after int64, fn func(eventlog.Envelope) error) error {
+	h.routerHits.Add(1)
+	h.mu.Lock()
+	evs := append([]eventlog.Envelope(nil), h.events...)
+	h.mu.Unlock()
+	for _, ev := range evs {
+		if ev.Seq > after && fn(ev) != nil {
+			break
+		}
+	}
+	return nil
+}
+func (h *fakeAXHarness) Do(_ context.Context, _, subpath string, _ []byte) (int, []byte, error) {
+	h.routerHits.Add(1)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if permID := strings.Split(subpath, "/")[2]; permID == h.pendingPerm {
+		h.decidedID, h.pendingPerm = permID, ""
+		h.emit("permission_decision", map[string]any{"permission_id": permID, "decision": glue.PermissionDecision{Allow: true}}, "job_done", map[string]any{"status": jobs.Achieved, "result": glue.GoalResult{Iterations: 1, Summary: "done"}})
+		return http.StatusOK, []byte(`{"ok":true}`), nil
+	}
+	return http.StatusConflict, []byte(`{"error":{"message":"stale permission"}}`), nil
+}
+func (h *fakeAXHarness) Result(_ context.Context, id string) (jobs.Result, error) {
+	h.routerHits.Add(1)
+	return jobs.Result{JobID: id, Status: jobs.Achieved, Summary: "done", Iterations: 1}, nil
+}
+func (h *fakeAXHarness) Cancel(context.Context, string) error { h.routerHits.Add(1); return nil }
+func (h *fakeAXHarness) Status(context.Context, string) (jobs.Status, error) {
+	return jobs.Running, nil
+}
+
+func waitJob(t *testing.T, gw *Server, jobID string, st jobs.Status, reason string) Record {
+	t.Helper()
+	for range 100 {
+		if rec, err := gw.reg.GetJob(t.Context(), jobID); err == nil && rec.Status == st && (reason == "" || rec.StatusReason == reason) {
+			return rec
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("job %s did not reach status=%s reason=%s", jobID, st, reason)
+	return Record{}
+}
+
+func newAXGatewayHarness(t *testing.T, suspendIdle bool) (*fakeAXHarness, *Server, *httptest.Server, *jobclient.Client, jobs.Job) {
+	t.Helper()
+	h := &fakeAXHarness{}
+	h.now.Store(time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC).UnixNano())
+	gw := must(NewServer(Config{StateDir: t.TempDir(), Auth: AuthConfig{Mode: "dev-token", Token: "gw-token"}, SuspendAfter: 2 * time.Minute, ResumeTimeout: 5 * time.Second, Now: h.Now, Backends: []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}}, CustomBackends: map[string]Backend{"ax": h}}))
+	ts := httptest.NewServer(gw)
+	t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+	cli := &jobclient.Client{BaseURL: ts.URL, Token: "gw-token", HTTP: ts.Client()}
+	job := must(cli.Submit(t.Context(), jobs.Spec{Objective: "ax test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}, Policy: "ask-all"}, true))
+	waitJob(t, gw, job.ID, jobs.WaitingForInput, "")
+	if suspendIdle {
+		h.Advance(2*time.Minute+time.Second, gw)
+		waitJob(t, gw, job.ID, jobs.Suspended, "waiting_for_input")
+	}
+	return h, gw, ts, cli, job
+}
+
+func TestSuspendAfterIdleWaiting(t *testing.T) {
+	h, gw, _, _, job := newAXGatewayHarness(t, true)
+	if evs := must(gw.reg.Events(t.Context(), job.ID, 0)); h.suspends.Load() != 1 || evs[len(evs)-1].Type != "task_suspended" || !strings.Contains(mustJSON(evs[len(evs)-1].Payload), "waiting_for_input") {
+		t.Fatalf("suspends=%d evs=%+v", h.suspends.Load(), evs)
+	}
+}
+
+func TestNoSuspendWhileLiveViewerAttached(t *testing.T) {
+	h, gw, _, cli, job := newAXGatewayHarness(t, false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	attached := make(chan struct{})
+	go func() {
+		_ = cli.StreamEvents(ctx, job.ID, 0, func(ev eventlog.Envelope) error {
+			if ev.Type == "job_waiting" {
+				close(attached)
+			}
+			return nil
+		})
+	}()
+	<-attached
+	h.Advance(5*time.Minute, gw)
+	time.Sleep(30 * time.Millisecond)
+	if d := must(cli.Show(t.Context(), job.ID)); d.Status != jobs.WaitingForInput || h.suspends.Load() != 0 {
+		t.Fatalf("expected job to stay waiting_for_input with viewer attached, got status=%s suspends=%d", d.Status, h.suspends.Load())
+	}
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+	h.Advance(2*time.Minute+time.Second, gw)
+	waitJob(t, gw, job.ID, jobs.Suspended, "waiting_for_input")
+}
+
+func TestReadOnlyViewsDoNotResume(t *testing.T) {
+	h, _, ts, cli, job := newAXGatewayHarness(t, true)
+	h.routerHits.Store(0)
+	resumesBefore := h.resumes.Load()
+	if list, d, perms := must(cli.List(t.Context(), jobs.Filter{})), must(cli.Show(t.Context(), job.ID)), must(cli.Permissions(t.Context(), job.ID, "pending")); len(list) != 1 || list[0].Status != jobs.Suspended || d.Status != jobs.Suspended || len(perms) != 1 {
+		t.Fatalf("list=%+v d=%+v perms=%+v", list, d, perms)
+	}
+	for _, p := range []string{"?cached=1", ""} {
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/v1/jobs/"+job.ID+"/events"+p, nil)
+		req.Header.Set("Authorization", "Bearer gw-token")
+		if resp := must(ts.Client().Do(req)); resp.Body.Close() != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET events%s: %d", p, resp.StatusCode)
+		}
+	}
+	if hits, r := h.routerHits.Load(), h.resumes.Load()-resumesBefore; hits != 0 || r != 0 {
+		t.Fatalf("routerHits=%d resumes=%d, want 0/0", hits, r)
+	}
+}
+
+func TestActionResumesThenForwardsDecision(t *testing.T) {
+	h, gw, _, cli, job := newAXGatewayHarness(t, true)
+	must(0, cli.Decide(t.Context(), job.ID, "perm-1", true, "session", "approved after suspend"))
+	if h.decidedID != "perm-2" {
+		t.Fatalf("decidedID = %q, want re-issued perm-2", h.decidedID)
+	}
+	waitJob(t, gw, job.ID, jobs.Achieved, "finished")
+	evs := must(gw.reg.Events(t.Context(), job.ID, 0))
+	for i, ev := range evs {
+		if ev.Seq != int64(i+1) {
+			t.Fatalf("non-continuous seq at %d: got %d", i, ev.Seq)
+		}
+	}
+	all := mustJSON(evs)
+	for _, want := range []string{"task_suspended", "task_resumed", "job_resumed", `"permission_id":"perm-2"`, `"original_permission_id":"perm-1"`, "job_done"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("missing %q in %s", want, all)
+		}
+	}
+}
+
+func TestSuspendOnFinish(t *testing.T) {
+	h, gw, _, cli, job := newAXGatewayHarness(t, false)
+	must(0, cli.Decide(t.Context(), job.ID, "perm-1", true, "", "ok"))
+	rec := waitJob(t, gw, job.ID, jobs.Achieved, "finished")
+	if h.suspends.Load() != 1 || rec.Result == nil || rec.Result.Summary != "done" {
+		t.Fatalf("unexpected finished state: suspends=%d rec=%+v", h.suspends.Load(), rec)
+	}
+	h.routerHits.Store(0)
+	if res := must(cli.Result(t.Context(), job.ID)); res.Status != jobs.Achieved || h.routerHits.Load() != 0 {
+		t.Fatalf("Result: %+v routerHits=%d", res, h.routerHits.Load())
+	}
+}

@@ -50,7 +50,7 @@ func (m *Manager) Query(ctx context.Context, f Filter) ([]Job, error) {
 		return nil, invalid("limit", "must be between 0 and 1000")
 	}
 	switch f.Status {
-	case "", Created, Running, WaitingForInput, Achieved, Blocked, BudgetLimited, MaxIterations, Errored, Canceled, Interrupted:
+	case "", Created, Running, WaitingForInput, Suspended, Achieved, Blocked, BudgetLimited, MaxIterations, Errored, Canceled, Interrupted:
 	default:
 		return nil, invalid("status", "unknown status")
 	}
@@ -145,8 +145,9 @@ func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionI
 			permissions = append(permissions, PermissionInfo{ID: p.ID, Request: p.Request, State: "pending", CreatedAt: event.Time, UpdatedAt: event.Time})
 		case "permission_decision", "permission_expired":
 			var p struct {
-				ID       string                  `json:"permission_id"`
-				Decision glue.PermissionDecision `json:"decision"`
+				ID         string                  `json:"permission_id"`
+				OriginalID string                  `json:"original_permission_id"`
+				Decision   glue.PermissionDecision `json:"decision"`
 			}
 			if err := decode(event.Payload, &p); err != nil {
 				return detail, nil, err
@@ -161,6 +162,12 @@ func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionI
 				}
 				permissions[i].State = state
 				permissions[i].UpdatedAt = event.Time
+			}
+			if p.OriginalID != "" {
+				if i, ok := index[p.OriginalID]; ok && permissions[i].State == "pending" {
+					permissions[i].State = "expired"
+					permissions[i].UpdatedAt = event.Time
+				}
 			}
 		case "job_done":
 			var terminal struct {

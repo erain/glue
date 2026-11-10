@@ -25,6 +25,12 @@ type Backend interface {
 	Status(ctx context.Context, id string) (jobs.Status, error)
 }
 
+// Suspender is implemented by backends whose execution sandboxes can be suspended and resumed.
+type Suspender interface {
+	Suspend(ctx context.Context, id string) error
+	Resume(ctx context.Context, id string) error
+}
+
 // LocalBackend proxies job operations to a local or HTTP-reachable glue serve instance.
 type LocalBackend struct{ *jobclient.Client }
 

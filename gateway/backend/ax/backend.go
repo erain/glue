@@ -163,21 +163,33 @@ func (b *Backend) Start(ctx context.Context, id string) (jobs.Job, error) {
 	}); err != nil && status.Code(err) != codes.AlreadyExists {
 		return jobs.Job{}, fmt.Errorf("ax: create egress policy for %s: %w", TaskName(id), err)
 	}
+	if err := b.Resume(ctx, id); err != nil {
+		return jobs.Job{}, err
+	}
+	return b.startRouter(ctx, id, spec)
+}
+func (b *Backend) Suspend(ctx context.Context, id string) error {
+	_, err := b.axClient.SuspendTask(ctx, &v1alpha1.SuspendTaskRequest{Atespace: b.opts.Atespace, Name: TaskName(id)})
+	return err
+}
+func (b *Backend) Resume(ctx context.Context, id string) error {
 	if _, err := b.axClient.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: b.opts.Atespace, Name: TaskName(id)}); err != nil {
-		return jobs.Job{}, fmt.Errorf("ax: resume task %s: %w", TaskName(id), err)
+		return fmt.Errorf("ax: resume task %s: %w", TaskName(id), err)
 	}
 	for {
 		t, err := b.axClient.GetTask(ctx, &v1alpha1.GetTaskRequest{Atespace: b.opts.Atespace, Name: TaskName(id)})
 		if err != nil || t.GetStatus().GetPhase() == "Failed" || ctx.Err() != nil {
-			return jobs.Job{}, cmp.Or(err, ctx.Err(), fmt.Errorf("ax: task %s entered Failed phase", TaskName(id)))
+			return cmp.Or(err, ctx.Err(), fmt.Errorf("ax: task %s entered Failed phase", TaskName(id)))
 		}
 		if t.GetStatus().GetPhase() == "Running" && slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
 			return c.GetType() == "WorkspaceReady" && c.GetStatus() == "True"
 		}) {
-			break
+			return nil
 		}
 		time.Sleep(b.opts.PollInterval)
 	}
+}
+func (b *Backend) startRouter(ctx context.Context, id string, spec jobs.Spec) (jobs.Job, error) {
 	cli := b.jobClient(id)
 	var started jobs.Job
 	for attempt := 0; ; attempt++ {
