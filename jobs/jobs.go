@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	_ "github.com/erain/glue/providers/gemini"
 	_ "github.com/erain/glue/providers/nvidia"
 	_ "github.com/erain/glue/providers/openrouter"
+	"github.com/erain/glue/tools/coding"
 )
 
 // RepoSpec selects one source and an optional starting revision.
@@ -51,6 +53,12 @@ type Spec struct {
 	Policy    string     `json:"policy"`
 	Verify    [][]string `json:"verify"`
 	Delivery  string     `json:"delivery"`
+
+	AllowedBinaries     []string      `json:"allowed_binaries,omitempty"`
+	ShellEnvPass        []string      `json:"shell_env_pass,omitempty"`
+	ShellEnv            []string      `json:"shell_env,omitempty"`
+	ShellEnvSecretAllow []string      `json:"shell_env_secret_allow,omitempty"`
+	ShellTimeout        time.Duration `json:"shell_timeout,omitempty"`
 }
 
 // Status is the durable job lifecycle state.
@@ -89,6 +97,9 @@ type Options struct {
 	Now             func() time.Time
 	Permission      glue.Permission
 	Policy          *Policy
+
+	AllowedBinaries, ShellEnvPass, ShellEnv, ShellEnvSecretAllow []string
+	ShellTimeout                                                 time.Duration
 	// AfterFunc schedules a wall-clock deadline and returns its stop function.
 	AfterFunc func(time.Duration, func()) func() bool
 }
@@ -139,7 +150,7 @@ func New(opts Options) (*Manager, error) {
 	return m, nil
 }
 
-func (m *Manager) policyFor(name string) (Policy, error) {
+func (m *Manager) policyFor(name string, allowedBinaries ...string) (Policy, error) {
 	name = strings.TrimSpace(name)
 	if m.options.Policy != nil {
 		cfgName := strings.TrimSpace(m.options.Policy.Name)
@@ -152,7 +163,10 @@ func (m *Manager) policyFor(name string) (Policy, error) {
 			return p, nil
 		}
 	}
-	return BuiltInPolicy(name)
+	if len(allowedBinaries) == 0 {
+		allowedBinaries = m.options.AllowedBinaries
+	}
+	return BuiltInPolicy(name, allowedBinaries...)
 }
 
 func (m *Manager) validate(s Spec) (Spec, error) {
@@ -195,7 +209,16 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 			return s, invalid("verify", "commands require an executable")
 		}
 	}
-	policy, err := m.policyFor(s.Policy)
+	if s.ShellTimeout < 0 {
+		return s, invalid("shell_timeout", "must not be negative")
+	}
+	if err := coding.ValidateShellEnv(s.ShellEnv); err != nil {
+		return s, invalid("shell_env", err.Error())
+	}
+	if slices.ContainsFunc(s.AllowedBinaries, func(b string) bool { return strings.ContainsAny(strings.TrimSpace(b), `/\`) }) {
+		return s, invalid("allowed_binaries", "must be binary basenames")
+	}
+	policy, err := m.policyFor(s.Policy, s.AllowedBinaries...)
 	if err != nil {
 		return s, invalid("policy", err.Error())
 	}

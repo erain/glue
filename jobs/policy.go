@@ -51,8 +51,12 @@ type Evaluation struct {
 	Rule     string   `json:"rule"`
 }
 
+// DefaultAllowedBinaries is the default shell_exec binary allowlist for jobs.
+var DefaultAllowedBinaries = []string{"go", "git", "make", "node", "npm", "python", "python3", "bash", "sh"}
+
 var deniedExecPrefixes = [][]string{
 	{"git", "push"}, {"git", "remote"}, {"git", "config", "--global"},
+	{"bash", "-c"}, {"sh", "-c"},
 	{"curl"}, {"wget"}, {"ssh"}, {"scp"},
 }
 
@@ -74,7 +78,7 @@ func BuiltInPolicy(name string, allowedBinaries ...string) (Policy, error) {
 func WorkspaceAutoPolicy(allowedBinaries ...string) Policy {
 	bins := coding.NormalizeAllowedBinaries(allowedBinaries)
 	if len(bins) == 0 {
-		bins = coding.DefaultAllowedBinaries
+		bins = DefaultAllowedBinaries
 	}
 	rules := []PolicyRule{
 		{Name: "workspace-write", Tool: "write_file", Action: "write_file", Target: "*", Decision: DecisionAllow},

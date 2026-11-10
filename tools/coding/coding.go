@@ -15,7 +15,16 @@ import (
 
 // DefaultAllowedBinaries is the conservative shell_exec allowlist used
 // when Options.AllowedBinaries is empty.
-var DefaultAllowedBinaries = []string{"go", "git", "make", "node", "npm", "python", "python3"}
+var (
+	DefaultAllowedBinaries = []string{"go", "git", "make", "node", "npm", "python", "python3"}
+	DefaultShellEnvPass    = strings.Split(DefaultShellEnvPassCSV, ",")
+)
+
+// DefaultShellTimeout and DefaultShellEnvPassCSV configure coding shell defaults.
+const (
+	DefaultShellTimeout    = 10 * time.Minute
+	DefaultShellEnvPassCSV = "PATH,HOME,USER,LANG,TERM,TMPDIR,GOPATH,GOMODCACHE,GOCACHE,GOTOOLCHAIN,GOFLAGS,GOPROXY,GONOSUMDB,GOPRIVATE,CGO_ENABLED"
+)
 
 // Options configures the reusable coding-agent tool bundle.
 type Options struct {
@@ -37,9 +46,10 @@ type Options struct {
 	// Executor runs shell_exec commands. Nil uses glue.LocalExecutor.
 	Executor glue.Executor
 
-	// Env is the exact child process environment for shell_exec. Nil
-	// means the child inherits no environment.
-	Env []string
+	// Env holds explicit KEY=VALUE entries for shell_exec (or the exact
+	// child environment when EnvPass, SecretAllow, and DefaultHome are unset).
+	Env, EnvPass, SecretAllow []string
+	DefaultHome, SpoolDir     string
 
 	// Blocklist refuses secret-shaped paths for read_file and write_file.
 	// Nil uses tools/fs.Default().
@@ -134,7 +144,7 @@ func Tools(opts Options) ([]glue.Tool, Options, error) {
 		AllowedBinaries: resolved.AllowedBinaries,
 		Timeout:         resolved.ShellTimeout,
 		MaxOutputBytes:  resolved.ShellMaxOutputBytes,
-		SpoolDir:        os.TempDir(),
+		SpoolDir:        resolved.SpoolDir,
 	})
 	if err != nil {
 		return nil, opts, err
@@ -208,12 +218,106 @@ func ResolveOptions(opts Options) (Options, error) {
 		blocklist = toolsfs.Default()
 	}
 
+	if opts.ShellTimeout < 0 {
+		return Options{}, fmt.Errorf("coding: shell timeout must be non-negative")
+	}
 	resolved := opts
-	resolved.WorkDir = absWorkDir
-	resolved.AllowedBinaries = allowed
+	resolved.WorkDir, resolved.AllowedBinaries, resolved.Blocklist = absWorkDir, allowed, blocklist
+	if resolved.ShellTimeout == 0 {
+		resolved.ShellTimeout = DefaultShellTimeout
+	}
+	resolved.SpoolDir = os.TempDir()
+	if strings.TrimSpace(opts.SpoolDir) != "" {
+		if resolved.SpoolDir, err = ensureDir(opts.SpoolDir); err != nil {
+			return Options{}, fmt.Errorf("coding: spool dir: %w", err)
+		}
+	}
 	resolved.Env = append([]string(nil), opts.Env...)
-	resolved.Blocklist = blocklist
+	if opts.EnvPass != nil || opts.Env == nil || len(opts.SecretAllow) > 0 || strings.TrimSpace(opts.DefaultHome) != "" {
+		if resolved.Env, err = BuildShellEnv(opts.EnvPass, opts.Env, opts.SecretAllow, opts.DefaultHome); err != nil {
+			return Options{}, err
+		}
+	}
 	return resolved, nil
+}
+
+func ensureDir(raw string) (string, error) {
+	expanded, err := ExpandPath(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", err
+	}
+	return abs, os.MkdirAll(abs, 0o700)
+}
+
+// IsSecretEnvName reports whether an environment variable name matches
+// *_API_KEY, *_TOKEN, *SECRET*, or *PASSWORD* (case-insensitive).
+func IsSecretEnvName(name string) bool {
+	u := strings.ToUpper(strings.TrimSpace(name))
+	return strings.HasSuffix(u, "_API_KEY") || strings.HasSuffix(u, "_TOKEN") || strings.Contains(u, "SECRET") || strings.Contains(u, "PASSWORD")
+}
+
+// ParseCSVList splits comma-separated items, trims whitespace, and drops empties.
+func ParseCSVList(raw string) []string {
+	return NormalizeAllowedBinaries(strings.Split(raw, ","))
+}
+
+// ValidateShellEnv checks that every entry has a non-empty KEY=VALUE shape.
+func ValidateShellEnv(entries []string) error {
+	for _, entry := range entries {
+		if key, _, ok := strings.Cut(entry, "="); !ok || strings.TrimSpace(key) == "" || strings.ContainsAny(strings.TrimSpace(key), " \t") {
+			return fmt.Errorf("coding: invalid shell env %q (expected KEY=VALUE)", entry)
+		}
+	}
+	return nil
+}
+
+// BuildShellEnv constructs the child environment from pass-through variable
+// names, explicit KEY=VALUE pairs, allowed secret names, and an optional
+// fallback HOME directory (created when used).
+func BuildShellEnv(envPass, explicitEnv, secretAllow []string, defaultHome string) ([]string, error) {
+	if err := ValidateShellEnv(explicitEnv); err != nil {
+		return nil, err
+	}
+	if envPass == nil {
+		envPass = DefaultShellEnvPass
+	}
+	allowSecret, extraPass, vals, keys := map[string]struct{}{}, []string(nil), map[string]string{}, []string(nil)
+	for _, name := range ParseCSVList(strings.Join(secretAllow, ",")) {
+		allowSecret[strings.ToUpper(name)], extraPass = struct{}{}, append(extraPass, name)
+	}
+	set := func(k, v string) {
+		if _, exists := vals[k]; !exists {
+			keys = append(keys, k)
+		}
+		vals[k] = v
+	}
+	for _, key := range ParseCSVList(strings.Join(append(append([]string(nil), envPass...), extraPass...), ",")) {
+		if _, ok := allowSecret[strings.ToUpper(key)]; !IsSecretEnvName(key) || ok {
+			if val, ok := os.LookupEnv(key); ok {
+				set(key, val)
+			}
+		}
+	}
+	for _, entry := range explicitEnv {
+		key, val, _ := strings.Cut(entry, "=")
+		set(strings.TrimSpace(key), val)
+	}
+	if strings.TrimSpace(vals["HOME"]) == "" && strings.TrimSpace(defaultHome) != "" {
+		absHome, err := ensureDir(defaultHome)
+		if err != nil {
+			return nil, fmt.Errorf("coding: default home: %w", err)
+		}
+		set("HOME", absHome)
+	}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, k+"="+vals[k])
+	}
+	return out, nil
 }
 
 // NormalizeAllowedBinaries trims, drops empties, and deduplicates a shell

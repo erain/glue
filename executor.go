@@ -207,6 +207,7 @@ func newLimitedOutput(limit int, spoolDir, stream string) *limitedOutput {
 	tailMax := limit / 2
 	w := &limitedOutput{headMax: limit - tailMax, tailMax: tailMax}
 	if spoolDir != "" {
+		_ = os.MkdirAll(spoolDir, 0o700)
 		f, err := os.CreateTemp(spoolDir, "glue-exec-*-"+stream+".log")
 		if err == nil {
 			w.spool = f

@@ -28,7 +28,7 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 		return glue.PermissionDecision{}, err
 	}
 	if m.options.Permission == nil {
-		policy, err := m.policyFor(job.Spec.Policy)
+		policy, err := m.policyFor(job.Spec.Policy, job.Spec.AllowedBinaries...)
 		if err != nil {
 			r.mu.Unlock()
 			return glue.PermissionDecision{}, err

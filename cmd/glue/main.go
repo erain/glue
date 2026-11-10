@@ -288,7 +288,9 @@ Flags:
   --coding
              Run/serve mode: register Glue's local coding tool bundle.
   --allow-binary
-             Run/serve --coding mode: allowed shell_exec binary basename; repeatable.
+             Run/serve/goal --coding mode: allowed shell_exec binary basename; repeatable.
+  --shell-env-pass / --shell-env / --shell-env-secret-allow / --shell-timeout
+             Configure shell_exec environment pass-through, explicit KEY=VALUE vars, secret allowlist, and timeout.
   --coding-allow-overwrite
              Run/serve --coding mode: allow write_file overwrites when the model also sets overwrite=true.
   --listen   Serve listen address. Defaults to 127.0.0.1:0.
