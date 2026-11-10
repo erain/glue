@@ -37,3 +37,6 @@ RUN if [ -n "${PREWARM_GOMOD_REPO}" ]; then \
       (cd /tmp/prewarm && go mod download) && rm -rf /tmp/prewarm; \
     fi
 COPY --from=build /out/glue /usr/local/bin/glue
+RUN printf '#!/bin/sh\nexec /usr/local/bin/glue git-askpass "$@"\n' >/usr/local/bin/glue-git-askpass \
+    && chmod 0755 /usr/local/bin/glue-git-askpass \
+    && git config --system core.askPass /usr/local/bin/glue-git-askpass

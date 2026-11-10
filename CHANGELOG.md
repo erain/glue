@@ -16,6 +16,14 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `scripts/ax-dev/manual-job.sh` (`make ax-dev-manual-job`) and
+  `docs/runbooks/ax-manual-job.md` to run and verify a Glue coding job end to
+  end inside an AX `Task`, configure system `core.askPass`
+  (`/usr/local/bin/glue-git-askpass`) in `deploy/ax/task-image/Dockerfile` for
+  private repository fetches during AX `SetupWorkspace`, and resolve
+  `refs/remotes/origin/<ref>` in `internal/worktree.Prepare` for AX shallow
+  detached-`HEAD` checkouts.
+
 - Add the Glue AX task image (`deploy/ax/task-image/Dockerfile`,
   `scripts/ax-dev/build-task-image.sh`, `deploy/ax/README.md`) layering Go
   1.27.3 (SHA-256 verified), `git`, `make`, `ca-certificates`, `bash`, and

@@ -51,6 +51,18 @@ func TestPrepareLocalWorkspace(t *testing.T) {
 	if err != nil || current != "feature" {
 		t.Fatalf("caller branch %s err %v", current, err)
 	}
+	detached := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", repo}, {"fetch", "-q", "--depth=1", "origin", "trunk"}, {"checkout", "-qf", "FETCH_HEAD"}} {
+		if _, err := Git(detached, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ref := range []string{"", "trunk"} {
+		res, err := Prepare(context.Background(), Options{Path: detached, Dir: filepath.Join(t.TempDir(), "ax-"+ref), Branch: "glue/ax-" + ref, BaseRef: ref})
+		if err != nil || res.BaseSHA != base {
+			t.Fatalf("detached ref=%q: res=%+v err=%v", ref, res, err)
+		}
+	}
 }
 func TestPrepareURLClone(t *testing.T) {
 	repo := scratchRepo(t)
