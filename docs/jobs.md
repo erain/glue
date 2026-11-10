@@ -82,3 +82,7 @@ terminal `job_done` event:
   "delivery_error": ""
 }
 ```
+
+## CLI (`glue job`)
+
+`glue job` speaks `/v1/jobs` against `--server`/`GLUE_SERVER` using `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`), `start`, `list`, `show`, `result [--json]`, `approve`, `deny`, `say`, `continue`, and `cancel`.

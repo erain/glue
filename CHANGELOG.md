@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `internal/jobclient` and the `glue job` control and inspection CLI
+  (`login`, `submit` with `--select`, `start`, `list`, `show`, `result`,
+  `approve`, `deny`, `say`, `continue`, `cancel`), storing server tokens in
+  `~/.config/glue/servers.json` (`0600`).
+
 - Deliver finished job branches (`delivery: "branch" | "draft_pr"`) to `origin`
   via a hidden `glue git-askpass` helper backed by `GLUE_GITHUB_TOKEN` (never
   exposed to the coding shell or persisted to disk/events), and open fork-aware
