@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add `type: ax` gateway backend configuration (`atespace`, `image`,
+  `resources`, `egress_hosts`, `ax_server`, `substrate`, `router`),
+  `gateway/backend/ax.RouterTransport` (`http.RoundTripper` tunneling over HTTP
+  `CONNECT` with `ate-target-actor: <atespace>/<task>` and mTLS pod identity),
+  and control-plane gRPC client dialers (`DialAX`, `DialSubstrate`).
+
 - Add the `glue-gateway` CLI entrypoint (`gateway/cmd/glue-gateway`), gateway
   configuration/architecture reference (`gateway/README.md`), `gateway.Backend`,
   `gateway.LocalBackend`, and `gateway.Server` with resilient upstream SSE event

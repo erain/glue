@@ -11,19 +11,42 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultEgressHosts is the default TLS passthrough allowlist for AX tasks.
+var DefaultEgressHosts = []string{
+	"github.com", "api.github.com", "codeload.github.com",
+	"proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
+	"generativelanguage.googleapis.com", "openrouter.ai",
+}
+
 // AuthConfig configures client authentication for glue-gateway.
 type AuthConfig struct{ Mode, Token string }
 
+// ResourceLimits configures CPU and memory limits for an AX task.
+type ResourceLimits struct{ CPU, Memory string }
+
+// ResourcesConfig configures AX task resource limits (top-level or nested limits).
+type ResourcesConfig struct {
+	CPU, Memory string
+	Limits      ResourceLimits `json:"-"`
+}
+
 // BackendConfig configures one upstream job execution backend.
 type BackendConfig struct {
-	Name, Type string
-	URL        string `yaml:"url" json:"url,omitempty"`
-	Token      string `yaml:"token" json:"-"`
+	Name, Type, Atespace, Image, Substrate, Router string
+	URL                                            string          `yaml:"url" json:"url,omitempty"`
+	Token                                          string          `yaml:"token" json:"-"`
+	Resources                                      ResourcesConfig `json:"resources,omitempty"`
+	EgressHosts                                    []string        `yaml:"egress_hosts" json:"egress_hosts,omitempty"`
+	AXServer                                       string          `yaml:"ax_server" json:"ax_server,omitempty"`
+	CertFile                                       string          `yaml:"cert_file" json:"-"`
+	CAFile                                         string          `yaml:"ca_file" json:"-"`
+	TokenFile                                      string          `yaml:"token_file" json:"-"`
 }
 
 // Config is the top-level YAML configuration for glue-gateway.
@@ -67,7 +90,7 @@ func (cfg Config) Validate() (Config, error) {
 		b := &cfg.Backends[i]
 		b.Name, b.Type = strings.TrimSpace(b.Name), strings.TrimSpace(b.Type)
 		b.URL, b.Token = strings.TrimRight(strings.TrimSpace(b.URL), "/"), strings.TrimSpace(b.Token)
-		if b.Name == "" || seen[b.Name] || b.Type != "local" || b.URL == "" || b.Token == "" {
+		if b.Name == "" || seen[b.Name] || !validateBackend(b) {
 			return Config{}, fmt.Errorf("gateway: invalid backend %q (duplicate=%v, type=%q)", b.Name, seen[b.Name], b.Type)
 		}
 		seen[b.Name] = true
@@ -79,4 +102,28 @@ func (cfg Config) Validate() (Config, error) {
 		return Config{}, fmt.Errorf("gateway: default_backend %q does not match any configured backend", cfg.DefaultBackend)
 	}
 	return cfg, nil
+}
+func validateBackend(b *BackendConfig) bool {
+	if b.Type == "local" {
+		return b.URL != "" && b.Token != ""
+	}
+	if b.Image = strings.TrimSpace(b.Image); b.Type != "ax" || b.Image == "" || b.URL != "" {
+		return false
+	}
+	b.Atespace = cmp.Or(strings.TrimSpace(b.Atespace), "default")
+	b.AXServer = cmp.Or(strings.TrimSpace(b.AXServer), "ax-server.ax-system:8080")
+	b.Substrate = cmp.Or(strings.TrimSpace(b.Substrate), "api.ate-system.svc.cluster.local:443")
+	b.Router = cmp.Or(strings.TrimSpace(b.Router), "atenet-router.ate-system:8444")
+	b.Resources.CPU = cmp.Or(strings.TrimSpace(b.Resources.CPU), strings.TrimSpace(b.Resources.Limits.CPU), "4")
+	b.Resources.Memory = cmp.Or(strings.TrimSpace(b.Resources.Memory), strings.TrimSpace(b.Resources.Limits.Memory), "8Gi")
+	b.Resources.Limits = ResourceLimits{}
+	if len(b.EgressHosts) == 0 {
+		b.EgressHosts = slices.Clone(DefaultEgressHosts)
+	}
+	for i, h := range b.EgressHosts {
+		if b.EgressHosts[i] = strings.TrimSpace(h); b.EgressHosts[i] == "" {
+			return false
+		}
+	}
+	return true
 }

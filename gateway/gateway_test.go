@@ -34,10 +34,14 @@ func must[T any](v T, err error) T {
 func TestConfigParseAndValidate(t *testing.T) {
 	t.Setenv("GLUE_GATEWAY_TOKEN", "env-secret")
 	cfgPath := filepath.Join(t.TempDir(), "gateway.yaml")
-	raw := "public_url: https://gw.example.com/\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\nbackends:\n  - name: local\n    type: local\n    url: http://127.0.0.1:8787/\n    token: backend-token\n"
+	raw := "public_url: https://gw.example.com/\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\ndefault_backend: local\nbackends:\n  - name: local\n    type: local\n    url: http://127.0.0.1:8787/\n    token: backend-token\n  - name: ax\n    type: ax\n    image: localhost:5001/glue-task@sha256:1234\n    resources:\n      limits:\n        cpu: \"2\"\n        memory: 4Gi\n"
 	must(0, os.WriteFile(cfgPath, []byte(raw), 0o600))
-	if cfg := must(LoadConfig(cfgPath)); cfg.Listen != "127.0.0.1:8800" || cfg.PublicURL != "https://gw.example.com" || cfg.Auth.Token != "env-secret" || cfg.DefaultBackend != "local" || cfg.Backends[0].URL != "http://127.0.0.1:8787" {
+	cfg := must(LoadConfig(cfgPath))
+	if cfg.Listen != "127.0.0.1:8800" || cfg.PublicURL != "https://gw.example.com" || cfg.Auth.Token != "env-secret" || cfg.DefaultBackend != "local" || cfg.Backends[0].URL != "http://127.0.0.1:8787" {
 		t.Fatalf("unexpected normalized config: %+v", cfg)
+	}
+	if axCfg := cfg.Backends[1]; axCfg.Atespace != "default" || axCfg.AXServer != "ax-server.ax-system:8080" || axCfg.Router != "atenet-router.ate-system:8444" || axCfg.Resources.CPU != "2" || axCfg.Resources.Memory != "4Gi" || len(axCfg.EgressHosts) != len(DefaultEgressHosts) {
+		t.Fatalf("unexpected normalized ax backend config: %+v", axCfg)
 	}
 	t.Setenv("GLUE_GATEWAY_TOKEN", "")
 	for _, tc := range []struct{ yaml, want string }{
@@ -48,6 +52,7 @@ func TestConfigParseAndValidate(t *testing.T) {
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\n", "backends=0"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}, {name: l, type: local, url: http://y, token: t}]\n", "duplicate=true"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: ax, url: http://x, token: t}]\n", "type=\"ax\""},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, egress_hosts: [\"\"]}]\n", "type=\"ax\""},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\ndefault_backend: other\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "default_backend"},
 	} {
 		if _, err := ParseConfig([]byte(tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
