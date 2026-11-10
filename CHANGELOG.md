@@ -16,6 +16,16 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add browser job steering and result views in `webui/static` (`api.js`, `app.js`,
+  `app.css`): CSRF-protected `POST`/`DELETE` helper, interactive permission cards
+  (**Allow once**, **Allow for session**, **Deny** with reason) hydrated from SSE
+  and `GET /v1/jobs/{id}/permissions?state=pending`, pending permission banner and
+  list badge, **Send message** (`POST /v1/jobs/{id}/messages`) and **Continue with
+  instructions** (`POST /v1/jobs/{id}/continue`), confirmation-gated job
+  cancellation (`DELETE /v1/jobs/{id}`), and a terminal **Result** panel
+  (`GET /v1/jobs/{id}/result`) showing status, PR link, branch, commits, diffstat,
+  verification command exit badges/output tails, usage, and estimated cost.
+
 - Add browser UI views in `webui/static` (`index.html`, `app.js`, `app.css`) for
   daemon token login, status-filtered jobs list with 10-second auto-refresh, and
   live SSE job detail transcripts (checklist, merged `text_delta` messages,

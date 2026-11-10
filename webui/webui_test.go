@@ -42,6 +42,7 @@ func TestStaticContentTypes(t *testing.T) {
 		wantStatus     int
 	}{
 		{"/static/app.js", "application/javascript", http.StatusOK},
+		{"/static/api.js", "application/javascript", http.StatusOK},
 		{"/static/app.css", "text/css", http.StatusOK},
 		{"/static/missing.js", "text/plain", http.StatusNotFound},
 		{"/static/../webui.go", "text/plain", http.StatusNotFound},
@@ -110,14 +111,18 @@ func assertNoInlineScript(t *testing.T, htmlDoc string) {
 }
 
 func TestUIAssetsViewsAndSafety(t *testing.T) {
-	jsBytes, err := staticFS.ReadFile("static/app.js")
+	appBytes, err := staticFS.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	js := string(jsBytes)
+	apiBytes, err := staticFS.ReadFile("static/api.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appBytes) + "\n" + string(apiBytes)
 	for _, forbidden := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"} {
 		if strings.Contains(js, forbidden) {
-			t.Fatalf("app.js must not use %s for untrusted content", forbidden)
+			t.Fatalf("JS assets must not use %s for untrusted content", forbidden)
 		}
 	}
 	for _, want := range []string{
@@ -125,9 +130,14 @@ func TestUIAssetsViewsAndSafety(t *testing.T) {
 		"EventSource", "seenSeqs", "login-view", "jobs-view", "status-filter", "job-detail-view",
 		"job-checklist", "job-transcript", "tool-show-more", "permission-card", "goal-divider",
 		"iteration_start", "verdict", "operator_message", "run_interrupted", "job_resumed", "job_done",
+		"permission-allow-once", "permission-allow-session", "permission-deny", "permission-reason",
+		"pending-permissions-banner", "job-pending-permissions", "permissions?state=pending",
+		"steer-form", "steer-input", "steer-submit", "/messages", "/continue",
+		"cancel-job-btn", "cancel-confirm-dialog", "cancel-confirm-btn",
+		"job-result-panel", "/result", "result-pr-link", "result-diffstat", "verify-exit-code", "result-cost",
 	} {
 		if !strings.Contains(js, want) {
-			t.Fatalf("app.js missing %q", want)
+			t.Fatalf("JS assets missing %q", want)
 		}
 	}
 	cssBytes, err := staticFS.ReadFile("static/app.css")

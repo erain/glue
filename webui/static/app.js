@@ -1,3 +1,6 @@
+import { fetchSession, login, getCSRFToken, setUnauthorizedHandler, apiRequest, apiPost, apiDelete } from "./api.js";
+export { fetchSession, login, getCSRFToken, apiRequest, apiPost, apiDelete };
+
 const TRUNCATE_LIMIT = 4096;
 const REFRESH_MS = 10000;
 const STATUSES = ["", "created", "running", "waiting_for_input", "achieved", "blocked", "budget_limited", "max_iterations", "errored", "canceled", "interrupted"];
@@ -10,50 +13,12 @@ const SSE_EVENT_TYPES = [
   "text_delta", "tool_start", "tool_end", "error", "retry", "guardrail", "auto_continue",
 ];
 
-let csrfToken = "";
 let listTimer = null;
 let activeStream = null;
 let statusFilter = "";
 
-export async function fetchSession() {
-  const resp = await fetch("/v1/session", { credentials: "same-origin" });
-  if (!resp.ok) { csrfToken = ""; return null; }
-  const data = await resp.json();
-  csrfToken = data.csrf_token || "";
-  return data;
-}
-
-export async function login(token) {
-  const resp = await fetch("/v1/session/login", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  if (!resp.ok) throw new Error("Invalid daemon token");
-  const session = await fetchSession();
-  if (!session) throw new Error("Session verification failed");
-  return session;
-}
-
-export function getCSRFToken() { return csrfToken; }
-
-export async function apiRequest(path, options = {}) {
-  const method = (options.method || "GET").toUpperCase();
-  const headers = { ...(options.headers || {}) };
-  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && csrfToken) headers["X-Glue-CSRF"] = csrfToken;
-  const resp = await fetch(path, { ...options, method, headers, credentials: "same-origin" });
-  if (resp.status === 401) {
-    csrfToken = "";
-    renderLogin();
-    throw new Error("Unauthorized");
-  }
-  if (!resp.ok) {
-    const errBody = await resp.json().catch(() => ({}));
-    throw new Error(errBody?.error?.message || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
+const isActiveStatus = (st) => st === "created" || st === "running" || st === "waiting_for_input";
+const shortSHA = (sha) => (sha ? String(sha).slice(0, 12) : "—");
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -86,6 +51,20 @@ function formatJSON(val) {
     try { return JSON.stringify(JSON.parse(val), null, 2); } catch { return val; }
   }
   try { return JSON.stringify(val, null, 2); } catch { return String(val); }
+}
+
+export function formatCostUSD(usage, pricingOverride) {
+  if (typeof pricingOverride === "number" && pricingOverride >= 0) return `$${pricingOverride.toFixed(4)}`;
+  let p = pricingOverride || (typeof window !== "undefined" ? window.GLUE_PRICING : null);
+  if (!p) {
+    try { p = JSON.parse(window.localStorage.getItem("glue_pricing") || "null"); } catch { p = null; }
+  }
+  if (!p || typeof p !== "object") return "";
+  const inR = Number(p.input_usd_per_million ?? p.input ?? 0), outR = Number(p.output_usd_per_million ?? p.output ?? 0);
+  const crR = Number(p.cache_read_usd_per_million ?? p.cache_read ?? 0), cwR = Number(p.cache_write_usd_per_million ?? p.cache_write ?? 0);
+  if (!inR && !outR && !crR && !cwR) return "";
+  const cost = ((usage?.input_tokens || 0) * inR + (usage?.output_tokens || 0) * outR + (usage?.cache_read_tokens || 0) * crR + (usage?.cache_write_tokens || 0) * cwR) / 1e6;
+  return `$${cost.toFixed(4)}`;
 }
 
 function stopBackground() {
@@ -126,6 +105,7 @@ function renderLogin() {
   }, input, btn, errEl);
   root.replaceChildren(el("section", { className: "card login-card", "data-testid": "login-view" }, el("h2", {}, "Sign in to Glue"), el("p", { className: "muted" }, "Enter the daemon token to inspect and watch jobs."), form));
 }
+setUnauthorizedHandler(renderLogin);
 
 async function renderJobsList(root) {
   stopBackground();
@@ -151,6 +131,7 @@ async function renderJobsList(root) {
       }
       listEl.replaceChildren(...jobs.map((j) => {
         const maxIter = j.spec?.budgets?.max_iterations || 10;
+        const pendingCount = Number(j.pending_permission_count || 0);
         return el("a", { className: "card job-row", href: `#/jobs/${encodeURIComponent(j.id)}`, "data-testid": "job-row", "data-job-id": j.id },
           el("span", { className: `badge status-${j.status}`, "data-testid": "job-status" }, j.status),
           el("div", {},
@@ -158,13 +139,14 @@ async function renderJobsList(root) {
             el("div", { className: "job-meta" }, el("span", { "data-testid": "job-repo" }, formatRepo(j.spec)), el("span", { "data-testid": "job-model" }, formatModel(j.spec)))
           ),
           el("div", { className: "job-stats" },
+            pendingCount > 0 ? el("span", { className: "badge status-waiting_for_input", "data-testid": "job-pending-permissions" }, `${pendingCount} pending`) : null,
             el("span", { "data-testid": "job-iteration" }, `iter ${j.iteration ?? 0}/${maxIter}`),
             el("time", { "data-testid": "job-updated", datetime: j.updated_at || "" }, formatTime(j.updated_at))
           )
         );
       }));
     } catch (err) {
-      if (csrfToken) listEl.replaceChildren(el("p", { className: "error-text" }, err.message));
+      if (getCSRFToken()) listEl.replaceChildren(el("p", { className: "error-text" }, err.message));
     }
   }
   await load();
@@ -186,6 +168,61 @@ export function renderTruncatedResult(container, fullText) {
 
 export function createTranscriptState(refs) {
   return { ...refs, seenSeqs: new Set(), lastSeq: 0, finished: false, currentTextEl: null, currentTextKey: "", toolCards: new Map(), lastTool: null, permissionCards: new Map() };
+}
+
+export function setPermissionCardState(state, permId, nextState) {
+  const entry = state.permissionCards.get(permId);
+  if (!entry) return;
+  entry.stateBadge.className = `badge status-${nextState === "pending" ? "waiting_for_input" : nextState}`;
+  entry.stateBadge.textContent = nextState;
+  if (entry.controlsEl) entry.controlsEl.hidden = nextState !== "pending";
+  state.syncPermissions?.();
+}
+
+export function upsertPermissionCard(state, permId, req = {}, permState = "pending", seq = 0) {
+  if (state.permissionCards.has(permId)) {
+    const existing = state.permissionCards.get(permId);
+    if (seq > 0 && Number(existing.card.getAttribute("data-seq") || 0) === 0) {
+      existing.card.setAttribute("data-seq", String(seq));
+      state.transcriptEl.appendChild(existing.card);
+    }
+    setPermissionCardState(state, permId, permState);
+    return existing;
+  }
+  const stateBadge = el("span", { className: `badge status-${permState === "pending" ? "waiting_for_input" : permState}`, "data-testid": "permission-state" }, permState);
+  const toolLabel = req.action && req.action !== req.tool ? `${req.tool || "tool"} (${req.action})` : (req.tool || req.action || "tool");
+  const reasonInput = el("input", { className: "input permission-reason", type: "text", placeholder: "Reason (optional, used when denying)", "data-testid": "permission-reason" });
+  const errEl = el("p", { className: "error-text", "data-testid": "permission-error", hidden: true });
+  const allowOnceBtn = el("button", { className: "btn", type: "button", "data-testid": "permission-allow-once", onclick: () => decide({ allow: true }, "allowed") }, "Allow once");
+  const allowSessionBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "permission-allow-session", onclick: () => decide({ allow: true, remember_for: "session" }, "allowed") }, "Allow for session");
+  const denyBtn = el("button", { className: "btn btn-danger", type: "button", "data-testid": "permission-deny", onclick: () => decide({ allow: false, reason: reasonInput.value.trim() || "permission denied by user" }, "denied") }, "Deny");
+  const controlsEl = el("div", { className: "permission-controls", "data-testid": "permission-controls", hidden: permState !== "pending" }, reasonInput, el("div", { className: "permission-buttons" }, allowOnceBtn, allowSessionBtn, denyBtn), errEl);
+  async function decide(payload, nextState) {
+    if (!state.jobId) return;
+    errEl.hidden = true;
+    allowOnceBtn.disabled = allowSessionBtn.disabled = denyBtn.disabled = reasonInput.disabled = true;
+    try {
+      await apiPost(`/v1/jobs/${encodeURIComponent(state.jobId)}/permissions/${encodeURIComponent(permId)}/decision`, payload);
+      setPermissionCardState(state, permId, nextState);
+      const anyPending = [...state.permissionCards.values()].some((c) => c.stateBadge.textContent === "pending");
+      state.updateStatus?.(anyPending ? "waiting_for_input" : "running");
+    } catch (err) {
+      errEl.textContent = err.message || "Decision failed";
+      errEl.hidden = false;
+      allowOnceBtn.disabled = allowSessionBtn.disabled = denyBtn.disabled = reasonInput.disabled = false;
+    }
+  }
+  const card = el("div", { className: "transcript-item permission-card", "data-testid": "permission-card", "data-permission-id": permId, "data-seq": seq },
+    el("div", { className: "permission-header" }, el("span", { "data-testid": "permission-tool" }, `Permission: ${toolLabel}`), stateBadge),
+    req.target ? el("div", { className: "muted", "data-testid": "permission-target" }, `Target: ${req.target}`) : null,
+    req.args ? el("pre", { className: "pre-wrap", "data-testid": "permission-args" }, formatJSON(req.args)) : null,
+    controlsEl
+  );
+  state.transcriptEl.appendChild(card);
+  const entry = { card, stateBadge, controlsEl, toolLabel, target: req.target || "" };
+  state.permissionCards.set(permId, entry);
+  state.syncPermissions?.();
+  return entry;
 }
 
 export function applyJobEvent(state, env) {
@@ -243,40 +280,25 @@ export function applyJobEvent(state, env) {
 
   if (env.type === "permission_request") {
     const permId = p.permission_id || `perm-${seq}`;
-    const req = p.request || {};
-    state.updateStatus("waiting_for_input");
-    if (!state.permissionCards.has(permId)) {
-      const stateBadge = el("span", { className: "badge status-waiting_for_input", "data-testid": "permission-state" }, "pending");
-      const toolLabel = req.action && req.action !== req.tool ? `${req.tool || "tool"} (${req.action})` : (req.tool || req.action || "tool");
-      const card = el("div", { className: "transcript-item permission-card", "data-testid": "permission-card", "data-permission-id": permId, "data-seq": seq },
-        el("div", { className: "permission-header" }, el("span", { "data-testid": "permission-tool" }, `Permission: ${toolLabel}`), stateBadge),
-        req.target ? el("div", { className: "muted", "data-testid": "permission-target" }, `Target: ${req.target}`) : null,
-        req.args ? el("pre", { className: "pre-wrap", "data-testid": "permission-args" }, formatJSON(req.args)) : null
-      );
-      state.transcriptEl.appendChild(card);
-      state.permissionCards.set(permId, { card, stateBadge });
-    }
+    state.updateStatus?.("waiting_for_input");
+    upsertPermissionCard(state, permId, p.request || {}, "pending", seq);
     return true;
   }
 
   if (env.type === "permission_decision" || env.type === "permission_expired") {
     const nextState = env.type === "permission_expired" ? "expired" : p.decision?.allow ? "allowed" : "denied";
-    const entry = state.permissionCards.get(p.permission_id || "");
-    if (entry) {
-      entry.stateBadge.className = `badge status-${nextState}`;
-      entry.stateBadge.textContent = nextState;
-    }
+    setPermissionCardState(state, p.permission_id || "", nextState);
     const anyPending = [...state.permissionCards.values()].some((c) => c.stateBadge.textContent === "pending");
-    state.updateStatus(anyPending ? "waiting_for_input" : "running");
+    state.updateStatus?.(anyPending ? "waiting_for_input" : "running");
     return true;
   }
 
   const checklist = p.Checklist ?? p.checklist ?? p.result?.Checklist ?? p.result?.checklist;
   const iter = p.Iteration ?? p.iteration ?? p.from_iteration ?? p.result?.Iterations ?? p.result?.iterations ?? env.iteration;
   const usage = p.Usage ?? p.usage ?? p.result?.Usage ?? p.result?.usage;
-  if (Array.isArray(checklist)) state.updateChecklist(checklist);
-  if (typeof iter === "number" && iter > 0) state.updateIteration(iter);
-  if (usage && typeof usage === "object") state.updateUsage(usage);
+  if (Array.isArray(checklist)) state.updateChecklist?.(checklist);
+  if (typeof iter === "number" && iter > 0) state.updateIteration?.(iter);
+  if (usage && typeof usage === "object") state.updateUsage?.(usage);
 
   const dividers = {
     plan: () => `Plan (${(checklist || []).length} items)`,
@@ -284,15 +306,20 @@ export function applyJobEvent(state, env) {
     verdict: () => `Verdict: ${(checklist || []).filter((i) => i.done).length}/${(checklist || []).length} ✓ — ${p.Message ?? p.message ?? ""}`,
     operator_message: () => `Operator: ${p.text || ""}`,
     run_interrupted: () => `Interrupted: ${p.reason || p.message || "run interrupted"}`,
-    job_resumed: () => `Resumed at iteration ${p.from_iteration || iter || 1} (${p.reason || "resumed"})`,
+    job_resumed: () => {
+      state.finished = false;
+      state.updateStatus?.("running");
+      return `Resumed at iteration ${p.from_iteration || iter || 1} (${p.reason || "resumed"})`;
+    },
     job_done: () => {
       const st = p.status || "achieved";
       const summary = p.result?.Summary ?? p.result?.summary ?? p.error ?? "";
-      for (const c of state.permissionCards.values()) {
-        if (c.stateBadge.textContent === "pending") { c.stateBadge.className = "badge status-expired"; c.stateBadge.textContent = "expired"; }
+      for (const [id, c] of state.permissionCards.entries()) {
+        if (c.stateBadge.textContent === "pending") setPermissionCardState(state, id, "expired");
       }
-      state.updateStatus(st);
       state.finished = true;
+      state.updateStatus?.(st);
+      state.onJobDone?.(st);
       return `Job ${st}${summary ? " — " + summary : ""}`;
     },
   };
@@ -302,27 +329,134 @@ export function applyJobEvent(state, env) {
   return true;
 }
 
+export function renderResultPanel(panelEl, res) {
+  const cost = formatCostUSD(res.usage, res.estimated_cost_usd ?? res.pricing);
+  const verifyItems = (res.verify || []).map((v) => {
+    const ok = Number(v.exit_code) === 0;
+    return el("details", { className: "verify-item", "data-testid": "verify-item", ...(ok ? {} : { open: "open" }) },
+      el("summary", { className: "tool-summary", "data-testid": "verify-summary" },
+        el("span", { "data-testid": "verify-command" }, (v.argv || []).join(" ") || "(command)"),
+        el("span", {}, el("span", { className: `badge ${ok ? "status-achieved" : "status-errored"}`, "data-testid": "verify-exit-code" }, `exit ${v.exit_code}`), el("span", { className: "muted" }, ` ${v.duration_ms ?? 0}ms`))
+      ),
+      el("pre", { className: "pre-wrap tool-output", "data-testid": "verify-output" }, v.output_tail || "(no output)")
+    );
+  });
+  panelEl.hidden = false;
+  panelEl.replaceChildren(
+    el("div", { className: "detail-header-top" },
+      el("h3", { className: "detail-objective" }, "Result"),
+      el("span", { className: `badge status-${res.status}`, "data-testid": "result-status" }, res.status || "done"),
+      res.pr_url ? el("a", { className: "btn-link", href: res.pr_url, target: "_blank", rel: "noopener noreferrer", "data-testid": "result-pr-link" }, `Pull Request: ${res.pr_url}`) : null
+    ),
+    res.summary ? el("p", { "data-testid": "result-summary" }, res.summary) : null,
+    res.delivery_error ? el("p", { className: "error-text", "data-testid": "result-delivery-error" }, `Delivery error: ${res.delivery_error}`) : null,
+    el("div", { className: "detail-meta result-meta" },
+      el("span", { "data-testid": "result-branch" }, `Branch: ${res.branch || "—"}`),
+      el("span", { "data-testid": "result-commits", title: `${res.base_sha || ""} -> ${res.head_sha || ""}` }, `Commits: ${shortSHA(res.base_sha)} → ${shortSHA(res.head_sha)}`),
+      el("span", { "data-testid": "result-iterations" }, `Iterations: ${res.iterations ?? 0}`),
+      el("span", { "data-testid": "result-usage" }, formatUsage(res.usage)),
+      cost ? el("span", { "data-testid": "result-cost" }, `Est. cost: ${cost}`) : null
+    ),
+    res.diffstat ? el("div", { className: "result-section" }, el("div", { className: "tool-label" }, "Diffstat"), el("pre", { className: "pre-wrap", "data-testid": "result-diffstat" }, res.diffstat)) : null,
+    verifyItems.length ? el("div", { className: "result-section", "data-testid": "result-verify-list" }, el("div", { className: "tool-label" }, "Verification Commands"), ...verifyItems) : null
+  );
+}
+
 async function renderJobDetail(root, jobId) {
   stopBackground();
-  const detail = await apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}`);
+  const [detail, pendingResp] = await Promise.all([
+    apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}`),
+    apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}/permissions?state=pending`).catch(() => ({ permissions: [] })),
+  ]);
+  let currentStatus = detail.status;
   const maxIter = detail.spec?.budgets?.max_iterations || 10;
   const statusEl = el("span", { className: `badge status-${detail.status}`, "data-testid": "detail-status" }, detail.status);
   const iterEl = el("span", { "data-testid": "detail-iteration" }, `iter ${detail.iteration ?? 0}/${maxIter}`);
   const usageEl = el("span", { "data-testid": "detail-usage" }, formatUsage(detail.usage));
   const streamEl = el("span", { className: "muted", "data-testid": "stream-status" }, "connecting…");
+  const bannerEl = el("div", { className: "card pending-banner", "data-testid": "pending-permissions-banner", hidden: true });
+  const resultPanelEl = el("div", { className: "card", "data-testid": "job-result-panel", hidden: true });
   const checklistEl = el("ul", { className: "checklist", "data-testid": "job-checklist" });
   const transcriptEl = el("div", { className: "transcript", "data-testid": "job-transcript" });
 
+  const cancelErrEl = el("p", { className: "error-text", "data-testid": "cancel-error", hidden: true });
+  const confirmCancelBtn = el("button", { className: "btn btn-danger", type: "button", "data-testid": "cancel-confirm-btn", onclick: async () => {
+    cancelErrEl.hidden = true;
+    confirmCancelBtn.disabled = dismissCancelBtn.disabled = true;
+    try { await apiDelete(`/v1/jobs/${encodeURIComponent(jobId)}`); cancelDialogEl.hidden = true; }
+    catch (err) { cancelErrEl.textContent = err.message || "Cancel failed"; cancelErrEl.hidden = false; }
+    finally { confirmCancelBtn.disabled = dismissCancelBtn.disabled = false; }
+  } }, "Confirm cancel");
+  const dismissCancelBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "cancel-dismiss-btn", onclick: () => { cancelDialogEl.hidden = true; } }, "Keep running");
+  const cancelDialogEl = el("div", { className: "cancel-confirm", "data-testid": "cancel-confirm-dialog", hidden: true }, el("span", {}, "Cancel this job?"), confirmCancelBtn, dismissCancelBtn, cancelErrEl);
+  const cancelBtn = el("button", { className: "btn btn-danger", type: "button", "data-testid": "cancel-job-btn", hidden: !isActiveStatus(detail.status), onclick: () => { cancelDialogEl.hidden = false; cancelErrEl.hidden = true; } }, "Cancel job");
+
+  const steerHeadingEl = el("h3", { "data-testid": "steer-heading" }, "Send message");
+  const steerInputEl = el("input", { className: "input steer-input", type: "text", required: "true", "data-testid": "steer-input" });
+  const steerSubmitBtn = el("button", { className: "btn", type: "submit", "data-testid": "steer-submit" }, "Send message");
+  const steerErrEl = el("p", { className: "error-text", "data-testid": "steer-error", hidden: true });
+  const steerCardEl = el("div", { className: "card", "data-testid": "steer-card" },
+    steerHeadingEl,
+    el("form", { className: "steer-form", "data-testid": "steer-form", onsubmit: async (e) => {
+      e.preventDefault();
+      const text = steerInputEl.value.trim();
+      if (!text) return;
+      steerErrEl.hidden = true;
+      steerSubmitBtn.disabled = steerInputEl.disabled = true;
+      try {
+        if (isActiveStatus(currentStatus)) {
+          await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/messages`, { text });
+          steerInputEl.value = "";
+        } else {
+          await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/continue`, { text });
+          steerInputEl.value = "";
+          state.finished = false;
+          resultPanelEl.hidden = true;
+          state.updateStatus("running");
+          openSSE(true);
+        }
+      } catch (err) {
+        steerErrEl.textContent = err.message || "Request failed";
+        steerErrEl.hidden = false;
+      } finally {
+        steerSubmitBtn.disabled = steerInputEl.disabled = false;
+      }
+    } }, steerInputEl, steerSubmitBtn),
+    steerErrEl
+  );
+
+  function syncControls(st) {
+    currentStatus = st;
+    const active = isActiveStatus(st);
+    cancelBtn.hidden = !active;
+    if (!active) cancelDialogEl.hidden = true;
+    steerCardEl.hidden = st === "achieved";
+    const label = active ? "Send message" : "Continue with instructions";
+    steerHeadingEl.textContent = label;
+    steerSubmitBtn.textContent = label;
+    steerInputEl.placeholder = active ? "Send guidance to the next iteration…" : "Instructions to continue this job…";
+  }
+
+  const loadResult = () => apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}/result`).then((res) => renderResultPanel(resultPanelEl, res)).catch(() => {});
+
   const state = createTranscriptState({
+    jobId,
     transcriptEl,
-    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = st; },
+    syncPermissions: () => {
+      const pending = [...state.permissionCards.values()].filter((c) => c.stateBadge.textContent === "pending");
+      if (!pending.length) { bannerEl.hidden = true; bannerEl.replaceChildren(); return; }
+      bannerEl.hidden = false;
+      bannerEl.replaceChildren(
+        el("strong", { "data-testid": "pending-permissions-count" }, `${pending.length} permission ${pending.length === 1 ? "request" : "requests"} waiting for approval`),
+        el("span", { className: "muted" }, " — " + pending.map((p) => `${p.toolLabel}${p.target ? " (" + p.target + ")" : ""}`).join(", "))
+      );
+    },
+    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = st; syncControls(st); },
+    onJobDone: () => { loadResult(); },
     updateIteration: (n) => { iterEl.textContent = `iter ${n}/${maxIter}`; },
     updateUsage: (u) => { usageEl.textContent = formatUsage(u); },
     updateChecklist: (items) => {
-      if (!items?.length) {
-        checklistEl.replaceChildren(el("li", { className: "muted" }, "No checklist items yet."));
-        return;
-      }
+      if (!items?.length) { checklistEl.replaceChildren(el("li", { className: "muted" }, "No checklist items yet.")); return; }
       checklistEl.replaceChildren(...items.map((item) =>
         el("li", { className: `checklist-item ${item.done ? "checklist-done" : ""}`, "data-testid": "checklist-item", "data-done": String(Boolean(item.done)) },
           el("span", { className: "checklist-mark", "data-testid": "checklist-mark" }, item.done ? "[x]" : "[ ]"),
@@ -332,13 +466,20 @@ async function renderJobDetail(root, jobId) {
     },
   });
   state.updateChecklist(detail.checklist || []);
+  syncControls(detail.status);
+  for (const perm of pendingResp.permissions || []) upsertPermissionCard(state, perm.id, perm.request || {}, perm.state || "pending", 0);
+  if (!isActiveStatus(detail.status)) await loadResult();
 
   root.replaceChildren(el("section", { "data-testid": "job-detail-view" },
     el("a", { className: "back-link", href: "#/", "data-testid": "back-to-jobs" }, "← All jobs"),
+    bannerEl,
     el("div", { className: "card", "data-testid": "job-header" },
-      el("div", { className: "detail-header-top" }, statusEl, el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId)),
+      el("div", { className: "detail-header-top" }, statusEl, el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId), cancelBtn),
+      cancelDialogEl,
       el("div", { className: "detail-meta" }, iterEl, el("span", { "data-testid": "detail-model" }, formatModel(detail.spec)), el("span", { "data-testid": "detail-repo" }, formatRepo(detail.spec)), usageEl, streamEl)
     ),
+    resultPanelEl,
+    steerCardEl,
     el("div", { className: "detail-grid" },
       el("div", { className: "card" }, el("h3", {}, "Checklist"), checklistEl),
       el("div", { className: "card" }, el("h3", {}, "Transcript"), transcriptEl)
@@ -386,13 +527,13 @@ async function renderJobDetail(root, jobId) {
 async function route() {
   const root = document.getElementById("app");
   if (!root) return;
-  const session = csrfToken ? { authenticated: true } : await fetchSession();
+  const session = getCSRFToken() ? { authenticated: true } : await fetchSession();
   if (!session) { renderLogin(); return; }
   setSessionBanner("Authenticated");
   const match = (window.location.hash || "#/").match(/^#\/jobs\/([^/?#]+)/);
   if (match) {
     await renderJobDetail(root, decodeURIComponent(match[1])).catch((err) => {
-      if (csrfToken) root.replaceChildren(el("p", { className: "error-text" }, err.message));
+      if (getCSRFToken()) root.replaceChildren(el("p", { className: "error-text" }, err.message));
     });
   } else {
     await renderJobsList(root);

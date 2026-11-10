@@ -293,3 +293,50 @@ func TestJobStopsBudgetTimer(t *testing.T) {
 		t.Fatalf("job %+v err %v", current, err)
 	}
 }
+
+func TestJobRememberSessionSkipsSecondPrompt(t *testing.T) {
+	p := &scriptProvider{turns: [][]glue.ProviderEvent{
+		turn(`{"items":[{"title":"write twice"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w1", Name: "write_file", Arguments: []byte(`{"path":"hello.txt","content":"v1"}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w2", Name: "write_file", Arguments: []byte(`{"path":"hello.txt","content":"v2"}`)}}, {Type: glue.ProviderEventDone}},
+		turn("done"),
+		turn(`{"done":true,"items":[{"title":"write twice","done":true}]}`),
+	}}
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) { return p, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	job, err := m.Create(context.Background(), Spec{Objective: "write twice", Repo: RepoSpec{Path: repoFixture(t)}, Policy: "ask-all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	permID := ""
+	for permID == "" {
+		events, _ := m.Events(context.Background(), job.ID, 0)
+		for _, e := range events {
+			if e.Type == "permission_request" {
+				permID = e.Payload.(map[string]any)["permission_id"].(string)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no waiting permission")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := m.Decide(context.Background(), job.ID, permID, glue.PermissionDecision{Allow: true, RememberFor: glue.RememberSession}); err != nil {
+		t.Fatal(err)
+	}
+	finished := waitJob(t, m, job.ID)
+	if finished.Status != Achieved {
+		t.Fatalf("status = %s, want achieved", finished.Status)
+	}
+	perms, err := m.Permissions(context.Background(), job.ID, "")
+	if err != nil || len(perms) != 1 {
+		t.Fatalf("permissions = %+v, err = %v; want exactly 1 prompt", perms, err)
+	}
+}

@@ -12,7 +12,10 @@ import (
 // ErrConflict means a requested lifecycle or permission transition is no longer valid.
 var ErrConflict = errors.New("jobs: transition conflict")
 
-type pendingDecision struct{ done chan glue.PermissionDecision }
+type pendingDecision struct {
+	req  glue.PermissionRequest
+	done chan glue.PermissionDecision
+}
 type jobPermission struct {
 	manager *Manager
 	id      string
@@ -26,6 +29,10 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 	if err != nil {
 		r.mu.Unlock()
 		return glue.PermissionDecision{}, err
+	}
+	if scope, ok := r.allows[request.Tool+"\x00"+request.Action+"\x00"+request.Target]; ok {
+		r.mu.Unlock()
+		return glue.PermissionDecision{Allow: true, RememberFor: scope}, nil
 	}
 	if m.options.Permission == nil {
 		policy, err := m.policyFor(job.Spec.Policy, job.Spec.AllowedBinaries...)
@@ -48,7 +55,7 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 		}
 	}
 	id := fmt.Sprintf("%s:permission:%d", p.id, job.LastSeq+1)
-	pending := &pendingDecision{done: make(chan glue.PermissionDecision, 1)}
+	pending := &pendingDecision{req: request, done: make(chan glue.PermissionDecision, 1)}
 	if r.pending == nil {
 		r.pending = map[string]*pendingDecision{}
 	}
@@ -125,6 +132,12 @@ func (m *Manager) Decide(ctx context.Context, id, permissionID string, decision 
 	}
 	if err := m.record(id, "permission_decision", map[string]any{"permission_id": permissionID, "decision": decision}, "", nil, status); err != nil {
 		return err
+	}
+	if decision.Allow && decision.RememberFor != glue.RememberNever {
+		if r.allows == nil {
+			r.allows = map[string]glue.RememberScope{}
+		}
+		r.allows[pending.req.Tool+"\x00"+pending.req.Action+"\x00"+pending.req.Target] = decision.RememberFor
 	}
 	delete(r.pending, permissionID)
 	pending.done <- decision
