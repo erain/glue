@@ -53,6 +53,7 @@ type Spec struct {
 	Policy    string     `json:"policy"`
 	Verify    [][]string `json:"verify"`
 	Delivery  string     `json:"delivery"`
+	Backend   string     `json:"backend,omitempty"`
 
 	AllowedBinaries     []string      `json:"allowed_binaries,omitempty"`
 	ShellEnvPass        []string      `json:"shell_env_pass,omitempty"`

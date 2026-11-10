@@ -145,6 +145,12 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 			fmt.Fprintln(stderr, err)
 		}
 		return code
+	case "job":
+		if err := jobCommand(ctx, args[1:], stdin, stdout, stderr, client); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printUsage(stderr)
@@ -248,6 +254,7 @@ func printUsage(w io.Writer) {
   glue run --prompt <text> [--provider <name>] [--id <id> | --continue] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]
+  glue job <login|submit|start|list|show|result|approve|deny|say|continue|cancel> [flags]
   glue serve [--jobs] [--provider <name>] [--listen 127.0.0.1:0] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
@@ -271,6 +278,7 @@ Commands:
   models   List curated providers, models, and supported thinking levels (no credentials needed).
   run      Run a local agent on any registered provider, optionally with coding tools.
   goal     Run an autonomous goal loop headlessly (plan → make → verify until done or a guardrail trips); exit code reflects the outcome.
+  job      Submit, start, list, inspect, steer, and fetch results for durable coding jobs.
   serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
   connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
   version  Print the binary's version, git revision, and Go toolchain (also: --version, -v).
