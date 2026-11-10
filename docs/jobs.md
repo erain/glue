@@ -38,10 +38,26 @@ terminal `job_done` event:
    recorded in `verify`.
 2. **Workspace commit:** If the workspace has uncommitted changes, the manager
    stages all files (`git add -A`) and commits them on `glue/<job-id>` using
-    the goal summary (or objective fallback) as the commit message and
+   the goal summary (or objective fallback) as the commit message and
    `GLUE_GIT_AUTHOR_NAME` / `GLUE_GIT_AUTHOR_EMAIL` when set (falling back to
    repository git config).
-3. **Completion record:** The manager atomically writes
+3. **Branch push and draft PR delivery:** When `delivery` is `branch` or
+   `draft_pr` and commits exist on `glue/<job-id>`, the manager pushes the
+   branch to `origin`. When `GLUE_GITHUB_TOKEN` is set in the `glue serve`
+   process environment (never passed to the coding shell tool environment), Git
+   authenticates via a `GIT_ASKPASS` helper backed by the hidden
+   `glue git-askpass` subcommand so the token never appears in `argv`, remote
+   URLs, events, logs, or `result.json`. When `delivery` is `draft_pr` and the
+   job status is `achieved`, the manager parses `owner/repo` from `origin`
+   (`https://` and `git@` forms), queries `GET /repos/{owner}/{repo}` on
+   `GLUE_GITHUB_API_URL` (default `https://api.github.com`), and opens a draft
+   pull request against `parent.full_name` with `head: "<owner>:<branch>"` when
+   `origin` is a fork (or against `origin` with `head: "<branch>"` otherwise)
+   and `base` set to the job's `BaseRef` (or target default branch). The PR
+   body includes the objective, summary, checklist, verification results, token
+   usage, and `"Opened by Glue job <id>"`. Push or API failures record
+   `delivery_error` while preserving the job's terminal status.
+4. **Completion record:** The manager atomically writes
    `<state>/jobs/<id>/result.json` (`0600`) and serves it at
    `GET /v1/jobs/{id}/result` (`409 conflict` while the job is still active):
 

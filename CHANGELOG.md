@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Deliver finished job branches (`delivery: "branch" | "draft_pr"`) to `origin`
+  via a hidden `glue git-askpass` helper backed by `GLUE_GITHUB_TOKEN` (never
+  exposed to the coding shell or persisted to disk/events), and open fork-aware
+  draft pull requests over the GitHub REST API (`GLUE_GITHUB_API_URL`) for
+  achieved `draft_pr` jobs while recording `pr_url` and `delivery_error` in
+  `result.json`.
+
 - Run post-goal `verify` commands in the job environment, commit workspace edits
   on `glue/<job-id>` with `GLUE_GIT_AUTHOR_NAME`/`GLUE_GIT_AUTHOR_EMAIL` (or
   repository config fallback), persist `<state>/jobs/<id>/result.json`, and
