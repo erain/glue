@@ -16,6 +16,14 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add a headless Chrome end-to-end browser test (`TestE2EJobBrowserWorkflow` in
+  `webui/e2e_test.go`, gated by `GLUE_E2E_BROWSER=1` with strict `CI=true`
+  precondition enforcement and failure screenshot/console artifact capture) plus
+  a `browser` job in `.github/workflows/ci.yml` covering login, jobs list,
+  transcript plan/tool rendering, permission approval, mid-job page reload
+  sequence deduplication, operator steering messages, and completion result
+  verification.
+
 - Add browser job steering and result views in `webui/static` (`api.js`, `app.js`,
   `app.css`): CSRF-protected `POST`/`DELETE` helper, interactive permission cards
   (**Allow once**, **Allow for session**, **Deny** with reason) hydrated from SSE

@@ -83,6 +83,14 @@ A good closing comment includes:
 - For loop and runtime work, prefer fake providers over live API calls.
 - Live Gemini tests must be gated behind `GEMINI_API_KEY` and must not run in
   CI. Use a build tag, `t.Skip` based on the env var, or both.
+- Headless browser end-to-end tests (`webui/e2e_test.go`) are gated behind
+  `GLUE_E2E_BROWSER=1` so routine `go test ./...` stays fast and offline. Run
+  them locally with Chrome or Chromium installed via:
+  `GLUE_E2E_BROWSER=1 go test ./webui -run E2E -count=1 -v` (set
+  `GLUE_CHROME_BIN` to override the executable path, or `GLUE_TEST_ARTIFACTS_DIR`
+  to choose where failure screenshots and console logs are written). When
+  `CI=true` (or `GLUE_E2E_BROWSER_STRICT=1`), a missing browser fails the test
+  instead of skipping.
 - Never close an issue with red tests, broken builds, or a failing CI run.
 
 ## Scope Discipline

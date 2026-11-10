@@ -12,6 +12,7 @@
   --err: #ef4444;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.45; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border); background: var(--panel); }
 .brand { color: var(--text); font-weight: 600; text-decoration: none; font-size: 1.05rem; }
