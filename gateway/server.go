@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,9 @@ type Server struct {
 	wg       sync.WaitGroup
 	mu       sync.Mutex
 	watchers map[string]bool
+	viewers  map[string]int
+	waiting  map[string]time.Time
+	remap    map[string]string
 	notify   chan struct{}
 }
 
@@ -51,6 +55,10 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	backends := make(map[string]Backend, len(cfg.Backends))
 	for _, b := range cfg.Backends {
+		if cb := cfg.CustomBackends[b.Name]; cb != nil {
+			backends[b.Name] = cb
+			continue
+		}
 		if b.Type != "ax" {
 			backends[b.Name] = NewLocalBackend(b, nil)
 			continue
@@ -75,8 +83,8 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		cfg: cfg, reg: reg, backends: backends,
-		ctx: ctx, cancel: cancel, watchers: map[string]bool{}, notify: make(chan struct{}),
+		cfg: cfg, reg: reg, backends: backends, ctx: ctx, cancel: cancel, watchers: map[string]bool{},
+		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, notify: make(chan struct{}),
 	}, nil
 }
 
@@ -91,8 +99,28 @@ func (s *Server) Close() error {
 	}
 	return s.reg.Close()
 }
+func (s *Server) Poke() { s.mu.Lock(); close(s.notify); s.notify = make(chan struct{}); s.mu.Unlock() }
 func isTerminal(st jobs.Status) bool {
-	return st != "" && st != jobs.Created && st != SubmitUnknown && st != jobs.Running && st != jobs.WaitingForInput
+	return st != "" && st != jobs.Created && st != SubmitUnknown && st != jobs.Running && st != jobs.WaitingForInput && st != jobs.Suspended
+}
+func (s *Server) addViewer(id string, delta int) {
+	s.mu.Lock()
+	s.viewers[id] += delta
+	s.waiting[id] = s.cfg.Now().UTC()
+	s.mu.Unlock()
+	s.Poke()
+}
+func (s *Server) idleDue(jobID string) bool {
+	rec, err := s.reg.GetJob(context.Background(), jobID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.cfg.SuspendAfter
+	return err == nil && rec.Status == jobs.WaitingForInput && s.viewers[jobID] == 0 && d > 0 && s.cfg.Now().Sub(rec.UpdatedAt) >= d && s.cfg.Now().Sub(s.waiting[jobID]) >= d
+}
+func (s *Server) gwEvent(ctx context.Context, jobID, typ, reason string) error {
+	_, err := s.reg.AppendEvent(ctx, jobID, eventlog.Envelope{Time: s.cfg.Now().UTC(), Type: typ, Payload: map[string]any{"reason": reason}})
+	s.Poke()
+	return err
 }
 
 func (s *Server) ensureWatcher(jobID string, b Backend) {
@@ -105,29 +133,93 @@ func (s *Server) ensureWatcher(jobID string, b Backend) {
 	s.wg.Go(func() {
 		defer func() { s.mu.Lock(); delete(s.watchers, jobID); s.mu.Unlock() }()
 		bg := context.Background()
+		sb, isSusp := b.(Suspender)
 		for s.ctx.Err() == nil {
 			rec, err := s.reg.GetJob(bg, jobID)
-			if err != nil || isTerminal(rec.Status) {
+			if err != nil || isTerminal(rec.Status) || rec.Status == jobs.Suspended {
 				return
 			}
-			_ = b.Stream(s.ctx, rec.BackendRef, rec.LastSeq, func(ev eventlog.Envelope) error {
+			streamCtx, cancelStream := context.WithCancel(s.ctx)
+			go func() {
+				for isSusp && streamCtx.Err() == nil && !s.idleDue(jobID) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if isSusp {
+					cancelStream()
+				}
+			}()
+			_ = b.Stream(streamCtx, rec.BackendRef, rec.UpstreamSeq, func(ev eventlog.Envelope) error {
+				if m, ok := ev.Payload.(map[string]any); ok && ev.Type == "permission_decision" {
+					pid, _ := m["permission_id"].(string)
+					s.mu.Lock()
+					if orig := s.remap[jobID+"\x00"+pid]; orig != "" {
+						delete(s.remap, jobID+"\x00"+pid)
+						m["original_permission_id"] = orig
+					}
+					s.mu.Unlock()
+				}
 				if ev.Type == "job_done" {
 					if res, err := b.Result(s.ctx, rec.BackendRef); err == nil {
 						_ = s.reg.SaveResult(bg, jobID, res)
 					}
 				}
 				_, err := s.reg.AppendEvent(bg, jobID, ev)
-				s.mu.Lock()
-				close(s.notify)
-				s.notify = make(chan struct{})
-				s.mu.Unlock()
+				if ev.Type == "job_done" && isSusp && (s.cfg.SuspendOnFinish == nil || *s.cfg.SuspendOnFinish) && sb.Suspend(s.ctx, rec.BackendRef) == nil {
+					_ = s.gwEvent(bg, jobID, "task_suspended", "finished")
+				}
+				s.Poke()
 				return err
 			})
-			if rec, err := s.reg.GetJob(bg, jobID); err == nil && !isTerminal(rec.Status) {
-				time.Sleep(20 * time.Millisecond)
+			cancelStream()
+			if isSusp && s.idleDue(jobID) && sb.Suspend(s.ctx, rec.BackendRef) == nil {
+				_ = s.gwEvent(bg, jobID, "task_suspended", "waiting_for_input")
+				return
 			}
+			time.Sleep(20 * time.Millisecond)
 		}
 	})
+}
+
+func (s *Server) wakeIfSuspended(ctx context.Context, id, reason string) error {
+	rec, err := s.reg.GetJob(ctx, id)
+	if err != nil {
+		return err
+	}
+	b := s.backends[rec.Backend]
+	sb, ok := b.(Suspender)
+	if !ok || (rec.Status != jobs.Suspended && !(isTerminal(rec.Status) && rec.StatusReason == "finished" && reason == "continue")) {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, s.cfg.ResumeTimeout)
+	defer cancel()
+	if err := sb.Resume(rctx, rec.BackendRef); err != nil {
+		return err
+	}
+	err = s.gwEvent(ctx, id, "task_resumed", reason)
+	s.ensureWatcher(id, b)
+	return err
+}
+
+func (s *Server) remapPerm(ctx context.Context, id, permID string, all []jobs.PermissionInfo) (string, error) {
+	i := slices.IndexFunc(all, func(p jobs.PermissionInfo) bool { return p.ID == permID })
+	rctx, cancel := context.WithTimeout(ctx, s.cfg.ResumeTimeout)
+	defer cancel()
+	for i >= 0 {
+		perms, _ := s.reg.Permissions(rctx, id, "pending")
+		if j := slices.IndexFunc(perms, func(p jobs.PermissionInfo) bool {
+			return p.ID != permID && p.Request.Tool == all[i].Request.Tool && p.Request.Target == all[i].Request.Target
+		}); j >= 0 {
+			s.mu.Lock()
+			s.remap[id+"\x00"+perms[j].ID] = permID
+			s.mu.Unlock()
+			return "permissions/" + perms[j].ID + "/decision", nil
+		}
+		if rctx.Err() != nil {
+			return "", rctx.Err()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return "permissions/" + permID + "/decision", nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -249,14 +341,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b := s.backends[rec.Backend]
 	switch r.Method + " " + sub {
 	case "GET ":
-		if _, isAX := b.(*ax.Backend); isAX && !isTerminal(rec.Status) {
-			if st, serr := b.Status(r.Context(), id); serr == nil && st != "" {
+		if _, isAX := b.(*ax.Backend); isAX && !isTerminal(rec.Status) && rec.Status != jobs.Suspended {
+			if st, serr := b.Status(r.Context(), id); serr == nil && st != "" && st != rec.Status {
 				_ = s.reg.UpsertStatus(r.Context(), id, rec.Backend, rec.Spec, st)
 			}
 		}
 		detail, err := s.reg.Inspect(r.Context(), id)
 		respond(w, http.StatusOK, detail, err)
 	case "DELETE ":
+		if err := s.wakeIfSuspended(r.Context(), id, "cancel"); err != nil {
+			respond(w, 0, nil, err)
+			return
+		}
 		s.ensureWatcher(id, b)
 		respond(w, http.StatusAccepted, map[string]any{"job_id": id, "canceled": true}, b.Cancel(r.Context(), rec.BackendRef))
 	case "POST start":
@@ -278,13 +374,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = s.reg.SaveResult(r.Context(), id, res)
 		respond(w, http.StatusOK, res, err)
 	case "GET events":
-		after, err := strconv.ParseInt(cmp.Or(r.URL.Query().Get("after"), r.Header.Get("Last-Event-ID"), "0"), 10, 64)
+		q := r.URL.Query()
+		after, err := strconv.ParseInt(cmp.Or(q.Get("after"), r.Header.Get("Last-Event-ID"), "0"), 10, 64)
 		flusher, ok := w.(http.Flusher)
 		if err != nil || after < 0 || !ok {
 			writeErr(w, http.StatusBadRequest, "invalid_request", "invalid stream request")
 			return
 		}
-		s.ensureWatcher(id, b)
+		cached := q.Get("cached") == "1" || q.Get("cached") == "true" || q.Get("follow") == "false" || (rec.Status == jobs.Suspended && !strings.Contains(r.Header.Get("Accept"), "text/event-stream") && q.Get("live") != "1")
+		if !cached {
+			if err := s.wakeIfSuspended(r.Context(), id, "stream_attach"); err != nil {
+				respond(w, 0, nil, err)
+				return
+			}
+			s.addViewer(id, 1)
+			defer s.addViewer(id, -1)
+			s.ensureWatcher(id, b)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		for {
@@ -301,7 +407,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				after = ev.Seq
 			}
 			flusher.Flush()
-			if isTerminal(cur.Status) {
+			if cached || isTerminal(cur.Status) {
 				return
 			}
 			select {
@@ -313,7 +419,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		if r.Method == http.MethodPost && (sub == "messages" || sub == "continue" || (len(parts) == 4 && parts[1] == "permissions" && parts[3] == "decision")) {
 			body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+			allPerms, _ := s.reg.Permissions(r.Context(), id, "")
+			if err := s.wakeIfSuspended(r.Context(), id, sub); err != nil {
+				respond(w, 0, nil, err)
+				return
+			}
 			s.ensureWatcher(id, b)
+			if len(parts) == 4 && rec.Status == jobs.Suspended {
+				if sub, err = s.remapPerm(r.Context(), id, parts[2], allPerms); err != nil {
+					respond(w, 0, nil, err)
+					return
+				}
+			}
 			if code, respBody, err := b.Do(r.Context(), r.Method, rec.BackendRef+"/"+sub, body); err == nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(code)

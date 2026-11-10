@@ -70,6 +70,7 @@ const (
 	Created         Status = "created"
 	Running         Status = "running"
 	WaitingForInput Status = "waiting_for_input"
+	Suspended       Status = "suspended"
 	Achieved        Status = "achieved"
 	Blocked         Status = "blocked"
 	BudgetLimited   Status = "budget_limited"
@@ -90,6 +91,8 @@ type Job struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	LastSeq   int64     `json:"last_seq"`
 	GoalID    string    `json:"goal_id"`
+	// StatusReason records why a job is in its current state.
+	StatusReason string `json:"status_reason,omitempty"`
 }
 
 // Options supplies storage and deferred execution dependencies.

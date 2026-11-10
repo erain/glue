@@ -69,10 +69,17 @@ func (f *fakeControlPlane) CreateActorEgressPolicy(_ context.Context, req *ateap
 	f.hasEgress = true
 	return req.GetEgressPolicy(), nil
 }
+func (f *fakeControlPlane) SuspendTask(_ context.Context, req *v1alpha1.SuspendTaskRequest) (*v1alpha1.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steps = append(f.steps, "SuspendTask")
+	f.tasks[req.GetName()].Status = &v1alpha1.TaskStatus{Phase: "Suspended"}
+	return f.tasks[req.GetName()], nil
+}
 func (f *fakeControlPlane) ResumeTask(_ context.Context, req *v1alpha1.ResumeTaskRequest) (*v1alpha1.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.steps = append(f.steps, "ResumeTask")
+	f.steps, f.polls = append(f.steps, "ResumeTask"), 0
 	t, ok := f.tasks[req.GetName()]
 	if !ok || !f.hasEgress {
 		return nil, status.Error(codes.FailedPrecondition, "missing task or egress policy before ResumeTask")
@@ -193,5 +200,12 @@ func TestStatusReadsDoNotTouchTaskHTTP(t *testing.T) {
 	}
 	if hits := cp.taskHTTPHits.Load(); hits != 0 {
 		t.Fatalf("taskHTTPHits = %d, want 0", hits)
+	}
+}
+func TestAXSuspendAndResume(t *testing.T) {
+	cp, _, _, b := newFakeAXEnv(t)
+	id, spec := "job-suspendres01", jobs.Spec{Objective: "Suspend and resume", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}
+	if _, err := b.Submit(t.Context(), id, spec); err != nil || b.Suspend(t.Context(), id) != nil || cp.tasks[TaskName(id)].GetStatus().GetPhase() != "Suspended" || b.Resume(t.Context(), id) != nil || cp.tasks[TaskName(id)].GetStatus().GetPhase() != "Running" {
+		t.Fatalf("err=%v task=%+v", err, cp.tasks[TaskName(id)])
 	}
 }

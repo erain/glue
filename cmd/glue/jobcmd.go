@@ -218,7 +218,7 @@ func attachJob(ctx context.Context, c *jobclient.Client, id string, stdin io.Rea
 			return err
 		}
 		if err == nil && after > 0 {
-			if d, showErr := c.Show(ctx, id); showErr == nil && d.Status != jobs.Created && d.Status != jobs.Running && d.Status != jobs.WaitingForInput && after >= d.LastSeq {
+			if d, showErr := c.Show(ctx, id); showErr == nil && d.Status != jobs.Created && d.Status != jobs.Running && d.Status != jobs.WaitingForInput && d.Status != jobs.Suspended && after >= d.LastSeq {
 				return nil
 			}
 		}
@@ -293,6 +293,10 @@ func renderJobEvent(ctx context.Context, c *jobclient.Client, id string, ev even
 		}
 	case "run_interrupted":
 		fmt.Fprintf(stdout, "interrupted: %s\n", cmp.Or(payloadString(ev.Payload, "reason"), payloadString(ev.Payload, "message"), "run interrupted"))
+	case "task_suspended":
+		fmt.Fprintf(stdout, "task suspended (%s)\n", cmp.Or(payloadString(ev.Payload, "reason"), "suspended"))
+	case "task_resumed":
+		fmt.Fprintln(stdout, "task resumed")
 	case "job_resumed":
 		p, _ := decodePayload[struct {
 			From   int    `json:"from_iteration"`

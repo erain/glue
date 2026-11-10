@@ -73,6 +73,15 @@ backends:
 
 # Default backend when a job submission omits backend (optional; defaults to backends[0].name).
 default_backend: local
+
+# Idle duration in waiting_for_input (with no live SSE viewer) before AX SuspendTask (optional; defaults to 2m).
+suspend_after: 2m
+
+# Maximum wait for AX ResumeTask + Running/WorkspaceReady on demand (optional; defaults to 1m).
+resume_timeout: 1m
+
+# Whether to call AX SuspendTask after caching Result when a job finishes (optional; defaults to true).
+suspend_on_finish: true
 ```
 
 ## AX Backend (`gateway/backend/ax`)
@@ -81,7 +90,8 @@ For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-sh
 
 1. **Ordered provisioning:** `Create` calls `UpdateWorkspace` (`dir: "."`, `depth: 1`, and `.glue/token`) and `CreateTask` (`glue serve --coding --jobs --job-from-ax --listen :8080 --state-dir /workspace/.glue/state --token-file /workspace/.glue/token`, with `spec.ID` in `Task.spec.config` and no task bearer token in `Task.spec.config`). `Start` applies `CreateActorEgressPolicy` (`tls_passthrough:443`) before calling `ResumeTask`, polls `GetTask` until `Running` + `WorkspaceReady=True`, and calls `POST /v1/jobs/{id}/start` through the router.
 2. **Ambiguous submit reconciliation:** If `CreateTask` fails with a deadline or transport error, the job is marked `submit_unknown` and reconciled via `GetTask` before retrying so duplicate tasks are never created.
-3. **mTLS HTTP `CONNECT` router transport:** `RouterTransport` dials `atenet-router.ate-system.svc.cluster.local:8444` with the gateway pod's `podidentity.podcert.ate.dev/identity` mTLS certificate and sends `CONNECT glue-<job-id>:8080 HTTP/1.1` with header `ate-target-actor: <atespace>/glue-<job-id>`. Status reads (`GET /v1/jobs`, `GET /v1/jobs/{id}`) read only the gateway SQLite registry and AX `GetTask` so inspecting a job never wakes a suspended task.
+3. **mTLS HTTP `CONNECT` router transport:** `RouterTransport` dials `atenet-router.ate-system.svc.cluster.local:8444` with the gateway pod's `podidentity.podcert.ate.dev/identity` mTLS certificate and sends `CONNECT glue-<job-id>:8080 HTTP/1.1` with header `ate-target-actor: <atespace>/glue-<job-id>`. Status reads (`GET /v1/jobs`, `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/permissions`, cached transcript) read only the gateway SQLite registry and AX `GetTask` so inspecting a job never wakes a suspended task.
+4. **Idle & terminal suspend and on-demand resume:** When a job stays in `waiting_for_input` longer than `suspend_after` (default `2m`) with no live SSE viewer attached, the watcher calls `SuspendTask`, marks the job `suspended` (`status_reason: "waiting_for_input"`), and appends `task_suspended`. When a job reaches a terminal state (`job_done`) and `suspend_on_finish` is enabled (default `true`), the watcher caches `Result` and calls `SuspendTask` (`status_reason: "finished"`). Any state-changing action (`approve`/`deny`, `messages`, `continue`, `cancel`) or live SSE stream attachment calls `ResumeTask`, waits for `Running` + `WorkspaceReady` within `resume_timeout`, appends `task_resumed`, reconnects the upstream stream using the last upstream sequence number, and (for permission decisions) matches the user's decision to the re-issued `permission_request` with the same tool and target while recording both permission IDs in `permission_decision`.
 
 ## SQLite Registry and Event Cache
 
