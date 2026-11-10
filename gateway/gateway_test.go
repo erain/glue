@@ -3,15 +3,19 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -237,11 +241,14 @@ func TestGatewayServesCachedEventsWhenBackendDown(t *testing.T) {
 }
 
 type fakeAXHarness struct {
-	mu                            sync.Mutex
-	now                           atomic.Int64
-	pendingPerm, decidedID        string
-	suspends, resumes, routerHits atomic.Int32
-	events                        []eventlog.Envelope
+	mu                                     sync.Mutex
+	now                                    atomic.Int64
+	pendingPerm, decidedID                 string
+	suspends, resumes, deletes, routerHits atomic.Int32
+	failResult                             atomic.Bool
+	tasks                                  map[string]bool
+	onDelete                               func(string)
+	events                                 []eventlog.Envelope
 }
 
 func (h *fakeAXHarness) Now() time.Time { return time.Unix(0, h.now.Load()).UTC() }
@@ -255,6 +262,12 @@ func (h *fakeAXHarness) emit(pairs ...any) {
 	}
 }
 func (h *fakeAXHarness) Create(_ context.Context, id string, spec jobs.Spec) (jobs.Job, error) {
+	h.mu.Lock()
+	if h.tasks == nil {
+		h.tasks = map[string]bool{}
+	}
+	h.tasks["glue-"+id] = true
+	h.mu.Unlock()
 	return jobs.Job{ID: id, Spec: spec, Status: jobs.Created, CreatedAt: h.Now()}, nil
 }
 func (h *fakeAXHarness) Start(ctx context.Context, id string) (jobs.Job, error) {
@@ -300,11 +313,37 @@ func (h *fakeAXHarness) Do(_ context.Context, _, subpath string, _ []byte) (int,
 }
 func (h *fakeAXHarness) Result(_ context.Context, id string) (jobs.Result, error) {
 	h.routerHits.Add(1)
+	h.mu.Lock()
+	alive := h.tasks["glue-"+id]
+	h.mu.Unlock()
+	if h.failResult.Load() || !alive {
+		return jobs.Result{}, errors.New("workspace unavailable")
+	}
 	return jobs.Result{JobID: id, Status: jobs.Achieved, Summary: "done", Iterations: 1}, nil
 }
 func (h *fakeAXHarness) Cancel(context.Context, string) error { h.routerHits.Add(1); return nil }
 func (h *fakeAXHarness) Status(context.Context, string) (jobs.Status, error) {
 	return jobs.Running, nil
+}
+func (h *fakeAXHarness) DeleteTask(_ context.Context, id string) error {
+	h.deletes.Add(1)
+	h.mu.Lock()
+	delete(h.tasks, "glue-"+id)
+	fn := h.onDelete
+	h.mu.Unlock()
+	if fn != nil {
+		fn(id)
+	}
+	return nil
+}
+func (h *fakeAXHarness) ListTasks(context.Context) ([]string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for name := range h.tasks {
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 func waitJob(t *testing.T, gw *Server, jobID string, st jobs.Status, reason string) Record {
@@ -418,5 +457,100 @@ func TestSuspendOnFinish(t *testing.T) {
 	h.routerHits.Store(0)
 	if res := must(cli.Result(t.Context(), job.ID)); res.Status != jobs.Achieved || h.routerHits.Load() != 0 {
 		t.Fatalf("Result: %+v routerHits=%d", res, h.routerHits.Load())
+	}
+}
+
+func TestResultStoredBeforeTaskDeletion(t *testing.T) {
+	h, gw, _, cli, job := newAXGatewayHarness(t, false)
+	h.failResult.Store(true)
+	must(0, cli.Decide(t.Context(), job.ID, "perm-1", true, "", "ok"))
+	if rec := waitJob(t, gw, job.ID, jobs.Achieved, "finished"); rec.Result != nil {
+		t.Fatalf("expected nil Result while failResult=true, got %+v", rec.Result)
+	}
+	var storedBeforeDelete bool
+	h.onDelete = func(id string) {
+		rec := must(gw.reg.GetJob(t.Context(), id))
+		storedBeforeDelete = rec.Result != nil && rec.Result.Summary == "done"
+	}
+	if err := gw.deleteJobTask(t.Context(), job.ID); err == nil || h.deletes.Load() != 0 {
+		t.Fatalf("deleteJobTask should abort when Result cannot be saved: err=%v deletes=%d", err, h.deletes.Load())
+	}
+	h.failResult.Store(false)
+	must(0, gw.deleteJobTask(t.Context(), job.ID))
+	if !storedBeforeDelete || h.deletes.Load() != 1 {
+		t.Fatalf("storedBeforeDelete=%v deletes=%d", storedBeforeDelete, h.deletes.Load())
+	}
+	if res := must(cli.Result(t.Context(), job.ID)); res.Status != jobs.Achieved || res.Summary != "done" {
+		t.Fatalf("Result after task deletion: %+v", res)
+	}
+}
+
+func TestRetentionDeletesTaskKeepsRecord(t *testing.T) {
+	h, gw, _, cli, job := newAXGatewayHarness(t, false)
+	must(0, cli.Decide(t.Context(), job.ID, "perm-1", true, "", "ok"))
+	waitJob(t, gw, job.ID, jobs.Achieved, "finished")
+	h.Advance(167*time.Hour, gw)
+	if d := must(cli.Show(t.Context(), job.ID)); d.TaskDeleted || h.deletes.Load() != 0 {
+		t.Fatalf("deleted too early: TaskDeleted=%v deletes=%d", d.TaskDeleted, h.deletes.Load())
+	}
+	h.Advance(2*time.Hour, gw)
+	d := must(cli.Show(t.Context(), job.ID))
+	if !d.TaskDeleted || d.Status != jobs.Achieved || h.deletes.Load() != 1 {
+		t.Fatalf("expected task_deleted=true after 168h: detail=%+v deletes=%d", d, h.deletes.Load())
+	}
+	h.routerHits.Store(0)
+	var replayed int
+	must(0, cli.StreamEvents(t.Context(), job.ID, 0, func(ev eventlog.Envelope) error { replayed++; return nil }))
+	if res := must(cli.Result(t.Context(), job.ID)); res.Summary != "done" || replayed < 5 || h.routerHits.Load() != 0 {
+		t.Fatalf("res=%+v replayed=%d routerHits=%d", res, replayed, h.routerHits.Load())
+	}
+}
+
+func TestPurgeRemovesEverything(t *testing.T) {
+	h, gw, _, cli, job := newAXGatewayHarness(t, false)
+	must(0, cli.Decide(t.Context(), job.ID, "perm-1", true, "", "ok"))
+	waitJob(t, gw, job.ID, jobs.Achieved, "finished")
+	must(0, cli.Delete(t.Context(), job.ID))
+	if h.deletes.Load() != 1 || len(must(cli.List(t.Context(), jobs.Filter{}))) != 0 {
+		t.Fatalf("deletes=%d list not empty", h.deletes.Load())
+	}
+	var se *jobclient.StatusError
+	if _, err := cli.Show(t.Context(), job.ID); !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		t.Fatalf("Show after purge: err=%v", err)
+	}
+	if _, err := cli.Result(t.Context(), job.ID); !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		t.Fatalf("Result after purge: err=%v", err)
+	}
+	if _, err := gw.reg.Events(t.Context(), job.ID, 0); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("Events after purge: err=%v", err)
+	}
+}
+
+func TestOrphanTasksReportedNotDeleted(t *testing.T) {
+	stateDir := t.TempDir()
+	reg := must(OpenRegistry(stateDir))
+	must(reg.CreateJob(t.Context(), Record{ID: "job-known0000002", Backend: "ax", BackendRef: "job-known0000002", Owner: "dev", Spec: jobs.Spec{Objective: "known"}, Status: jobs.Running}))
+	_ = reg.Close()
+	h := &fakeAXHarness{tasks: map[string]bool{"glue-job-orphan000001": true, "glue-job-known0000002": true, "unrelated-task": true}}
+	var logBuf bytes.Buffer
+	origOut := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origOut) })
+	gw := must(NewServer(Config{StateDir: stateDir, Auth: AuthConfig{Mode: "dev-token", Token: "gw-token"}, Backends: []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}}, CustomBackends: map[string]Backend{"ax": h}}))
+	ts := httptest.NewServer(gw)
+	t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+	if !strings.Contains(logBuf.String(), "orphan task glue-job-orphan000001") || h.deletes.Load() != 0 {
+		t.Fatalf("log=%q deletes=%d", logBuf.String(), h.deletes.Load())
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/v1/diagnostics", nil)
+	req.Header.Set("Authorization", "Bearer gw-token")
+	resp := must(ts.Client().Do(req))
+	defer resp.Body.Close()
+	var diag struct {
+		OrphanTasks []string `json:"orphan_tasks"`
+	}
+	must(0, json.NewDecoder(resp.Body).Decode(&diag))
+	if resp.StatusCode != http.StatusOK || !reflect.DeepEqual(diag.OrphanTasks, []string{"glue-job-orphan000001"}) || h.deletes.Load() != 0 {
+		t.Fatalf("status=%d diag=%+v deletes=%d", resp.StatusCode, diag, h.deletes.Load())
 	}
 }

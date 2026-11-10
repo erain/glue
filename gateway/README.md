@@ -82,6 +82,9 @@ resume_timeout: 1m
 
 # Whether to call AX SuspendTask after caching Result when a job finishes (optional; defaults to true).
 suspend_on_finish: true
+
+# Duration to retain terminal AX Tasks/Workspaces/EgressPolicies before deleting them (optional; defaults to 168h / GLUE_RETAIN_TASKS).
+retain_tasks: 168h
 ```
 
 ## AX Backend (`gateway/backend/ax`)
@@ -92,6 +95,7 @@ For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-sh
 2. **Ambiguous submit reconciliation:** If `CreateTask` fails with a deadline or transport error, the job is marked `submit_unknown` and reconciled via `GetTask` before retrying so duplicate tasks are never created.
 3. **mTLS HTTP `CONNECT` router transport:** `RouterTransport` dials `atenet-router.ate-system.svc.cluster.local:8444` with the gateway pod's `podidentity.podcert.ate.dev/identity` mTLS certificate and sends `CONNECT glue-<job-id>:8080 HTTP/1.1` with header `ate-target-actor: <atespace>/glue-<job-id>`. Status reads (`GET /v1/jobs`, `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/permissions`, cached transcript) read only the gateway SQLite registry and AX `GetTask` so inspecting a job never wakes a suspended task.
 4. **Idle & terminal suspend and on-demand resume:** When a job stays in `waiting_for_input` longer than `suspend_after` (default `2m`) with no live SSE viewer attached, the watcher calls `SuspendTask`, marks the job `suspended` (`status_reason: "waiting_for_input"`), and appends `task_suspended`. When a job reaches a terminal state (`job_done`) and `suspend_on_finish` is enabled (default `true`), the watcher caches `Result` and calls `SuspendTask` (`status_reason: "finished"`). Any state-changing action (`approve`/`deny`, `messages`, `continue`, `cancel`) or live SSE stream attachment calls `ResumeTask`, waits for `Running` + `WorkspaceReady` within `resume_timeout`, appends `task_resumed`, reconnects the upstream stream using the last upstream sequence number, and (for permission decisions) matches the user's decision to the re-issued `permission_request` with the same tool and target while recording both permission IDs in `permission_decision`.
+5. **Result persistence, task retention, purge, and orphan reconciliation:** On terminal status, the gateway fetches `GET /v1/jobs/{id}/result` once, persists it in SQLite (`result_json`), and serves `GET /v1/jobs/{id}/result` from SQLite thereafter. After `retain_tasks` (default `168h`, or `GLUE_RETAIN_TASKS`) in a terminal state, `deleteJobTask` ensures the completion result is stored in SQLite before calling `DeleteTask`, `DeleteWorkspace`, and `DeleteActorEgressPolicy`, then marks the registry record `task_deleted: true` while keeping the job row, events, and result intact. `DELETE /v1/jobs/{id}?purge=true` (`glue job delete <id>`) deletes the backend task (if any) and purges the job row and event history from SQLite. On startup (and via `GET /v1/diagnostics`), the gateway reconciles AX tasks in the configured atespace (`ListTasks`) and reports any `glue-*` tasks without a registry row in logs and `{"orphan_tasks": [...]}` without deleting them automatically.
 
 ## SQLite Registry and Event Cache
 

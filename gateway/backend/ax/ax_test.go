@@ -100,6 +100,45 @@ func (f *fakeControlPlane) GetTask(_ context.Context, req *v1alpha1.GetTaskReque
 	}
 	return t, nil
 }
+func (f *fakeControlPlane) DeleteTask(_ context.Context, req *v1alpha1.DeleteTaskRequest) (*v1alpha1.DeleteTaskResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steps = append(f.steps, "DeleteTask")
+	if _, ok := f.tasks[req.GetName()]; !ok {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+	delete(f.tasks, req.GetName())
+	return &v1alpha1.DeleteTaskResponse{}, nil
+}
+func (f *fakeControlPlane) DeleteWorkspace(_ context.Context, req *v1alpha1.DeleteWorkspaceRequest) (*v1alpha1.DeleteWorkspaceResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steps = append(f.steps, "DeleteWorkspace")
+	if f.lastWS == nil || f.lastWS.GetMetadata().GetName() != req.GetName() {
+		return nil, status.Error(codes.NotFound, "workspace not found")
+	}
+	f.lastWS = nil
+	return &v1alpha1.DeleteWorkspaceResponse{}, nil
+}
+func (f *fakeControlPlane) DeleteActorEgressPolicy(_ context.Context, _ *ateapipb.DeleteActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.steps = append(f.steps, "DeleteActorEgressPolicy")
+	if !f.hasEgress {
+		return nil, status.Error(codes.NotFound, "egress policy not found")
+	}
+	f.hasEgress = false
+	return &ateapipb.EgressPolicy{}, nil
+}
+func (f *fakeControlPlane) ListTasks(_ context.Context, _ *v1alpha1.ListTasksRequest) (*v1alpha1.ListTasksResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*v1alpha1.Task
+	for _, t := range f.tasks {
+		out = append(out, t)
+	}
+	return &v1alpha1.ListTasksResponse{Tasks: out}, nil
+}
 func newFakeAXEnv(t *testing.T) (*fakeControlPlane, *fakeConnectRouter, Options, *Backend) {
 	t.Helper()
 	cp := &fakeControlPlane{tasks: map[string]*v1alpha1.Task{}}
@@ -207,5 +246,26 @@ func TestAXSuspendAndResume(t *testing.T) {
 	id, spec := "job-suspendres01", jobs.Spec{Objective: "Suspend and resume", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}
 	if _, err := b.Submit(t.Context(), id, spec); err != nil || b.Suspend(t.Context(), id) != nil || cp.tasks[TaskName(id)].GetStatus().GetPhase() != "Suspended" || b.Resume(t.Context(), id) != nil || cp.tasks[TaskName(id)].GetStatus().GetPhase() != "Running" {
 		t.Fatalf("err=%v task=%+v", err, cp.tasks[TaskName(id)])
+	}
+}
+func TestAXDeleteAndListTasks(t *testing.T) {
+	cp, _, _, b := newFakeAXEnv(t)
+	id, spec := "job-deletelist01", jobs.Spec{Objective: "Delete and list", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}
+	if _, err := b.Submit(t.Context(), id, spec); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if tasks, err := b.ListTasks(t.Context()); err != nil || !reflect.DeepEqual(tasks, []string{TaskName(id)}) {
+		t.Fatalf("ListTasks = %v, err=%v", tasks, err)
+	}
+	cp.steps = nil
+	if err := b.DeleteTask(t.Context(), id); err != nil || b.DeleteTask(t.Context(), id) != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	want := []string{"DeleteTask", "DeleteWorkspace", "DeleteActorEgressPolicy", "DeleteTask", "DeleteWorkspace", "DeleteActorEgressPolicy"}
+	if !reflect.DeepEqual(cp.steps, want) {
+		t.Fatalf("steps = %v, want %v", cp.steps, want)
+	}
+	if tasks, err := b.ListTasks(t.Context()); err != nil || len(tasks) != 0 {
+		t.Fatalf("ListTasks after delete = %v, err=%v", tasks, err)
 	}
 }

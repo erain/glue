@@ -21,6 +21,7 @@ import (
 const (
 	DefaultSuspendAfter  = 2 * time.Minute
 	DefaultResumeTimeout = time.Minute
+	DefaultRetainTasks   = 168 * time.Hour
 )
 
 // DefaultEgressHosts is the default TLS passthrough allowlist for AX tasks.
@@ -55,6 +56,7 @@ type BackendConfig struct {
 	TokenFile                                      string          `yaml:"token_file" json:"-"`
 	SuspendAfter                                   time.Duration   `yaml:"suspend_after" json:"suspend_after,omitempty"`
 	ResumeTimeout                                  time.Duration   `yaml:"resume_timeout" json:"resume_timeout,omitempty"`
+	RetainTasks                                    time.Duration   `yaml:"retain_tasks" json:"retain_tasks,omitempty"`
 	SuspendOnFinish                                *bool           `yaml:"suspend_on_finish" json:"suspend_on_finish,omitempty"`
 }
 
@@ -66,9 +68,10 @@ type Config struct {
 	Auth           AuthConfig      `yaml:"auth"`
 	Backends       []BackendConfig `yaml:"backends"`
 	DefaultBackend string          `yaml:"default_backend"`
-	// Task suspension settings and test hooks.
+	// Task suspension, retention settings, and test hooks.
 	SuspendAfter    time.Duration      `yaml:"suspend_after"`
 	ResumeTimeout   time.Duration      `yaml:"resume_timeout"`
+	RetainTasks     time.Duration      `yaml:"retain_tasks"`
 	SuspendOnFinish *bool              `yaml:"suspend_on_finish"`
 	Now             func() time.Time   `yaml:"-" json:"-"`
 	CustomBackends  map[string]Backend `yaml:"-" json:"-"`
@@ -104,11 +107,18 @@ func (cfg Config) Validate() (Config, error) {
 			return Config{}, fmt.Errorf("gateway: invalid GLUE_SUSPEND_AFTER %q", envSA)
 		}
 	}
-	cfg.SuspendAfter, cfg.ResumeTimeout = cmp.Or(cfg.SuspendAfter, DefaultSuspendAfter), cmp.Or(cfg.ResumeTimeout, DefaultResumeTimeout)
+	if envRT := strings.TrimSpace(os.Getenv("GLUE_RETAIN_TASKS")); cfg.RetainTasks == 0 && envRT != "" {
+		if d, err := time.ParseDuration(envRT); err == nil && d > 0 {
+			cfg.RetainTasks = d
+		} else {
+			return Config{}, fmt.Errorf("gateway: invalid GLUE_RETAIN_TASKS %q", envRT)
+		}
+	}
+	cfg.SuspendAfter, cfg.ResumeTimeout, cfg.RetainTasks = cmp.Or(cfg.SuspendAfter, DefaultSuspendAfter), cmp.Or(cfg.ResumeTimeout, DefaultResumeTimeout), cmp.Or(cfg.RetainTasks, DefaultRetainTasks)
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.StateDir == "" || cfg.Auth.Mode != "dev-token" || cfg.Auth.Token == "" || len(cfg.Backends) == 0 {
+	if cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.RetainTasks < 0 || cfg.StateDir == "" || cfg.Auth.Mode != "dev-token" || cfg.Auth.Token == "" || len(cfg.Backends) == 0 {
 		return Config{}, fmt.Errorf("gateway: invalid config (state_dir=%q, auth.mode=%q, has_token=%v, backends=%d)", cfg.StateDir, cfg.Auth.Mode, cfg.Auth.Token != "", len(cfg.Backends))
 	}
 	seen := make(map[string]bool, len(cfg.Backends))
@@ -116,15 +126,15 @@ func (cfg Config) Validate() (Config, error) {
 		b := &cfg.Backends[i]
 		b.Name, b.Type = strings.TrimSpace(b.Name), strings.TrimSpace(b.Type)
 		b.URL, b.Token = strings.TrimRight(strings.TrimSpace(b.URL), "/"), strings.TrimSpace(b.Token)
-		if b.SuspendAfter < 0 || b.ResumeTimeout < 0 || b.Name == "" || seen[b.Name] || !validateBackend(b) {
+		if b.SuspendAfter < 0 || b.ResumeTimeout < 0 || b.RetainTasks < 0 || b.Name == "" || seen[b.Name] || !validateBackend(b) {
 			return Config{}, fmt.Errorf("gateway: invalid backend %q (duplicate=%v, type=%q)", b.Name, seen[b.Name], b.Type)
 		}
 		if b.Type == "ax" {
-			b.SuspendAfter, b.ResumeTimeout = cmp.Or(b.SuspendAfter, cfg.SuspendAfter), cmp.Or(b.ResumeTimeout, cfg.ResumeTimeout)
+			b.SuspendAfter, b.ResumeTimeout, b.RetainTasks = cmp.Or(b.SuspendAfter, cfg.SuspendAfter), cmp.Or(b.ResumeTimeout, cfg.ResumeTimeout), cmp.Or(b.RetainTasks, cfg.RetainTasks)
 			if b.SuspendOnFinish == nil {
 				b.SuspendOnFinish = cfg.SuspendOnFinish
 			}
-			cfg.SuspendAfter, cfg.ResumeTimeout, cfg.SuspendOnFinish = b.SuspendAfter, b.ResumeTimeout, b.SuspendOnFinish
+			cfg.SuspendAfter, cfg.ResumeTimeout, cfg.RetainTasks, cfg.SuspendOnFinish = b.SuspendAfter, b.ResumeTimeout, b.RetainTasks, b.SuspendOnFinish
 		}
 		seen[b.Name] = true
 	}

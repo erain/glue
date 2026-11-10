@@ -31,6 +31,16 @@ type Suspender interface {
 	Resume(ctx context.Context, id string) error
 }
 
+// TaskDeleter is implemented by backends whose execution sandboxes can be deleted.
+type TaskDeleter interface {
+	DeleteTask(ctx context.Context, id string) error
+}
+
+// TaskLister is implemented by backends that can enumerate existing sandbox task names.
+type TaskLister interface {
+	ListTasks(ctx context.Context) ([]string, error)
+}
+
 // LocalBackend proxies job operations to a local or HTTP-reachable glue serve instance.
 type LocalBackend struct{ *jobclient.Client }
 

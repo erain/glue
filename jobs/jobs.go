@@ -93,6 +93,8 @@ type Job struct {
 	GoalID    string    `json:"goal_id"`
 	// StatusReason records why a job is in its current state.
 	StatusReason string `json:"status_reason,omitempty"`
+	// TaskDeleted reports whether the backing sandbox task was deleted after retention.
+	TaskDeleted bool `json:"task_deleted,omitempty"`
 }
 
 // Options supplies storage and deferred execution dependencies.

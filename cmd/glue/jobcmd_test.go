@@ -119,6 +119,16 @@ func TestJobCLIControlAndResultFlow(t *testing.T) {
 	job2ID := strings.TrimSpace(mustJobCLI(t, "submit", "--repo", repo, "--objective", "cancel me", "--start=false"))
 	mustJobCLI(t, "cancel", job2ID)
 	waitJob(t, mgr, job2ID, jobs.Canceled)
+	var gotPurge string
+	delTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPurge = r.Method + " " + r.URL.RequestURI()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(delTS.Close)
+	mustJobCLI(t, "delete", "--server", delTS.URL, "--token", "t", job2ID)
+	if gotPurge != "DELETE /v1/jobs/"+job2ID+"?purge=true" {
+		t.Fatalf("gotPurge = %q", gotPurge)
+	}
 }
 func TestJobSubmitSelect(t *testing.T) {
 	repo := serveJobRepo(t)
