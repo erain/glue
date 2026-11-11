@@ -131,8 +131,8 @@ WORKER_KO_REF="$(awk '$1 == "workerImage:" {print $2; exit}' "${E2E_DIR}/manifes
 WORKER_IMG="${WORKER_KO_REF##*/}"
 SUBSTRATE_IMAGES=(ateapi atecontroller atelet atenet "${WORKER_IMG}" podcertcontroller objectstore-plugin envoy-dataplane)
 
-INGRESS_SPIFFE_IDS="spiffe://cluster.local/ns/${AX_SYSTEM_NAMESPACE}/sa/ax-server,spiffe://cluster.local/ns/ate-system/sa/atenet-client,spiffe://cluster.local/ns/glue-system/sa/glue-gateway"
-BOOTSTRAP_OWNERS="system:serviceaccount:ate-system:ate-client,system:serviceaccount:${AX_SYSTEM_NAMESPACE}:ax-server,system:serviceaccount:glue-system:glue-gateway"
+INGRESS_SPIFFE_IDS="spiffe://cluster.local/ns/${AX_SYSTEM_NAMESPACE}/sa/ax-server,spiffe://cluster.local/ns/ate-system/sa/atenet-client"
+BOOTSTRAP_OWNERS="system:serviceaccount:ate-system:ate-client,system:serviceaccount:${AX_SYSTEM_NAMESPACE}:ax-server"
 SUB_CFG_SPEC="${SUBSTRATE_COMMIT}:${INGRESS_SPIFFE_IDS}:k8s.io"
 INSTALLED_SUB="$(k get namespace ate-system -o jsonpath='{.metadata.annotations.glue\.ax-dev/spec}' 2>/dev/null || true)"
 
@@ -198,11 +198,16 @@ AX_SERVER_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-server:dev" --build-arg T
 AX_TASK_RUNNER_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-task-runner:dev" --build-arg TARGETARCH="${GOARCH}" -f "${AX_DIR}/Dockerfile.task-runner")"
 export AX_SERVER_IMAGE AX_TASK_RUNNER_IMAGE AX_DEFAULT_TASK_IMAGE="${AX_TASK_RUNNER_IMAGE}" AX_WORKER_REPLICAS="${GLUE_AX_WORKERS}"
 
-cat > "${STATE}/images.env" <<EOF
-export AX_SERVER_IMAGE="${AX_SERVER_IMAGE}"
-export AX_TASK_RUNNER_IMAGE="${AX_TASK_RUNNER_IMAGE}"
-export AX_DEFAULT_TASK_IMAGE="${AX_DEFAULT_TASK_IMAGE}"
-EOF
+EXISTING_TASK_IMAGE=""
+if [[ -f "${STATE}/images.env" ]]; then
+  EXISTING_TASK_IMAGE="$(sed -nE 's/^export GLUE_TASK_IMAGE="(.*)"$/\1/p' "${STATE}/images.env" | tail -n1)"
+fi
+{
+  printf 'export AX_SERVER_IMAGE="%s"\n' "${AX_SERVER_IMAGE}"
+  printf 'export AX_TASK_RUNNER_IMAGE="%s"\n' "${AX_TASK_RUNNER_IMAGE}"
+  printf 'export AX_DEFAULT_TASK_IMAGE="%s"\n' "${AX_DEFAULT_TASK_IMAGE}"
+  [[ -n "${EXISTING_TASK_IMAGE}" ]] && printf 'export GLUE_TASK_IMAGE="%s"\n' "${EXISTING_TASK_IMAGE}"
+} > "${STATE}/images.env"
 
 render_manifest() {
   # shellcheck disable=SC2016

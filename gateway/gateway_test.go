@@ -38,14 +38,18 @@ func must[T any](v T, err error) T {
 }
 func TestConfigParseAndValidate(t *testing.T) {
 	t.Setenv("GLUE_GATEWAY_TOKEN", "env-secret")
+	t.Setenv("GLUE_GITHUB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "ghp_fallback_token")
+	t.Setenv("GLUE_AX_IMAGE", "")
+	t.Setenv("GLUE_TASK_IMAGE", "localhost:5001/glue-task@sha256:defaultimg")
 	cfgPath := filepath.Join(t.TempDir(), "gateway.yaml")
-	raw := "public_url: http://gw.example.com/\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\ndefault_backend: local\nbackends:\n  - name: local\n    type: local\n    url: http://127.0.0.1:8787/\n    token: backend-token\n  - name: ax\n    type: ax\n    image: localhost:5001/glue-task@sha256:1234\n    resources:\n      limits:\n        cpu: \"2\"\n        memory: 4Gi\n"
+	raw := "public_url: http://gw.example.com/\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\ndefault_backend: local\nbackends:\n  - name: local\n    type: local\n    url: http://127.0.0.1:8787/\n    token: backend-token\n  - name: ax\n    type: ax\n    kube_config: /tmp/kubeconfig\n    kube_context: kind-glue-ax\n    resources:\n      limits:\n        cpu: \"2\"\n        memory: 4Gi\n"
 	must(0, os.WriteFile(cfgPath, []byte(raw), 0o600))
 	cfg := must(LoadConfig(cfgPath))
-	if cfg.Listen != "127.0.0.1:8800" || cfg.PublicURL != "http://gw.example.com" || cfg.Auth.Token != "env-secret" || cfg.DefaultBackend != "local" || cfg.Backends[0].URL != "http://127.0.0.1:8787" {
+	if cfg.Listen != "127.0.0.1:8800" || cfg.PublicURL != "http://gw.example.com" || cfg.Auth.Token != "env-secret" || cfg.Credentials.GitHubToken != "ghp_fallback_token" || cfg.DefaultBackend != "local" || cfg.Backends[0].URL != "http://127.0.0.1:8787" {
 		t.Fatalf("unexpected normalized config: %+v", cfg)
 	}
-	if axCfg := cfg.Backends[1]; axCfg.Atespace != "default" || axCfg.AXServer != "ax-server.ax-system:8080" || axCfg.Router != "atenet-router.ate-system:8444" || axCfg.Resources.CPU != "2" || axCfg.Resources.Memory != "4Gi" || len(axCfg.EgressHosts) != len(DefaultEgressHosts) {
+	if axCfg := cfg.Backends[1]; axCfg.Atespace != "default" || axCfg.AXServer != "" || axCfg.KubeConfig != "/tmp/kubeconfig" || axCfg.KubeContext != "kind-glue-ax" || axCfg.Image != "localhost:5001/glue-task@sha256:defaultimg" || axCfg.Resources.CPU != "2" || axCfg.Resources.Memory != "4Gi" || len(axCfg.EgressHosts) != len(DefaultEgressHosts) {
 		t.Fatalf("unexpected normalized ax backend config: %+v", axCfg)
 	}
 	ghCfg := must(ParseConfig([]byte("public_url: https://gw.example.com/\nstate_dir: /tmp\nauth:\n  mode: github\n  client_id: cid\n  client_secret: csec\n  allowed_logins: [alice]\nbackends:\n  - name: l\n    type: local\n    url: http://x\n    token: t\n")))
@@ -53,8 +57,15 @@ func TestConfigParseAndValidate(t *testing.T) {
 		t.Fatalf("unexpected github auth config: %+v", ghCfg.Auth)
 	}
 	t.Setenv("GLUE_GATEWAY_TOKEN", "")
+	t.Setenv("GLUE_TASK_IMAGE", "")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	for _, tc := range []struct{ yaml, want string }{
 		{"unknown_key: 1\n", "field unknown_key"},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, substrate: api.ate-system:443}]\n", "field substrate"},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, router: atenet-router.ate-system:8444}]\n", "field router"},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, cert_file: /tmp/c}]\n", "field cert_file"},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, ca_file: /tmp/ca}]\n", "field ca_file"},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, token_file: /tmp/t}]\n", "field token_file"},
 		{"auth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "state_dir=\"\""},
 		{"public_url: https://gw.example.com\nstate_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "--insecure-dev"},
 		{"state_dir: /tmp\nauth: {mode: github, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.mode=\"github\""},
@@ -62,11 +73,12 @@ func TestConfigParseAndValidate(t *testing.T) {
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\n", "backends=0"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}, {name: l, type: local, url: http://y, token: t}]\n", "duplicate=true"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: ax, url: http://x, token: t}]\n", "type=\"ax\""},
+		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax}]\n", "type=\"ax\""},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, egress_hosts: [\"\"]}]\n", "type=\"ax\""},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\ndefault_backend: other\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "default_backend"},
 	} {
 		if _, err := ParseConfig([]byte(tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("got err=%v, want substring %q", err, tc.want)
+			t.Fatalf("yaml=%q: got err=%v, want substring %q", tc.yaml, err, tc.want)
 		}
 	}
 }
@@ -247,15 +259,17 @@ func TestGatewayServesCachedEventsWhenBackendDown(t *testing.T) {
 }
 
 type fakeAXHarness struct {
-	mu                                     sync.Mutex
-	now                                    atomic.Int64
-	pendingPerm, decidedID                 string
-	suspends, resumes, deletes, routerHits atomic.Int32
-	failResult                             atomic.Bool
-	tasks                                  map[string]bool
-	onDelete                               func(string)
-	events                                 []eventlog.Envelope
+	mu                                             sync.Mutex
+	now                                            atomic.Int64
+	pendingPerm, decidedID                         string
+	suspends, resumes, deletes, routerHits, closes atomic.Int32
+	failResult                                     atomic.Bool
+	tasks                                          map[string]bool
+	onDelete                                       func(string)
+	events                                         []eventlog.Envelope
 }
+
+func (h *fakeAXHarness) Close() error { h.closes.Add(1); return nil }
 
 func (h *fakeAXHarness) Now() time.Time { return time.Unix(0, h.now.Load()).UTC() }
 func (h *fakeAXHarness) Advance(d time.Duration, gw *Server) {
@@ -382,9 +396,14 @@ func newAXGatewayHarness(t *testing.T, suspendIdle bool) (*fakeAXHarness, *Serve
 }
 
 func TestSuspendAfterIdleWaiting(t *testing.T) {
-	h, gw, _, _, job := newAXGatewayHarness(t, true)
+	h, gw, ts, _, job := newAXGatewayHarness(t, true)
 	if evs := must(gw.reg.Events(t.Context(), job.ID, 0)); h.suspends.Load() != 1 || evs[len(evs)-1].Type != "task_suspended" || !strings.Contains(mustJSON(evs[len(evs)-1].Payload), "waiting_for_input") {
 		t.Fatalf("suspends=%d evs=%+v", h.suspends.Load(), evs)
+	}
+	ts.Close()
+	must(0, gw.Close())
+	if h.closes.Load() == 0 {
+		t.Fatal("expected Server.Close to close io.Closer backends")
 	}
 }
 

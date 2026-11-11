@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/jobs"
 	"gopkg.in/yaml.v3"
 )
@@ -31,11 +32,7 @@ const (
 )
 
 // DefaultEgressHosts is the default TLS passthrough allowlist for AX tasks.
-var DefaultEgressHosts = []string{
-	"github.com", "api.github.com", "codeload.github.com",
-	"proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
-	"generativelanguage.googleapis.com", "openrouter.ai",
-}
+var DefaultEgressHosts = slices.Clone(axbackend.DefaultEgressHosts)
 
 // AuthConfig configures client authentication for glue-gateway.
 type AuthConfig struct {
@@ -63,19 +60,18 @@ type ResourcesConfig struct {
 
 // BackendConfig configures one upstream job execution backend.
 type BackendConfig struct {
-	Name, Type, Atespace, Image, Substrate, Router string
-	URL                                            string          `yaml:"url" json:"url,omitempty"`
-	Token                                          string          `yaml:"token" json:"-"`
-	Resources                                      ResourcesConfig `json:"resources,omitempty"`
-	EgressHosts                                    []string        `yaml:"egress_hosts" json:"egress_hosts,omitempty"`
-	AXServer                                       string          `yaml:"ax_server" json:"ax_server,omitempty"`
-	CertFile                                       string          `yaml:"cert_file" json:"-"`
-	CAFile                                         string          `yaml:"ca_file" json:"-"`
-	TokenFile                                      string          `yaml:"token_file" json:"-"`
-	SuspendAfter                                   time.Duration   `yaml:"suspend_after" json:"suspend_after,omitempty"`
-	ResumeTimeout                                  time.Duration   `yaml:"resume_timeout" json:"resume_timeout,omitempty"`
-	RetainTasks                                    time.Duration   `yaml:"retain_tasks" json:"retain_tasks,omitempty"`
-	SuspendOnFinish                                *bool           `yaml:"suspend_on_finish" json:"suspend_on_finish,omitempty"`
+	Name, Type, Atespace, Image string
+	URL                         string          `yaml:"url" json:"url,omitempty"`
+	Token                       string          `yaml:"token" json:"-"`
+	Resources                   ResourcesConfig `json:"resources,omitempty"`
+	EgressHosts                 []string        `yaml:"egress_hosts" json:"egress_hosts,omitempty"`
+	AXServer                    string          `yaml:"ax_server" json:"ax_server,omitempty"`
+	KubeConfig                  string          `yaml:"kube_config" json:"-"`
+	KubeContext                 string          `yaml:"kube_context" json:"kube_context,omitempty"`
+	SuspendAfter                time.Duration   `yaml:"suspend_after" json:"suspend_after,omitempty"`
+	ResumeTimeout               time.Duration   `yaml:"resume_timeout" json:"resume_timeout,omitempty"`
+	RetainTasks                 time.Duration   `yaml:"retain_tasks" json:"retain_tasks,omitempty"`
+	SuspendOnFinish             *bool           `yaml:"suspend_on_finish" json:"suspend_on_finish,omitempty"`
 }
 
 // Config is the top-level YAML configuration for glue-gateway.
@@ -143,11 +139,11 @@ func (cfg Config) Validate() (Config, error) {
 	}
 	cfg.Auth.SessionAbsoluteTTL, cfg.Auth.SessionIdleTTL, cfg.Auth.RateLimitPerMin = cmp.Or(cfg.Auth.SessionAbsoluteTTL, DefaultSessionAbsoluteTTL), cmp.Or(cfg.Auth.SessionIdleTTL, DefaultSessionIdleTTL), cmp.Or(cfg.Auth.RateLimitPerMin, DefaultAuthRateLimit)
 	cfg.Auth.AuthorizeURL, cfg.Auth.TokenURL, cfg.Auth.UserURL = cmp.Or(strings.TrimSpace(cfg.Auth.AuthorizeURL), "https://github.com/login/oauth/authorize"), cmp.Or(strings.TrimSpace(cfg.Auth.TokenURL), "https://github.com/login/oauth/access_token"), cmp.Or(strings.TrimSpace(cfg.Auth.UserURL), "https://api.github.com/user")
-	cfg.Credentials.GitHubToken = cmp.Or(strings.TrimSpace(cfg.Credentials.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")))
+	cfg.Credentials.GitHubToken = cmp.Or(strings.TrimSpace(cfg.Credentials.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN")))
 	if cfg.Credentials.ProviderKeys == nil {
 		cfg.Credentials.ProviderKeys = map[string]string{}
 	}
-	for p, env := range map[string]string{"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "nvidia": "NVIDIA_API_KEY"} {
+	for p, env := range map[string]string{"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "nvidia": "NVIDIA_API_KEY", "codex": "OPENAI_API_KEY"} {
 		if cfg.Credentials.ProviderKeys[p] = cmp.Or(strings.TrimSpace(cfg.Credentials.ProviderKeys[p]), strings.TrimSpace(os.Getenv(env))); cfg.Credentials.ProviderKeys[p] == "" {
 			delete(cfg.Credentials.ProviderKeys, p)
 		}
@@ -206,18 +202,19 @@ func validateBackend(b *BackendConfig) bool {
 	if b.Type == "local" {
 		return b.URL != "" && b.Token != ""
 	}
-	if b.Image = strings.TrimSpace(b.Image); b.Type != "ax" || b.Image == "" || b.URL != "" {
+	b.Image = cmp.Or(strings.TrimSpace(b.Image), axbackend.DefaultImage())
+	if b.Type != "ax" || b.Image == "" || b.URL != "" {
 		return false
 	}
 	b.Atespace = cmp.Or(strings.TrimSpace(b.Atespace), "default")
-	b.AXServer = cmp.Or(strings.TrimSpace(b.AXServer), "ax-server.ax-system:8080")
-	b.Substrate = cmp.Or(strings.TrimSpace(b.Substrate), "api.ate-system.svc.cluster.local:443")
-	b.Router = cmp.Or(strings.TrimSpace(b.Router), "atenet-router.ate-system:8444")
+	b.AXServer = strings.TrimSpace(b.AXServer)
+	b.KubeConfig = strings.TrimSpace(b.KubeConfig)
+	b.KubeContext = strings.TrimSpace(b.KubeContext)
 	b.Resources.CPU = cmp.Or(strings.TrimSpace(b.Resources.CPU), strings.TrimSpace(b.Resources.Limits.CPU), "4")
 	b.Resources.Memory = cmp.Or(strings.TrimSpace(b.Resources.Memory), strings.TrimSpace(b.Resources.Limits.Memory), "8Gi")
 	b.Resources.Limits = ResourceLimits{}
 	if len(b.EgressHosts) == 0 {
-		b.EgressHosts = slices.Clone(DefaultEgressHosts)
+		b.EgressHosts = slices.Clone(axbackend.DefaultEgressHosts)
 	}
 	for i, h := range b.EgressHosts {
 		if b.EgressHosts[i] = strings.TrimSpace(h); b.EgressHosts[i] == "" {

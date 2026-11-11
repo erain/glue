@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=glue
 Group=glue
+Environment=GLUE_CONFIG_DIR=/var/lib/glue-gateway/config
 EnvironmentFile=-/etc/glue-gateway/gateway.env
 ExecStart=/usr/local/bin/glue-gateway --config /etc/glue-gateway/gateway.yaml
 Restart=on-failure

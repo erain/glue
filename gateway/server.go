@@ -15,13 +15,15 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/erain/glue/gateway/backend/ax"
+	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/jobs"
@@ -67,6 +69,13 @@ type Server struct {
 // Routes returns a copy of all HTTP routes registered on the gateway Server.
 func (s *Server) Routes() []Route { return slices.Clone(gatewayRoutes) }
 
+func ghAuthToken(parent context.Context) string {
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+	return strings.TrimSpace(string(out))
+}
+
 // NewServer validates configuration, opens the registry, and initializes backends.
 func NewServer(cfg Config) (*Server, error) {
 	cfg, err := cfg.Validate()
@@ -78,6 +87,7 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	reg.now = cfg.Now
+	ctx, cancel := context.WithCancel(context.Background())
 	backends := make(map[string]Backend, len(cfg.Backends))
 	for _, b := range cfg.Backends {
 		if cb := cfg.CustomBackends[b.Name]; cb != nil {
@@ -89,9 +99,23 @@ func NewServer(cfg Config) (*Server, error) {
 			continue
 		}
 		name := b.Name
-		axb, err := ax.NewBackend(ax.Options{
-			Atespace: b.Atespace, Image: b.Image, CPU: b.Resources.CPU, Memory: b.Resources.Memory, EgressHosts: b.EgressHosts,
-			AXServer: b.AXServer, Substrate: b.Substrate, Router: b.Router, CertFile: b.CertFile, CAFile: b.CAFile, TokenFile: b.TokenFile, Secret: cmp.Or(cfg.Auth.Token, cfg.Auth.ClientSecret), Credentials: cfg.Credentials,
+		creds := cfg.Credentials
+		if creds.GitHubToken == "" {
+			creds.GitHubToken = ghAuthToken(ctx)
+		}
+		axb, err := axbackend.NewBackend(ctx, axbackend.Options{
+			Connect: axbackend.ConnectOptions{
+				AXServer:    b.AXServer,
+				KubeConfig:  b.KubeConfig,
+				KubeContext: b.KubeContext,
+				Atespace:    b.Atespace,
+			},
+			Image:       b.Image,
+			CPU:         b.Resources.CPU,
+			Memory:      b.Resources.Memory,
+			EgressHosts: b.EgressHosts,
+			CacheDir:    filepath.Join(cfg.StateDir, "ax-jobs", name),
+			Credentials: creds,
 			GetJob: func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error) {
 				r, e := reg.GetJob(ctx, id)
 				return r.Spec, r.Status, e
@@ -101,12 +125,17 @@ func NewServer(cfg Config) (*Server, error) {
 			},
 		})
 		if err != nil {
+			cancel()
+			for _, open := range backends {
+				if c, ok := open.(io.Closer); ok {
+					_ = c.Close()
+				}
+			}
 			_ = reg.Close()
 			return nil, err
 		}
 		backends[b.Name] = axb
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg: cfg, reg: reg, backends: backends, ctx: ctx, cancel: cancel, watchers: map[string]bool{},
 		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, orphans: []string{}, rateHits: map[string][]time.Time{}, notify: make(chan struct{}),
@@ -633,7 +662,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		id, _ := jobs.NewID()
 		created, err := b.Create(r.Context(), cmp.Or(strings.TrimSpace(spec.ID), id), spec)
-		_, isAX := b.(*ax.Backend)
+		_, isAX := b.(*axbackend.Backend)
 		if err == nil && !isAX {
 			_, err = s.reg.CreateJob(r.Context(), Record{ID: created.ID, Backend: name, BackendRef: created.ID, Owner: sess.Login, Spec: created.Spec, Status: created.Status, CreatedAt: created.CreatedAt, UpdatedAt: created.UpdatedAt})
 		}
@@ -674,7 +703,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b := s.backends[rec.Backend]
 	switch r.Method + " " + sub {
 	case "GET ":
-		if _, isAX := b.(*ax.Backend); isAX && !isTerminal(rec.Status) && rec.Status != jobs.Suspended && !rec.TaskDeleted {
+		if _, isAX := b.(*axbackend.Backend); isAX && !isTerminal(rec.Status) && rec.Status != jobs.Suspended && !rec.TaskDeleted {
 			if st, serr := b.Status(r.Context(), id); serr == nil && st != "" && st != rec.Status {
 				_ = s.reg.UpsertStatus(r.Context(), id, rec.Backend, rec.Spec, st)
 			}

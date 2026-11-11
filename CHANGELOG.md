@@ -16,6 +16,17 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- **Breaking:** Remove `glue-system` Kubernetes deployment manifests
+  (`deploy/ax/gateway/`, `deploy/cloudflared/manifests.yaml`,
+  `scripts/ax-dev/deploy-gateway.sh`, `make ax-dev-gateway`) and duplicate
+  package `gateway/backend/ax`, refactoring the optional host/VM `glue-gateway`
+  onto `internal/axbackend` with pure `type: ax` configuration (`atespace`,
+  `image` defaulting via `axbackend.DefaultImage()`, `resources`, `egress_hosts`,
+  optional `ax_server` / `kube_config` / `kube_context`; legacy `substrate`,
+  `router`, `cert_file`, `ca_file`, and `token_file` YAML keys are removed) and
+  updating `scripts/ax-dev/e2e/submit.sh` and `suspend-resume.sh` for direct CLI
+  and out-of-cluster gateway verification.
+
 - Enable direct Laptop-to-AX job execution in `cmd/glue` via `glue --remote "<objective>"`
   and `glue job <subcommand>` (`--ax`, `--kubeconfig`, `--context`, `--atespace`,
   `--image`, `--env`), with automatic git `origin` SSH-to-HTTPS URL normalization,
