@@ -21,6 +21,24 @@ import (
 	"github.com/erain/glue/jobs"
 )
 
+type jobAPI interface {
+	Submit(ctx context.Context, spec jobs.Spec, start bool) (jobs.Job, error)
+	Start(ctx context.Context, id string) (jobs.Job, error)
+	List(ctx context.Context, f jobs.Filter) ([]jobs.Job, error)
+	Show(ctx context.Context, id string) (jobs.Detail, error)
+	Permissions(ctx context.Context, id, state string) ([]jobs.PermissionInfo, error)
+	Result(ctx context.Context, id string) (jobs.Result, error)
+	Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error
+	Say(ctx context.Context, id, text string) error
+	Continue(ctx context.Context, id, text string, maxIterations int) error
+	Cancel(ctx context.Context, id string) error
+	Delete(ctx context.Context, id string) error
+	StreamEvents(ctx context.Context, id string, after int64, handle func(eventlog.Envelope) error) error
+	LoadSeq(id string) int64
+	SaveSeq(id string, seq int64) error
+	Close() error
+}
+
 var (
 	jobSelectModel, jobIsTTY = selectModel, isFileTTY
 	errJobDetached           = errors.New("job attach detached")
@@ -37,6 +55,16 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.StringVar(&conn.ServerURL, "server", "", "job server URL")
 	fs.StringVar(&conn.Token, "token", "", "bearer token")
 	fs.StringVar(&conn.MetadataPath, "metadata", conn.MetadataPath, "local daemon metadata JSON path")
+	var remote remoteFlag
+	var target jobTargetOpts
+	var envs envFiles
+	fs.Var(&remote, "remote", "submit job directly to AX")
+	fs.BoolVar(&target.ax, "ax", false, "force direct AX execution")
+	fs.StringVar(&target.kubeconfig, "kubeconfig", "", "kubeconfig path")
+	fs.StringVar(&target.kubectx, "context", "", "Kubernetes context")
+	fs.StringVar(&target.atespace, "atespace", "default", "AX atespace")
+	fs.StringVar(&target.image, "image", "", "AX task image")
+	fs.Var(&envs, "env", "env file path; repeatable")
 	repo, objective, baseRef, backend := fs.String("repo", "", "repo"), fs.String("objective", "", "objective"), fs.String("base", "", "base ref"), fs.String("backend", "", "backend")
 	provider, model, thinking := fs.String("provider", "", "provider"), fs.String("model", "", "model"), fs.String("thinking", "", "thinking")
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
@@ -49,6 +77,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	pos, err := parseInterspersed(fs, args)
 	if err != nil || len(pos) == 0 {
 		return err
+	}
+	fs.Visit(func(f *flag.Flag) { target.metadataExplicit = target.metadataExplicit || f.Name == "metadata" })
+	if len(envs) > 0 {
+		if err := loadEnvFiles(envs); err != nil {
+			return err
+		}
 	}
 	sub, pos := pos[0], pos[1:]
 	if sub == "login" {
@@ -78,23 +112,27 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		*provider, *model, *thinking = sel.Provider, sel.Model, sel.Thinking
 	}
-	c, err := jobclient.New(conn, httpClient)
+	target.conn, target.remote, target.backend = conn, remote.enabled, *backend
+	c, directAX, err := resolveJobAPI(ctx, target, httpClient)
 	if err != nil {
 		return err
 	}
+	defer c.Close()
 	switch sub {
 	case "submit":
-		obj, r := cmp.Or(strings.TrimSpace(*objective), strings.TrimSpace(strings.Join(pos, " "))), strings.TrimSpace(*repo)
-		if r == "" || obj == "" {
-			return errors.New("missing required --repo and --objective")
+		obj := cmp.Or(strings.TrimSpace(*objective), strings.TrimSpace(remote.objective), strings.TrimSpace(strings.Join(pos, " ")))
+		repoSpec, err := resolveSubmitRepo(ctx, directAX, remote.enabled, *backend, *repo, *baseRef, obj)
+		if err != nil {
+			return err
 		}
 		var verify [][]string
 		for _, raw := range verifyRaw {
-			verify = append(verify, strings.Fields(raw))
+			if fields := strings.Fields(raw); len(fields) > 0 {
+				verify = append(verify, fields)
+			}
 		}
-		repoSpec := jobs.RepoSpec{Path: r, BaseRef: strings.TrimSpace(*baseRef)}
-		if strings.Contains(r, "://") || (!strings.HasPrefix(r, "/") && !strings.HasPrefix(r, ".") && strings.Contains(r, ":") && strings.Contains(r, "@")) {
-			repoSpec = jobs.RepoSpec{URL: r, BaseRef: strings.TrimSpace(*baseRef)}
+		if strings.TrimSpace(*deliver) == "pr" {
+			*deliver = "draft_pr"
 		}
 		job, err := c.Submit(ctx, jobs.Spec{
 			Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
@@ -113,7 +151,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return attachJob(ctx, c, pos[0], stdin, stdout, stderr)
 	case "start":
 		job, err := c.Start(ctx, pos[0])
-		fmt.Fprintf(stdout, "%s\t%s\n", job.ID, job.Status)
+		if err == nil {
+			fmt.Fprintf(stdout, "%s\t%s\n", job.ID, job.Status)
+		}
 		return err
 	case "list":
 		list, err := c.List(ctx, jobs.Filter{Status: jobs.Status(strings.TrimSpace(*status)), Limit: *limit, Before: strings.TrimSpace(*before)})
@@ -166,6 +206,10 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
 		if !strings.HasPrefix(args[i], "-") {
 			pos = append(pos, args[i])
 		} else if flags = append(flags, args[i]); !strings.Contains(args[i], "=") && i+1 < len(args) {
@@ -184,7 +228,7 @@ func writeJSONOrErr(w io.Writer, v any, err error) error {
 	}
 	return err
 }
-func attachJob(ctx context.Context, c *jobclient.Client, id string, stdin io.Reader, stdout, stderr io.Writer) error {
+func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if stdin == nil {
 		stdin = strings.NewReader("")
 	}
@@ -220,7 +264,7 @@ func attachJob(ctx context.Context, c *jobclient.Client, id string, stdin io.Rea
 			return err
 		}
 		if err == nil && after > 0 {
-			if d, showErr := c.Show(ctx, id); showErr == nil && d.Status != jobs.Created && d.Status != jobs.Running && d.Status != jobs.WaitingForInput && d.Status != jobs.Suspended && after >= d.LastSeq {
+			if d, showErr := c.Show(ctx, id); showErr == nil && d.Status != "" && d.Status != jobs.Created && d.Status != jobs.Running && d.Status != jobs.WaitingForInput && d.Status != jobs.WaitingForCredentials && d.Status != jobs.Suspended && after >= d.LastSeq {
 				return nil
 			}
 		}
@@ -235,7 +279,7 @@ func attachJob(ctx context.Context, c *jobclient.Client, id string, stdin io.Rea
 		}
 	}
 }
-func renderJobEvent(ctx context.Context, c *jobclient.Client, id string, ev eventlog.Envelope, wroteDelta *bool, input *bufio.Reader, stdout, stderr io.Writer) error {
+func renderJobEvent(ctx context.Context, c jobAPI, id string, ev eventlog.Envelope, wroteDelta *bool, input *bufio.Reader, stdout, stderr io.Writer) error {
 	if ev.Type == string(glue.EventTextDelta) {
 		if delta := payloadString(ev.Payload, "delta"); delta != "" && (ev.Phase == "" || ev.Phase == "maker") {
 			fmt.Fprint(stdout, delta)

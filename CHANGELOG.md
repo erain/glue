@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Enable direct Laptop-to-AX job execution in `cmd/glue` via `glue --remote "<objective>"`
+  and `glue job <subcommand>` (`--ax`, `--kubeconfig`, `--context`, `--atespace`,
+  `--image`, `--env`), with automatic git `origin` SSH-to-HTTPS URL normalization,
+  default remote base branch detection, and in-memory credential pickup from env
+  vars or `gh auth token` while preserving `--server` and local `glue serve` workflows.
+
 - Add direct AX coding-job lifecycle and stateless task discovery in
   `internal/axbackend` (`Backend`, `NewBackend`, `DefaultImage`, `SubmitUnknown`)
   supporting ordered `Workspace` + `Task` provisioning, egress setup before

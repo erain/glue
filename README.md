@@ -491,10 +491,16 @@ go run ./cmd/glue goal --coding --yolo --worktree "Make the linter pass on ./...
 go run ./cmd/glue goal --list
 go run ./cmd/glue goal --resume
 
-# Fire and forget a coding job (detach with Ctrl-C, reattach from any terminal, or open http://127.0.0.1:8787 in a browser):
+# Launch a coding job directly on AX from a git checkout (zero gateway deployment needed):
+id=$(go run ./cmd/glue --remote "Add a Makefile test target" --verify "make test" --deliver pr)
+go run ./cmd/glue job list
+go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without cancelling
+go run ./cmd/glue job result "$id"
+
+# Or run jobs against a local HTTP+SSE daemon (or open http://127.0.0.1:8787 in a browser):
 go run ./cmd/glue serve --coding --state-dir .glue/state --listen 127.0.0.1:8787 --token "$GLUE_TOKEN" &
 id=$(go run ./cmd/glue job submit --server http://127.0.0.1:8787 --repo . --objective "Add a Makefile test target")
-go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without cancelling
+go run ./cmd/glue job attach "$id"
 go run ./cmd/glue job result "$id"
 ```
 
@@ -610,7 +616,7 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 Glue focuses on the **agent framework** and the **coding agent** (interactive
 TUI, coding tools, and autonomous goals). Peggy is retired. Both local coding
 and asynchronous remote execution through [AX](https://github.com/google/ax)
-(`glue job`, `glue-gateway`, and `webui`) are available — **[see it in action](docs/demo-ax-develops-ax.md)**.
+(`glue --remote`, `glue job`, `glue-gateway`, and `webui`) are available — **[see it in action](docs/demo-ax-develops-ax.md)**.
 Execution mode is independent of model/provider selection. The [project plan](docs/project-plan.md)
 and [remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
 [tracker #392](https://github.com/erain/glue/issues/392) and

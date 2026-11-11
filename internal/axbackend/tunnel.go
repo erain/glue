@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -213,7 +214,7 @@ func Connect(ctx context.Context, opts ConnectOptions) (*Connection, error) {
 			inCluster = false
 		}
 	}
-	axTarget, routerAddr := cmp.Or(strings.TrimSpace(opts.AXServer), envOr("AX_SERVER")), strings.TrimSpace(opts.RouterAddr)
+	axTarget, routerAddr := cmp.Or(strings.TrimSpace(opts.AXServer), envOr("GLUE_AX_SERVER", "AX_SERVER_ADDR", "AX_SERVER")), strings.TrimSpace(opts.RouterAddr)
 	needAX, needRouter := opts.AXClient == nil && axTarget == "" && !inCluster, routerAddr == "" && opts.RouterDialContext == nil && !inCluster
 	needCtrl, needCreds := opts.ControlClient == nil && !inCluster, opts.RouterTLS == nil || opts.ControlClient == nil
 	var kubeCfg, kubeCtx, ctrlAddr string
@@ -254,7 +255,23 @@ func Connect(ctx context.Context, opts ConnectOptions) (*Connection, error) {
 			ctrlRootCAs = initTLS.RootCAs
 		}
 	}
-	rt, _ := NewRouterTransport(RouterOptions{RouterAddr: routerAddr, Atespace: opts.Atespace, TLSConfig: initTLS, GetTLSConfig: getRouterTLS, DialContext: opts.RouterDialContext})
+	dialRouter := opts.RouterDialContext
+	if needRouter {
+		var cur atomic.Value
+		cur.Store(routerAddr)
+		dialRouter = func(dCtx context.Context, network, _ string) (net.Conn, error) {
+			if c, err := (&net.Dialer{}).DialContext(dCtx, network, cur.Load().(string)); err == nil {
+				return c, nil
+			}
+			newAddr, err := ensureTunnel(dCtx, kubeCfg, kubeCtx, "ate-system", "atenet-router", 8444, "")
+			if err != nil {
+				return nil, err
+			}
+			cur.Store(newAddr)
+			return (&net.Dialer{}).DialContext(dCtx, network, newAddr)
+		}
+	}
+	rt, _ := NewRouterTransport(RouterOptions{RouterAddr: routerAddr, Atespace: opts.Atespace, TLSConfig: initTLS, GetTLSConfig: getRouterTLS, DialContext: dialRouter})
 	conn := &Connection{Atespace: opts.Atespace, KubeConfig: kubeCfg, KubeContext: kubeCtx, RouterAddr: rt.opts.RouterAddr, RouterTLS: rt.baseTLS.Clone(), AX: opts.AXClient, Control: opts.ControlClient, RouterHTTP: &http.Client{Transport: rt}}
 	if conn.AX == nil {
 		axCli, cc, err := DialAX(axTarget)
