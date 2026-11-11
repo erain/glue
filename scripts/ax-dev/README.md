@@ -1,27 +1,39 @@
-# Local AX Cluster on kind (`scripts/ax-dev`)
+# Standing Local AX Cluster on kind (`scripts/ax-dev`)
 
-Reproducible single-host [kind](https://kind.sigs.k8s.io/) cluster running pinned [Agent Substrate](https://github.com/agent-substrate/substrate) (`v1.0.0-rc.1`) and [AX](https://github.com/google/ax) (`241bc4d`) for Glue remote-mode development.
+Reproducible standing [kind](https://kind.sigs.k8s.io/) cluster (`kind-glue-ax`) running pinned [Agent Substrate](https://github.com/agent-substrate/substrate) (`v1.0.0` GA, `b34fbee74290`) and [AX](https://github.com/google/ax) (`56bd0fc55574`) for Glue remote-mode development and instant end-to-end verification.
 
 ## Commands
 
 | Command | Make target | Description |
 |---|---|---|
 | `scripts/ax-dev/prereqs.sh` | `make ax-dev-prereqs` | Verify Docker, `kubectl`, Go 1.27 toolchain, kernel >= 6.8, cgroup v2, disk >= 40 GB, `/dev/kvm`, and `inotify` limits |
-| `scripts/ax-dev/up.sh` | `make ax-dev-up` | Provision `glue-ax`, install Substrate + AX, build/push `ax-server` and `ax-task-runner` to `localhost:5001`, write `${STATE}/images.env` (idempotent) |
-| `scripts/ax-dev/build-task-image.sh` | `make ax-dev-task-image` | Build `deploy/ax/task-image/Dockerfile` from `ax-task-runner` digest, push `localhost:5001/glue-task`, record `GLUE_TASK_IMAGE` in `${STATE}/images.env` |
-| `scripts/ax-dev/status.sh` | `make ax-dev-status` | Verify `ate-system`, `ax-system`, and `ax-workers` (`GLUE_AX_WORKERS`, default 4) are Ready |
-| `scripts/ax-dev/smoke.sh` | `make ax-dev-smoke` | Run the 6-assertion platform smoke test (apply/resume/ssh, default-deny egress, `tls_passthrough` egress, `kubectl ate proxy` ingress on `:8080`, suspend/resume `/workspace` durability, delete) |
+| `source scripts/ax-dev/env.sh` | `make ax-dev-env` | Export `KUBECONFIG`, `KUBE_CONTEXT`, `GLUE_AX_CONTEXT`, `GLUE_TASK_IMAGE`, and `PATH` from `${STATE}` without touching `~/.kube/config` |
+| `scripts/ax-dev/up.sh` | `make ax-dev-up` | Provision `glue-ax`, install Substrate `v1.0.0` release images + AX (`56bd0fc`), build/push `ax-server` and `ax-task-runner` to `localhost:5001`, write `${STATE}/images.env` (idempotent) |
+| `scripts/ax-dev/build-task-image.sh` | `make ax-dev-task-image` | Build `deploy/ax/task-image/Dockerfile` from `ax-task-runner` digest, push `localhost:5001/glue-task:dev`, record `GLUE_TASK_IMAGE` in `${STATE}/images.env` |
+| `scripts/ax-dev/status.sh` | `make ax-dev-status` / `make ax-dev-ready` | Verify `ate-system`, `ax-system`, and `ax-workers` (`GLUE_AX_WORKERS`, default 4) are Ready (`--quiet` for fast single-line probe) |
+| `scripts/ax-dev/smoke.sh` | `make ax-dev-smoke` | Run the 6-assertion platform smoke test and clean up only its test `Task` + `EgressPolicy`, leaving `glue-ax` warm |
 | `scripts/ax-dev/manual-job.sh` | `make ax-dev-manual-job ARGS="..."` | Run an end-to-end Glue coding job inside an AX `Task` (`Workspace`, `Task`, `EgressPolicy`, `ax resume`, `kubectl ate proxy`, golden boot check, `glue job start/attach/result`; see [`docs/runbooks/ax-manual-job.md`](../../docs/runbooks/ax-manual-job.md)) |
-| `scripts/ax-dev/deploy-gateway.sh` | — | Build, push, and deploy `glue-gateway` into `glue-system` on kind |
-| `scripts/ax-dev/e2e/submit.sh` | — | Submit an AX job through `glue-gateway` on kind and verify draft PR delivery + continuous SSE events |
-| `scripts/ax-dev/e2e/suspend-resume.sh` | — | Verify AX task idle suspend on `waiting_for_input`, read-only registry inspection while suspended, on-demand resume on approve, and suspend on finish |
-| `scripts/ax-dev/down.sh` | `make ax-dev-down` | Tear down `glue-ax`, `kind-registry`, and any leftover port-forwards/tunnels |
+| `scripts/ax-dev/deploy-gateway.sh` | `make ax-dev-gateway` | Build, push, and deploy `glue-gateway` into `glue-system` on kind |
+| `scripts/ax-dev/e2e/submit.sh` | `make ax-dev-e2e-submit ARGS="..."` | Submit an AX job through `glue-gateway`, verify draft PR delivery + continuous SSE events, and delete the test job (`KEEP_E2E_JOB=true` to retain) |
+| `scripts/ax-dev/e2e/suspend-resume.sh` | `make ax-dev-e2e-suspend ARGS="..."` | Verify AX task idle suspend on `waiting_for_input`, read-only inspection while suspended, on-demand resume, suspend on finish, and test job cleanup |
+| `scripts/ax-dev/down.sh` | `make ax-dev-down` | Explicitly tear down `glue-ax`, `kind-registry`, and any leftover port-forwards/tunnels |
 
-Cached sources (`substrate`, `ax`), host binaries (`kind`, `kubectl-ate`, `ax`), `kubeconfig`, and `images.env` live under `STATE=${XDG_CACHE_HOME:-~/.cache}/glue/ax-dev`. Source `scripts/ax-dev/versions.env` to add `${STATE}/bin` and `KUBECONFIG` to your shell.
+## Standing Cluster Isolation
+
+Cached sources (`substrate`, `ax`), host binaries (`kind`, `kubectl-ate`, `ax`), `kubeconfig`, and `images.env` live under `STATE=${XDG_CACHE_HOME:-~/.cache}/glue/ax-dev`:
+
+```sh
+source scripts/ax-dev/env.sh
+# or: eval "$(make -s ax-dev-env)"
+```
+
+- **Host kubeconfig untouched:** `up.sh` and `env.sh` always isolate `KUBECONFIG` to `${STATE}/kubeconfig` (`GLUE_AX_KUBECONFIG`) and set `KUBE_CONTEXT=kind-glue-ax` (`GLUE_AX_CONTEXT=kind-glue-ax`), never modifying `~/.kube/config` or interfering with other kind clusters on the host.
+- **Warm standing lifecycle:** `smoke.sh`, `e2e/submit.sh`, and `e2e/suspend-resume.sh` delete only their per-run `Task`, `Workspace`, and `EgressPolicy` resources on exit and leave `kind-glue-ax` running for subsequent tests. Use `make ax-dev-down` only when you explicitly want to remove the cluster.
 
 ## Cluster Configuration & Operational Notes
 
-- **Ingress allowlist (`--ingress-allowed-spiffe-ids`):** permits `spiffe://cluster.local/ns/ax-system/sa/ax-server` (`ax ssh`), `spiffe://cluster.local/ns/ate-system/sa/atenet-client` (`kubectl ate proxy`), and `spiffe://cluster.local/ns/glue-system/sa/glue-gateway` (`glue-gateway`).
+- **Substrate `v1.0.0` release images:** `up.sh` installs published images from `ghcr.io/agent-substrate/substrate:<tag>` via `ate-setup --image-repo` / `--image-tag` without building Substrate from source.
+- **Ingress allowlist (`--ingress-allowed-spiffe-ids`):** permits `spiffe://cluster.local/ns/ax-system/sa/ax-server` (`ax ssh`), `spiffe://cluster.local/ns/ate-system/sa/atenet-client` (`kubectl ate proxy` and client router tunnels), and `spiffe://cluster.local/ns/glue-system/sa/glue-gateway` (`glue-gateway`).
 - **Credential provider:** `--credential-provider='{"name":"k8s.io"}'` deploys Substrate's bundled Kubernetes Secrets egress credential provider.
 - **Worker pool:** `ax-workers` runs `GLUE_AX_WORKERS` (default `4`) gVisor replicas with node `fs.inotify.max_user_instances=8192`.
 - **Default-deny egress:** tasks have no outbound network access (including DNS) until a per-actor `EgressPolicy` is created via `kubectl ate create egress-policy <task> -a <atespace> -f -`.

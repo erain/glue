@@ -16,6 +16,15 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Upgrade `scripts/ax-dev` (`kind-glue-ax`) to Agent Substrate `v1.0.0` GA
+  (`b34fbee74290`) published release images and AX `56bd0fc55574`, add
+  `scripts/ax-dev/env.sh` (`make ax-dev-env`) to export `KUBECONFIG`,
+  `KUBE_CONTEXT`, `GLUE_AX_CONTEXT`, and `GLUE_TASK_IMAGE` from
+  `~/.cache/glue/ax-dev` without modifying `~/.kube/config`, add `status.sh
+  --quiet` (`make ax-dev-ready`), and ensure `smoke.sh` and `scripts/ax-dev/e2e/*`
+  clean up per-test `Task`/`Workspace`/`EgressPolicy` resources while keeping
+  `kind-glue-ax` running as a warm standing cluster.
+
 - Add the end-to-end showcase runbook, recorded live AX execution (`job-628de8c215a8`
   opening draft PR `erain/glue-sandbox#5`), four recorded failure drills (verify
   failure `blocked`, phone cancel, 2-minute disconnect replay via `Last-Event-ID`,
