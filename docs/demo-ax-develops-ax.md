@@ -1,6 +1,6 @@
-# Demo & Runbook: Use AX to Develop AX with Glue (`#426`)
+# Demo & Runbook: Use AX to Develop AX with Glue
 
-End-to-end showcase for Glue remote mode ([tracker #402](https://github.com/erain/glue/issues/402), [ADR-0019](adr/0019-remote-jobs-architecture.md)): submit a coding job from a laptop against an [AX](https://github.com/google/ax) cluster, close the laptop, watch and approve a permission request from a phone browser while the AX task suspends on idle wait, and receive a verified upstream draft pull request.
+End-to-end showcase for Glue remote mode ([tracker #402](https://github.com/erain/glue/issues/402), [tracker #526](https://github.com/erain/glue/issues/526), [ADR-0019](adr/0019-remote-jobs-architecture.md), [ADR-0020](adr/0020-ax-first-direct-execution.md)): dispatch a coding job directly from your laptop to an [AX](https://github.com/google/ax) cluster in one command (`glue --remote "<objective>"`), close your lid while it executes autonomously (`auto` policy by default), and inspect or retrieve verified commits and a draft pull request — or optionally attach a host-mode `glue-gateway` for mobile browser approvals and idle-wait task suspension.
 
 ## 1. Pre-Flight Checklist
 
@@ -11,53 +11,73 @@ End-to-end showcase for Glue remote mode ([tracker #402](https://github.com/erai
    ```
    To run the live showcase without opening noise PRs on `google/ax`, target a fork or sandbox repository (`https://github.com/erain/glue-sandbox`) where your token has push and PR access; the execution path is identical.
 2. **GitHub token and model credentials:**
-   Confirm `gh auth status` includes `repo` scope (`'gist', 'project', 'read:org', 'repo', 'workflow'`) and `GLUE_GITHUB_TOKEN` + `GEMINI_API_KEY` are configured in `glue-gateway-secrets` (pushed in memory to tasks via `POST /v1/credentials`, never stored in `Task.spec.env`).
-3. **Cluster capacity and task resources:**
-   Verify `scripts/ax-dev/status.sh` reports `ate-system`, `ax-system`, `glue-system`, and `ax-workers` (`4` gVisor replicas) Ready, and `ConfigMap/glue-gateway-config` sets `resources: {cpu: "4", memory: "8Gi"}` so AX's unit test suite (`go test ./...`, 16 packages with in-process Substrate fakes) compiles and runs comfortably inside the sandbox.
+   Confirm `gh auth status` includes `repo` scope (`'gist', 'project', 'read:org', 'repo', 'workflow'`) and `GEMINI_API_KEY` (or `OPENROUTER_API_KEY`) is exported in your shell or `~/.env`. `glue --remote` (and the optional host `glue-gateway`) picks up `GLUE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `gh auth token` and provider keys automatically and pushes them in memory to tasks via `POST /v1/credentials` — never storing secrets in `Task.spec.env`.
+3. **Standing AX cluster capacity and task resources:**
+   Load the standing cluster environment and verify `ate-system`, `ax-system`, and `ax-workers` (`4` gVisor replicas) are Ready with zero custom Glue cluster deployments:
+   ```sh
+   source scripts/ax-dev/env.sh
+   scripts/ax-dev/status.sh
+   ```
+   `internal/axbackend` defaults task limits to `cpu: "4", memory: "8Gi"` so AX's unit test suite (`go test ./...`, 16 packages with in-process Substrate fakes) compiles and runs comfortably inside the sandbox.
 4. **Per-task TLS egress allowlist (`tls_passthrough:443`):**
    `github.com`, `api.github.com`, `codeload.github.com`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`, `generativelanguage.googleapis.com`, and `openrouter.ai`.
 
 ## 2. End-to-End Runbook
 
-### Step 1: Pick a Scoped AX Change and Submit from the Laptop
+### Path A (Default): Direct Laptop-to-AX Execution (`glue --remote`)
 
-Pick a small, self-contained AX doc or unit-tested fix (for example, updating the stale `kubectl port-forward -n ate-system svc/atenet-router 8001:80` example in AX's docs to `kubectl ate proxy actor`, keeping `--verify` to the unit tier documented in AX's `AGENTS.md` since AX's `test/e2e` tier requires Docker/kind):
+Pick a scoped AX fix (for example, updating the stale `kubectl port-forward -n ate-system svc/atenet-router 8001:80` example in AX's docs to `kubectl ate proxy actor`, keeping `--verify` to the unit tier documented in AX's `AGENTS.md`) and submit directly to AX — no gateway deployment needed:
 
 ```sh
-glue job login --server "https://${GLUE_PUBLIC_HOST}" --token "${GLUE_PAT}"
+source scripts/ax-dev/env.sh
 
-glue job submit \
-  --server "https://${GLUE_PUBLIC_HOST}" \
-  --backend ax \
+id=$(glue --remote 'Update docs/manifests.md to note that atenet-router requires mTLS via kubectl ate proxy actor rather than plain HTTP port-forward on port 80.' \
   --repo https://github.com/google/ax \
-  --objective 'First run shell_exec with argv ["git", "remote", "-v"] to inspect the repository remote, then update docs/manifests.md to note that atenet-router requires mTLS via kubectl ate proxy actor rather than plain HTTP port-forward on port 80.' \
   --verify 'go build ./cmd/ax ./cmd/ax-server ./cmd/ax-task-runner' \
   --verify 'go test ./...' \
   --verify 'go vet ./...' \
-  --deliver draft_pr \
-  --policy workspace-auto
-```
+  --deliver pr)
 
-Close the terminal. Under `--policy workspace-auto`, workspace file edits and `go` commands are auto-approved (`permission_auto`), whereas `git remote -v` (or `git push` / `curl` / `ssh`) triggers `DecisionAsk` (`waiting_for_input`). With no live SSE viewer attached, `glue-gateway` calls `SuspendTask` after `suspend_after` (`2m` default; `5s` in dev) and records `task_suspended` (`reason: "waiting_for_input"`).
-
-### Step 2: Watch and Approve from a Phone Browser
-
-1. Open `https://<host>` on a phone browser, sign in with GitHub OAuth (or gateway token in dev), and tap the job row (`SUSPENDED – WAITING FOR YOU`).
-2. Inspect the **Checklist**, **Transcript**, and pending **Permission** card (`shell_exec (exec)` — `Target: git remote -v`).
-3. Tap **Allow for session**. `glue-gateway` calls `ResumeTask`, pushes runtime credentials (`POST /v1/credentials`), waits for `job_resumed` (`reason: "restart"`), remaps the approval onto the re-issued permission (`original_permission_id`), and continues the goal loop.
-
-### Step 3: Verify Completion and Upstream Draft PR
-
-When the checker marks all checklist items complete, `glue serve` runs every `--verify` command, commits on `glue/<job-id>`, pushes to `origin` via `GIT_ASKPASS`, and opens a draft PR upstream. `glue-gateway` caches `result.json` in SQLite and suspends the AX task (`reason: "finished"`).
-
-```sh
-glue job result <id> --json | jq '{status, pr_url, verify: [.verify[] | {argv, exit_code}]}'
+glue job attach "$id"          # Ctrl-C detaches anytime without canceling the AX task
+glue job show "$id"            # reconstructs status without waking a suspended sandbox
+glue job result "$id" --json | jq '{status, pr_url, verify: [.verify[] | {argv, exit_code}]}'
 gh pr view <pr-url> --json isDraft,state,title
 ```
 
-## 3. Recorded Live Showcase Execution (`job-628de8c215a8`)
+Under the default `auto` policy, `glue serve` runs inside the isolated AX gVisor sandbox, completes the plan/make/check loop, runs every `--verify` command, commits on `glue/<job-id>`, pushes via `GIT_ASKPASS`, opens an upstream draft PR, and caches `result.json` locally under `~/.config/glue/ax-jobs/`. Run the automated Laptop-to-AX suite anytime with `scripts/ax-dev/e2e/submit.sh`.
 
-Executed on `kind-glue-ax` (`glue-task@sha256:3674fd231190...`, `glue-gateway@sha256:ac622c3f9ecc...`, `gemini-3-flash-preview`, `thinking=medium`, `--policy workspace-auto`, `--deliver draft_pr`) against `https://github.com/erain/glue-sandbox`:
+### Path B (Optional): Mobile Browser Approvals & Idle Suspend (`glue-gateway`)
+
+When you want mobile browser access (`webui`), GitHub OAuth sign-in, or automatic AX task suspension while waiting on interactive permission prompts (`--policy workspace-auto` or `ask-all`), start `glue-gateway` out-of-cluster on a host or VM with pure `type: ax` config (see [`gateway/README.md`](../gateway/README.md), [`docs/runbooks/public-gateway.md`](runbooks/public-gateway.md), and `scripts/ax-dev/e2e/suspend-resume.sh`):
+
+1. Submit with `--server "https://${GLUE_PUBLIC_HOST}" --policy workspace-auto --deliver pr`. Workspace edits and `go` commands auto-approve (`permission_auto`), while `git remote -v` / `curl` / `ssh` pause in `waiting_for_input`; with no live SSE viewer, `glue-gateway` calls `SuspendTask` after `suspend_after` (`2m` default).
+2. Open `https://<host>` on a phone browser, inspect the **Checklist**, **Transcript**, and pending **Permission** card (`SUSPENDED – WAITING FOR YOU`), and tap **Allow for session**.
+3. `glue-gateway` calls `ResumeTask`, pushes runtime credentials (`POST /v1/credentials`), remaps the approval onto the re-issued permission (`original_permission_id`), caches `result.json` in SQLite on completion, and suspends the task (`reason: "finished"`).
+
+## 3. Recorded Live Showcase Executions (`kind-glue-ax`)
+
+**Direct Laptop-to-AX (`job-66b247c96cee`, Substrate `v1.0.0` GA + AX `56bd0fc55574`):** Executed via `scripts/ax-dev/e2e/submit.sh` (`glue --remote ... --deliver draft_pr --verify "go test ./..." --attach`, default `auto` policy, `glue-task@sha256:d9cc2cb9fc15...`, `gemini-3-flash-preview`, `thinking=medium`) against `https://github.com/erain/glue-sandbox`:
+
+```sh
+$ glue job result --ax job-66b247c96cee --json | jq '{job_id, status, branch, head_sha, pr_url, verify}'
+{
+  "job_id": "job-66b247c96cee",
+  "status": "achieved",
+  "branch": "glue/job-66b247c96cee",
+  "head_sha": "4087857e671285e7204dbbf7cfe43ea31f564342",
+  "pr_url": "https://github.com/erain/glue-sandbox/pull/7",
+  "verify": [
+    {
+      "argv": ["go", "test", "./..."],
+      "exit_code": 0,
+      "duration_ms": 632,
+      "output_tail": "ok  \texample.com/sandbox\t(cached)"
+    }
+  ]
+}
+```
+
+**Interactive Suspend/Resume Showcase (`job-628de8c215a8`, `--policy workspace-auto`):**
 
 ```sh
 $ glue job result job-628de8c215a8 --json | jq '{status, pr_url, verify: [.verify[] | {argv, exit_code}]}'
@@ -74,13 +94,6 @@ $ glue job result job-628de8c215a8 --json | jq '{status, pr_url, verify: [.verif
       "exit_code": 0
     }
   ]
-}
-
-$ gh pr view https://github.com/erain/glue-sandbox/pull/5 --json isDraft,state,title
-{
-  "isDraft": true,
-  "state": "OPEN",
-  "title": "All tasks are complete: the git remote was inspected, and README.md was updated with the required AX Showcase section and description."
 }
 ```
 
@@ -100,13 +113,13 @@ $ gh pr view https://github.com/erain/glue-sandbox/pull/5 --json isDraft,state,t
 | Drill | Job ID | Action | Observed Result |
 |---|---|---|---|
 | **1. Verify failure (`blocked` with evidence)** | `job-4c6f33e03a3d` | Submitted with `--verify 'git show HEAD:upstream_release_tag.txt'` and an unmet precondition (`upstream_release_tag.txt` absent from `HEAD`) | Ended in `status: "blocked"` after `3` iterations (`NoProgressLimit = 3`), opened no PR (`pr_url: ""`), and recorded `verify: [{"argv": ["git", "show", "HEAD:upstream_release_tag.txt"], "exit_code": 128, "duration_ms": 30, "output_tail": "fatal: path 'upstream_release_tag.txt' does not exist in 'HEAD'"}]`. |
-| **2. Cancel from phone** | `job-b4f900581d3a` | Paused at `job-b4f900581d3a:permission:25` (`waiting_for_input`), then cancelled via `DELETE /v1/jobs/job-b4f900581d3a` | Transitioned immediately to `status: "canceled"` (`status_reason: "finished"`) and suspended AX task `glue-job-b4f900581d3a` (`phase: Suspended`). |
+| **2. Cancel from phone** | `job-b4f900581d3a` | Paused at `job-b4f900581d3a:permission:25` (`waiting_for_input`), then canceled via `DELETE /v1/jobs/job-b4f900581d3a` | Transitioned immediately to `status: "canceled"` (`status_reason: "finished"`) and suspended AX task `glue-job-b4f900581d3a` (`phase: Suspended`). |
 | **3. Lost connection (2m airplane mode)** | `job-4a1520e4754a` | Disconnected SSE client at `seq = 33` for `126 s` while the job resumed and completed on the cluster, then reconnected with `Last-Event-ID: 33` | Replayed `seq 34..596` (`563` events) in order with zero gaps or duplicates (`{"pre_disconnect_seqs":[1,33],"replayed_first_seq":34,"replayed_last_seq":596,"total_events":596,"contiguous_no_gaps_or_dups":true}`). |
-| **4. Gateway restart mid-job** | `job-4a1520e4754a` | Ran `kubectl -n glue-system rollout restart deployment/glue-gateway` (`glue-gateway-7f44f49895-7vz86` → `glue-gateway-5c95c45b49-g97m6`) while waiting at `job-4a1520e4754a:permission:32` | New gateway pod reloaded `events.sqlite` from PVC `glue-gateway-state`, served `status: "waiting_for_input"` and pending permission `:32` without manual steps, and completed `job-4a1520e4754a` (`status: "achieved"`, `verify[0].exit_code: 0`). |
+| **4. Gateway restart mid-job** | `job-4a1520e4754a` | Restarted `glue-gateway` process while waiting at `job-4a1520e4754a:permission:32` | Restarted gateway reloaded `events.sqlite` from `state_dir`, served `status: "waiting_for_input"` and pending permission `:32` without manual steps, and completed `job-4a1520e4754a` (`status: "achieved"`, `verify[0].exit_code: 0`). |
 
 ## 5. Upstream Feedback for AX (Draft for Owner to Post)
 
-Summary of what Glue needed to run interactive, durable coding jobs on AX (`241bc4d` + Substrate `v1.0.0-rc.1`) and what AX could provide natively:
+Summary of what Glue needed to run interactive, durable coding jobs on AX (`56bd0fc` + Substrate `v1.0.0`) and what AX could provide natively:
 
 1. **Interactive clients, resumable event streams, and permission brokering ([google/ax#430](https://github.com/google/ax/issues/430)):**
    Glue runs `glue serve --jobs` inside the task and mirrors sequenced (`seq 1..N`), `Last-Event-ID`-resumable SSE events into `glue-gateway`'s SQLite cache so mobile browsers and `glue job attach` can disconnect, survive 5-minute `atenet-router` stream timeouts, and replay transcripts while the task is suspended. Native replayable task event logs and interactive approval hooks in AX would let any agent framework use this flow without a custom event-caching gateway.

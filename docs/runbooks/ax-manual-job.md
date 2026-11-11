@@ -1,6 +1,6 @@
 # Runbook: Manual End-to-End Glue Job Inside AX (`scripts/ax-dev/manual-job.sh`)
 
-This runbook documents how to run a Glue coding job end to end inside an [AX](https://github.com/google/ax) `Task` on the local `kind` cluster (`scripts/ax-dev/up.sh`), and records the findings from the Milestone C feasibility gate (`#418`).
+> **Normal workflow:** Use `source scripts/ax-dev/env.sh && glue --remote "<objective>" --attach` (or `scripts/ax-dev/e2e/submit.sh`) to run coding jobs directly on AX via `internal/axbackend` ([ADR-0020](../adr/0020-ax-first-direct-execution.md)). This runbook documents the low-level `ax` / `kubectl ate` plumbing steps exercised by `scripts/ax-dev/manual-job.sh` from the Milestone C feasibility gate (`#418`).
 
 ## Prerequisites
 
