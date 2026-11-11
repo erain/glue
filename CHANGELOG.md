@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Upgrade root `go.mod` to Go 1.27.1 (`github.com/google/ax` `@56bd0fc55574`
+  and `go.ate.dev/substrate v1.0.0`) while keeping root `package glue` free of
+  AX imports, and add `internal/axbackend` (`RouterTransport`, `DialAX`, and
+  internal control dialing) for mTLS HTTP `CONNECT` task routing with dynamic
+  TLS certificate refresh.
+
 - Default Glue coding jobs (`jobs.BuiltInPolicy("")`) and `glue serve --policy`
   to the new `auto` permission profile (`Default: allow`, no `yolo` startup
   warning), support `"*"` in `AllowedBinaries` (`tools/shell`, `tools/coding`,
