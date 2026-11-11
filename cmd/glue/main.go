@@ -111,6 +111,13 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 		printVersion(stdout)
 		return 0
 	}
+	if strings.HasPrefix(args[0], "-") && hasRemoteFlag(args) {
+		if err := jobCommand(ctx, append([]string{"submit"}, args...), stdin, stdout, stderr, client); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 
 	switch args[0] {
 	case "git-askpass":
@@ -249,12 +256,22 @@ func printVersion(w io.Writer) {
 	fmt.Fprintf(w, " · %s\n", runtime.Version())
 }
 
+func hasRemoteFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--" || a == "--remote" || a == "-remote" || strings.HasPrefix(a, "--remote=") || strings.HasPrefix(a, "-remote=") {
+			return a != "--"
+		}
+	}
+	return false
+}
+
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
+  glue --remote "<objective>" [--attach] [--repo <url|dir>] [--base <ref>] [--deliver <none|branch|pr>] [--verify <cmd>] [--policy <name>] [--env <path>]
   glue run --prompt <text> [--provider <name>] [--id <id> | --continue] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]
-  glue job <login|submit|start|list|show|attach|result|approve|deny|say|continue|cancel> [flags]
+  glue job <login|submit|start|list|show|attach|result|approve|deny|say|continue|cancel|delete> [flags]
   glue serve [--jobs] [--job-from-ax] [--provider <name>] [--listen 127.0.0.1:0] [--token-file <path>] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
   glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
