@@ -131,10 +131,12 @@ The module path is `github.com/erain/glue`.
 - `internal/axbackend`: internal AX gRPC (`DialAX`) and control-plane dialing,
   out-of-cluster kubeconfig resolution (`ResolveKubeTarget`), reusable local
   `kubectl port-forward` tunnels (`Connect`, `StopTunnels`), `0600`-cached
-  short-lived `PodCertificateRequest` mTLS + bearer token minting, and HTTP
-  `CONNECT` `RouterTransport` (`ate-target-actor`) with dynamic TLS rotation.
-  Kept strictly internal so root `package glue` has zero imports of AX or
-  Substrate SDKs.
+  short-lived `PodCertificateRequest` mTLS + bearer token minting, HTTP
+  `CONNECT` `RouterTransport` (`ate-target-actor`) with dynamic TLS rotation,
+  and direct AX job lifecycle + stateless task discovery (`Backend`,
+  `NewBackend`, `DefaultImage`) with per-cluster HMAC task tokens and local
+  terminal result caching. Kept strictly internal so root `package glue` has
+  zero imports of AX or Substrate SDKs.
 - `cmd/glue`: local CLI runner and HTTP+SSE daemon (`run` / `serve` /
   `connect`) built on top of the public library.
 
