@@ -42,12 +42,23 @@ log "Building host glue CLI in ${STATE}/bin/glue..."
 export PATH="${STATE}/bin:${PATH}"
 
 TMP_DIR="$(mktemp -d -t glue-ax-suspend-e2e-XXXXXX)"
-GW_PF_PID="" AX_PF_PID=""
+GW_PF_PID="" AX_PF_PID="" JOB_ID=""
 cleanup() {
   local rc=$?
   set +e
+  if [[ "${KEEP_E2E_JOB:-false}" != "true" && -n "${JOB_ID}" ]]; then
+    if [[ -n "${GLUE_SERVER:-}" ]]; then
+      glue job delete --server "${GLUE_SERVER}" "${JOB_ID}" >/dev/null 2>&1 || true
+    fi
+    [[ -n "${AX_PORT:-}" ]] && {
+      ax --server "http://127.0.0.1:${AX_PORT}" --context "${KUBE_CONTEXT}" -a default delete task "glue-${JOB_ID}" >/dev/null 2>&1 || true
+      ax --server "http://127.0.0.1:${AX_PORT}" --context "${KUBE_CONTEXT}" -a default delete workspace "glue-${JOB_ID}-ws" >/dev/null 2>&1 || true
+    }
+    kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "glue-${JOB_ID}" -a default >/dev/null 2>&1 || true
+  fi
   [[ -n "${GW_PF_PID}" ]] && kill "${GW_PF_PID}" >/dev/null 2>&1 && wait "${GW_PF_PID}" 2>/dev/null
   [[ -n "${AX_PF_PID}" ]] && kill "${AX_PF_PID}" >/dev/null 2>&1 && wait "${AX_PF_PID}" 2>/dev/null
+  ax tunnel stop "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
   rm -rf "${TMP_DIR}"
   exit "${rc}"
 }

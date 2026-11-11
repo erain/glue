@@ -27,7 +27,15 @@ log() { printf '\n==> %s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 k() { kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" "$@"; }
 
-[[ -f "${STATE}/gateway.env" ]] || "${AX_DEV_DIR}/deploy-gateway.sh"
+if ! kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
+  "${AX_DEV_DIR}/up.sh"
+fi
+if [[ ! -f "${STATE}/images.env" ]] || ! grep -q '^export GLUE_TASK_IMAGE=' "${STATE}/images.env"; then
+  "${AX_DEV_DIR}/build-task-image.sh"
+fi
+if [[ ! -f "${STATE}/gateway.env" ]] || ! k -n glue-system get deployment glue-gateway >/dev/null 2>&1; then
+  "${AX_DEV_DIR}/deploy-gateway.sh"
+fi
 # shellcheck disable=SC1090,SC1091
 source "${STATE}/gateway.env"
 [[ -n "${GLUE_GATEWAY_TOKEN:-}" ]] || fail "GLUE_GATEWAY_TOKEN missing in ${STATE}/gateway.env"
@@ -39,9 +47,13 @@ export PATH="${STATE}/bin:${PATH}"
 
 TMP_DIR="$(mktemp -d -t glue-ax-e2e-XXXXXX)"
 PF_PID=""
+JOB_ID=""
 cleanup() {
   local rc=$?
   set +e
+  if [[ "${KEEP_E2E_JOB:-false}" != "true" && -n "${JOB_ID}" && -n "${GLUE_SERVER:-}" ]]; then
+    glue job delete --server "${GLUE_SERVER}" "${JOB_ID}" >/dev/null 2>&1 || true
+  fi
   [[ -n "${PF_PID}" ]] && kill "${PF_PID}" >/dev/null 2>&1 && wait "${PF_PID}" 2>/dev/null
   rm -rf "${TMP_DIR}"
   exit "${rc}"

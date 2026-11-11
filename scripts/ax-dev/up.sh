@@ -30,8 +30,8 @@ ensure_checkout() {
   fi
   if ! git -C "${dir}" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1 ||
     ! git -C "${dir}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1; then
-    if [[ -d "${seed}/.git" ]]; then git -C "${dir}" fetch --quiet --tags "${seed}" 2>/dev/null || true; fi
-    git -C "${dir}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1 || git -C "${dir}" fetch --quiet --tags origin
+    if [[ -d "${seed}/.git" ]]; then git -C "${dir}" fetch --quiet --tags --force "${seed}" 2>/dev/null || true; fi
+    git -C "${dir}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1 || git -C "${dir}" fetch --quiet --tags --force origin
   fi
   if [[ "$(git -C "${dir}" rev-parse HEAD)" != "${sha}" ]] || [[ -n "$(git -C "${dir}" status --porcelain --untracked-files=no)" ]]; then
     git -C "${dir}" checkout --force --quiet "${ref}"
@@ -40,7 +40,17 @@ ensure_checkout() {
   [[ "$(git -C "${dir}" rev-parse HEAD)" == "${sha}" ]] || { printf 'ERROR: %s HEAD != %s\n' "${dir}" "${sha}" >&2; exit 1; }
 }
 
+RELEASE_TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+if [[ ! "${SUBSTRATE_TAG}" =~ ${RELEASE_TAG_RE} ]]; then
+  printf 'ERROR: SUBSTRATE_TAG=%s is not a release tag (vX.Y.Z or vX.Y.Z-rc.N)\n' "${SUBSTRATE_TAG}" >&2
+  exit 1
+fi
+
 ensure_checkout "${SUB_DIR}" "${SUBSTRATE_REPO}" "${SUBSTRATE_TAG}" "${SUBSTRATE_COMMIT}" "/home/ubuntu/src/agent-substrate"
+if ! git -C "${SUB_DIR}" tag --points-at HEAD | grep -qx "${SUBSTRATE_TAG}"; then
+  printf 'ERROR: Substrate checkout %s is not at tag %s\n' "${SUB_DIR}" "${SUBSTRATE_TAG}" >&2
+  exit 1
+fi
 [[ -d "/home/ubuntu/src/agent-substrate/.cache" && ! -e "${SUB_DIR}/.cache" ]] && ln -s "/home/ubuntu/src/agent-substrate/.cache" "${SUB_DIR}/.cache"
 ensure_checkout "${AX_DIR}" "${AX_REPO}" "${AX_COMMIT}" "${AX_COMMIT}" "/home/ubuntu/src/ax"
 
@@ -82,31 +92,6 @@ for node in $(kind get nodes --name "${KIND_CLUSTER_NAME}"); do
   docker exec "${node}" sysctl -w fs.inotify.max_user_instances=8192 >/dev/null
 done
 
-INGRESS_SPIFFE_IDS="spiffe://cluster.local/ns/${AX_SYSTEM_NAMESPACE}/sa/ax-server,spiffe://cluster.local/ns/ate-system/sa/atenet-client,spiffe://cluster.local/ns/glue-system/sa/glue-gateway"
-BOOTSTRAP_OWNERS="system:serviceaccount:ate-system:ate-client,system:serviceaccount:${AX_SYSTEM_NAMESPACE}:ax-server,system:serviceaccount:glue-system:glue-gateway"
-SUB_CFG_SPEC="${SUBSTRATE_COMMIT}:${INGRESS_SPIFFE_IDS}:k8s.io"
-INSTALLED_SUB="$(k get namespace ate-system -o jsonpath='{.metadata.annotations.glue\.ax-dev/spec}' 2>/dev/null || true)"
-
-if [[ "${FORCE_INSTALL_SUBSTRATE:-false}" == "true" ]] || [[ "${INSTALLED_SUB}" != "${SUB_CFG_SPEC}" ]] ||
-  ! k -n ate-system get deployment ate-api-server >/dev/null 2>&1; then
-  log "Installing Agent Substrate ${SUBSTRATE_TAG} (${SUBSTRATE_COMMIT:0:12})..."
-  (
-    cd "${SUB_DIR}"
-    ATE_IMAGE_REPO="${SUBSTRATE_IMAGE_REPO}" ATE_IMAGE_TAG="${SUBSTRATE_TAG}" \
-      go run ./cmd/ate-setup --kind --kind-cluster-name="${KIND_CLUSTER_NAME}" \
-      --kubeconfig="${KUBECONFIG}" --context="${KUBE_CONTEXT}" --no-dev-env \
-      deploy ate-system \
-      --rollout-timeout="${SUBSTRATE_ROLLOUT_TIMEOUT:-5m}" \
-      --credential-provider='{"name":"k8s.io"}' \
-      --ateapi-authz-bootstrap-owners="${BOOTSTRAP_OWNERS}" \
-      --ingress-allowed-spiffe-ids="${INGRESS_SPIFFE_IDS}"
-  )
-  k annotate namespace ate-system "substrate-commit=${SUBSTRATE_COMMIT}" "glue.ax-dev/spec=${SUB_CFG_SPEC}" --overwrite >/dev/null
-else
-  log "Agent Substrate ${SUBSTRATE_TAG} already installed; verifying readiness..."
-  k -n ate-system wait --for=condition=Available deployment/ate-api-server --timeout=120s >/dev/null
-fi
-
 image_digest() {
   local tag="$2" host="${1%%/*}" path="${1#*/}" headers challenge realm service token
   local accept=(-H 'Accept: application/vnd.oci.image.index.v1+json' -H 'Accept: application/vnd.oci.image.manifest.v1+json' -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' -H 'Accept: application/vnd.docker.distribution.manifest.v2+json')
@@ -120,6 +105,67 @@ image_digest() {
   fi
   awk 'tolower($1) == "docker-content-digest:" {print $2; found=1} END {exit !found}' <<<"${headers}"
 }
+
+uninstall_substrate() {
+  k -n "${AX_SYSTEM_NAMESPACE}" delete workerpool ax-workers --ignore-not-found --timeout=30s >/dev/null 2>&1 ||
+    k -n "${AX_SYSTEM_NAMESPACE}" patch workerpool ax-workers --type=merge -p '{"metadata":{"finalizers":null}}' >/dev/null 2>&1 || true
+  k delete validatingadmissionpolicybinding,validatingadmissionpolicy -l app.kubernetes.io/part-of=ate --ignore-not-found >/dev/null 2>&1 || true
+  k delete validatingadmissionpolicybinding,validatingadmissionpolicy sandboxconfig-assets --ignore-not-found >/dev/null 2>&1 || true
+  if ! k delete sandboxconfig --all --ignore-not-found --timeout=30s >/dev/null 2>&1; then
+    local configs
+    configs="$(k get sandboxconfig -o name 2>/dev/null || true)"
+    if [[ -n "${configs}" ]]; then
+      xargs kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" patch --type=merge -p '{"metadata":{"finalizers":null}}' <<<"${configs}" >/dev/null 2>&1 || true
+    fi
+  fi
+  local crds
+  crds="$(k get crd -o name 2>/dev/null | grep '\.ate\.dev$' || true)"
+  if [[ -n "${crds}" ]]; then
+    xargs kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete --ignore-not-found <<<"${crds}" >/dev/null 2>&1 || true
+  fi
+  k delete namespace ate-system --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  k label nodes --all ate.dev/substrate-version- >/dev/null 2>&1 || true
+}
+
+WORKER_KO_REF="$(awk '$1 == "workerImage:" {print $2; exit}' "${E2E_DIR}/manifests/workerpool.yaml")"
+WORKER_IMG="${WORKER_KO_REF##*/}"
+SUBSTRATE_IMAGES=(ateapi atecontroller atelet atenet "${WORKER_IMG}" podcertcontroller objectstore-plugin envoy-dataplane)
+
+INGRESS_SPIFFE_IDS="spiffe://cluster.local/ns/${AX_SYSTEM_NAMESPACE}/sa/ax-server,spiffe://cluster.local/ns/ate-system/sa/atenet-client,spiffe://cluster.local/ns/glue-system/sa/glue-gateway"
+BOOTSTRAP_OWNERS="system:serviceaccount:ate-system:ate-client,system:serviceaccount:${AX_SYSTEM_NAMESPACE}:ax-server,system:serviceaccount:glue-system:glue-gateway"
+SUB_CFG_SPEC="${SUBSTRATE_COMMIT}:${INGRESS_SPIFFE_IDS}:k8s.io"
+INSTALLED_SUB="$(k get namespace ate-system -o jsonpath='{.metadata.annotations.glue\.ax-dev/spec}' 2>/dev/null || true)"
+
+if [[ "${FORCE_INSTALL_SUBSTRATE:-false}" == "true" ]] || [[ "${INSTALLED_SUB}" != "${SUB_CFG_SPEC}" ]] ||
+  ! k -n ate-system get deployment ate-api-server >/dev/null 2>&1; then
+  grep -q -- "--image-repo" "${SUB_DIR}/cmd/ate-setup/commands.md" 2>/dev/null ||
+    { printf 'ERROR: Substrate %s ate-setup lacks --image-repo\n' "${SUBSTRATE_TAG}" >&2; exit 1; }
+  for img in "${SUBSTRATE_IMAGES[@]}"; do
+    image_digest "${SUBSTRATE_IMAGE_REPO}/${img}" "${SUBSTRATE_TAG}" >/dev/null ||
+      { printf 'ERROR: release image %s/%s:%s not found\n' "${SUBSTRATE_IMAGE_REPO}" "${img}" "${SUBSTRATE_TAG}" >&2; exit 1; }
+  done
+  if [[ -n "${INSTALLED_SUB}" ]] || k get namespace ate-system >/dev/null 2>&1; then
+    log "Removing previous Substrate installation before deploying ${SUBSTRATE_TAG}..."
+    uninstall_substrate
+  fi
+  log "Installing Agent Substrate ${SUBSTRATE_TAG} (${SUBSTRATE_COMMIT:0:12}) from ${SUBSTRATE_IMAGE_REPO}..."
+  (
+    cd "${SUB_DIR}"
+    ATE_IMAGE_REPO="${SUBSTRATE_IMAGE_REPO}" ATE_IMAGE_TAG="${SUBSTRATE_TAG}" \
+      go run ./cmd/ate-setup --kind --kind-cluster-name="${KIND_CLUSTER_NAME}" \
+      --kubeconfig="${KUBECONFIG}" --context="${KUBE_CONTEXT}" --no-dev-env \
+      --image-repo="${SUBSTRATE_IMAGE_REPO}" --image-tag="${SUBSTRATE_TAG}" \
+      deploy ate-system \
+      --rollout-timeout="${SUBSTRATE_ROLLOUT_TIMEOUT:-5m}" \
+      --credential-provider='{"name":"k8s.io"}' \
+      --ateapi-authz-bootstrap-owners="${BOOTSTRAP_OWNERS}" \
+      --ingress-allowed-spiffe-ids="${INGRESS_SPIFFE_IDS}"
+  )
+  k annotate namespace ate-system "substrate-commit=${SUBSTRATE_COMMIT}" "glue.ax-dev/spec=${SUB_CFG_SPEC}" --overwrite >/dev/null
+else
+  log "Agent Substrate ${SUBSTRATE_TAG} already installed; verifying readiness..."
+  k -n ate-system wait --for=condition=Available deployment/ate-api-server --timeout=120s >/dev/null
+fi
 
 AX_CFG_SPEC="${AX_COMMIT}:workers=${GLUE_AX_WORKERS}"
 INSTALLED_AX="$(k get namespace "${AX_SYSTEM_NAMESPACE}" -o jsonpath='{.metadata.annotations.glue\.ax-dev/spec}' 2>/dev/null || true)"
@@ -165,10 +211,8 @@ render_manifest() {
 
 log "Deploying '${AX_SYSTEM_NAMESPACE}' and WorkerPool 'ax-workers' (${GLUE_AX_WORKERS} gVisor replicas)..."
 render_manifest namespace.yaml | k apply -f -
-worker_ko_ref="$(awk '$1 == "workerImage:" {print $2; exit}' "${E2E_DIR}/manifests/workerpool.yaml")"
-worker_img="${worker_ko_ref##*/}"
-worker_digest="$(image_digest "${SUBSTRATE_IMAGE_REPO}/${worker_img}" "${SUBSTRATE_TAG}")"
-render_manifest workerpool.yaml | sed "s|${worker_ko_ref}|${SUBSTRATE_IMAGE_REPO}/${worker_img}:${SUBSTRATE_TAG}@${worker_digest}|" | k apply -f -
+worker_digest="$(image_digest "${SUBSTRATE_IMAGE_REPO}/${WORKER_IMG}" "${SUBSTRATE_TAG}")"
+render_manifest workerpool.yaml | sed "s|${WORKER_KO_REF}|${SUBSTRATE_IMAGE_REPO}/${WORKER_IMG}:${SUBSTRATE_TAG}@${worker_digest}|" | k apply -f -
 for _ in $(seq 1 60); do k -n "${AX_SYSTEM_NAMESPACE}" get deployment ax-workers >/dev/null 2>&1 && break; sleep 2; done
 k -n "${AX_SYSTEM_NAMESPACE}" rollout status deployment/ax-workers --timeout=180s
 

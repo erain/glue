@@ -10,6 +10,10 @@ log() { printf '\n==> %s\n' "$*"; }
 fail() { printf 'SMOKE FAIL: %s\n' "$*" >&2; exit 1; }
 k() { kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" "$@"; }
 
+if ! kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
+  fail "kind cluster '${KIND_CLUSTER_NAME}' is not running (run scripts/ax-dev/up.sh)"
+fi
+
 TMP_DIR="$(mktemp -d -t glue-ax-smoke-XXXXXX)"
 export AX_HOME="${TMP_DIR}/ax-home"
 TASK_NAME="smoke-$(date +%s)"
@@ -22,6 +26,7 @@ cleanup() {
   set +e
   [[ -n "${PROXY_PID}" ]] && kill "${PROXY_PID}" >/dev/null 2>&1 && wait "${PROXY_PID}" 2>/dev/null
   [[ -n "${AX_SERVER_URL:-}" ]] && ax --server "${AX_SERVER_URL}" --context "${KUBE_CONTEXT}" -a default delete task "${TASK_NAME}" >/dev/null 2>&1
+  kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "${TASK_NAME}" -a default >/dev/null 2>&1 || true
   [[ -n "${PF_PID}" ]] && kill "${PF_PID}" >/dev/null 2>&1 && wait "${PF_PID}" 2>/dev/null
   ax tunnel stop "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
   rm -rf "${TMP_DIR}"
@@ -110,7 +115,8 @@ persist_out="$(run_ax ssh "${TASK_NAME}" -- sh -c 'cat /workspace/keep.txt && if
 [[ "${persist_out}" == $'survive-416\nTMP_GONE' ]] || fail "unexpected post-resume state: ${persist_out}"
 printf '  [ok] /workspace/keep.txt survived (survive-416) and /tmp/drop.txt was wiped (TMP_GONE)\n'
 
-log "6. Cleaning up task '${TASK_NAME}'..."
+log "6. Cleaning up task and egress policy '${TASK_NAME}' (leaving '${KIND_CLUSTER_NAME}' running)..."
 run_ax delete task "${TASK_NAME}"
+kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "${TASK_NAME}" -a default >/dev/null 2>&1 || true
 if run_ax get task "${TASK_NAME}" >/dev/null 2>&1; then fail "task ${TASK_NAME} still exists after delete"; fi
-printf '  [ok] task %s deleted\n\nSMOKE PASS: all 6 assertions succeeded.\n' "${TASK_NAME}"
+printf '  [ok] task and egress-policy %s deleted\n\nSMOKE PASS: all 6 assertions succeeded.\n' "${TASK_NAME}"

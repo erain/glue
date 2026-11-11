@@ -16,7 +16,7 @@ if kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
   printf 'Deleting kind cluster %q...\n' "${KIND_CLUSTER_NAME}"
   kind delete cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG}"
 fi
-rm -f "${KUBECONFIG}" "${STATE}/images.env"
+rm -f "${STATE}/kubeconfig" "${STATE}/images.env"
 
 if docker inspect "${REGISTRY_NAME}" >/dev/null 2>&1; then
   printf 'Removing registry container %q...\n' "${REGISTRY_NAME}"
