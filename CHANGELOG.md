@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add client-side AX auto-tunneling and short-lived router TLS / control-token
+  caching in `internal/axbackend` (`Connect`, `ResolveKubeTarget`, `TunnelDir`,
+  `StopTunnels`) so host tools connect directly to AX (`ax-server`,
+  `atenet-router`, and internal control API) without modifying `~/.kube/config`
+  or deploying an in-cluster gateway pod.
+
 - Upgrade root `go.mod` to Go 1.27.1 (`github.com/google/ax` `@56bd0fc55574`
   and `go.ate.dev/substrate v1.0.0`) while keeping root `package glue` free of
   AX imports, and add `internal/axbackend` (`RouterTransport`, `DialAX`, and
