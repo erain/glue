@@ -12,7 +12,7 @@ with `--coding`).
 | `repo` | `{path, url, base_ref}` | Exactly one of `path` (local git repo) or `url` (clone source), plus optional `base_ref`. |
 | `provider`, `model`, `thinking` | `string` | Coding provider/model selection (defaults to `gemini` / `gemini-3.8-flash`). |
 | `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. |
-| `policy` | `string` | Permission profile (`workspace-auto` default, `ask-all`, `yolo`, or custom policy name). |
+| `policy` | `string` | Permission profile (`auto` default, `workspace-auto`, `ask-all`, `yolo`, or custom policy name). |
 | `verify` | `[][]string` | Post-goal verification commands (`argv` slices) executed in the job workspace. |
 | `delivery` | `string` | `none` (default), `branch`, or `draft_pr`. |
 | `allowed_binaries`, `shell_env_pass`, `shell_env`, `shell_env_secret_allow`, `shell_timeout` | shell config | Per-job overrides for the coding shell and verification environment. |

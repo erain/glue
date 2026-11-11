@@ -10,9 +10,10 @@ Glue permission policies classify tool permission requests into `allow`, `deny`,
 
 | Profile | Default | File Writes (`write_file`, `edit_file`) | Shell Execution (`shell_exec` / `exec`) | Other Permission-Requiring Tools |
 | :--- | :--- | :--- | :--- | :--- |
-| `ask-all` | `ask` | `ask` | `ask` | `ask` |
+| `auto` (default) | `allow` | `allow` (tool-level `SafeJoin`, symlink confinement, and secret file blocklists remain enforced) | `allow` for any binary basename inside the workspace unless `allowed_binaries` / `--allow-binary` restricts it (secret redaction and workspace `dir` confinement remain enforced) | `allow` |
 | `workspace-auto` | `ask` | `allow` when confined to the workspace (`SafeJoin` + symlink check); `ask` outside or via symlink escape | `ask` for `git push`, `git remote`, `git config --global`, `curl`, `wget`, `ssh`, `scp`; `allow` for allowlisted binaries inside the workspace; `ask` otherwise | `ask` |
-| `yolo` | `allow` | `allow` | `allow` | `allow` |
+| `ask-all` | `ask` | `ask` | `ask` | `ask` |
+| `yolo` | `allow` | `allow` | `allow` | `allow` (logs warning on `glue serve` startup) |
 
 ## `workspace-auto` Rule Order
 
@@ -57,6 +58,6 @@ Custom policies use strict JSON decoding (`DisallowUnknownFields`):
 
 ## Runtime Enforcement and `permission_auto` Auditing
 
-- `glue serve` accepts `--policy <ask-all|workspace-auto|yolo>` (default `workspace-auto`) or `--policy-file <path>` (mutually exclusive) and applies the selected policy to both `/v1/sessions/{id}/runs` (`daemon.NewPermissionPolicy`) and hosted jobs (`jobs.Options.Policy`). Selecting `yolo` logs a loud warning to `stderr`.
-- Jobs default empty `Spec.Policy` to `workspace-auto` (or the manager's configured policy name) and reject unknown policy names at creation time (`400 invalid_request`).
+- `glue serve` accepts `--policy <auto|workspace-auto|ask-all|yolo>` (default `auto`) or `--policy-file <path>` (mutually exclusive) and applies the selected policy to both `/v1/sessions/{id}/runs` (`daemon.NewPermissionPolicy`) and hosted jobs (`jobs.Options.Policy`). Selecting `yolo` logs a loud warning to `stderr`; `auto` starts cleanly without a warning.
+- Jobs default empty `Spec.Policy` to `auto` (or the manager's configured policy name) and reject unknown policy names at creation time (`400 invalid_request`). Under `auto` (or any ruleless `allow` policy) with no explicit `allowed_binaries` / `--allow-binary`, `shell_exec` accepts `"*"` (any binary basename, including `bash -c`, `rg`, `gofmt`, `jq`, `curl`, and `gh`) while rejecting path separators (`./bin`, `/bin/sh`) and keeping workspace `dir` confinement, `tools/fs` secret file blocklists, and `internal/redact` active. Opt into `--policy workspace-auto`, `--policy ask-all`, or `--policy-file <path>` when interactive operator approval is desired.
 - Every automatic `allow` or `deny` decision emits a durable `permission_auto` event (`{tool, target, decision, rule}`) without transitioning the job to `waiting_for_input`; `ask` emits `permission_request` and `job_waiting`.

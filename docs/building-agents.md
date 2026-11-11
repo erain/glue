@@ -422,7 +422,7 @@ opt-in behind an interface:
   `<state>/tmp`, and defaults to a `10m` timeout (`--shell-timeout`) with
   per-call `timeout` overrides capped at the configured maximum. See
   [ADR-0012](adr/0012-sdk-coding-agent-peggy-boundary.md) and
-  [`docs/policies.md`](policies.md) for `ask-all`, `workspace-auto`,
+  [`docs/policies.md`](policies.md) for `auto`, `workspace-auto`, `ask-all`,
   `yolo`, and custom JSON permission policy profiles (`glue serve --policy`
   / `--policy-file`).
 - **Sandboxed execution** — implement `glue.Executor` to run

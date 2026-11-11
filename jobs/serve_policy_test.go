@@ -3,6 +3,7 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -52,6 +53,14 @@ func TestPolicyEvaluate(t *testing.T) {
 		t.Fatal(err)
 	}
 	wsAuto := WorkspaceAutoPolicy()
+	autoDefault, err := BuiltInPolicy("")
+	if err != nil || autoDefault.Name != "auto" || autoDefault.Default != DecisionAllow || len(autoDefault.Rules) != 0 {
+		t.Fatalf("BuiltInPolicy(\"\") = %+v, err = %v", autoDefault, err)
+	}
+	autoNamed, err := BuiltInPolicy("auto")
+	if err != nil || autoNamed.Name != "auto" || autoNamed.Default != DecisionAllow || len(autoNamed.Rules) != 0 {
+		t.Fatalf("BuiltInPolicy(\"auto\") = %+v, err = %v", autoNamed, err)
+	}
 	askAll, _ := BuiltInPolicy("ask-all")
 	yolo, _ := BuiltInPolicy("yolo")
 	ordered := Policy{
@@ -97,6 +106,8 @@ func TestPolicyEvaluate(t *testing.T) {
 		{"exec dir escape", wsAuto, glue.PermissionRequest{Tool: "shell_exec", Action: "exec", Args: json.RawMessage(`{"argv":["go","test"],"dir":"../outside"}`)}, DecisionAsk},
 		{"unknown tool fallthrough", wsAuto, glue.PermissionRequest{Tool: "mcp_github_issue", Action: "mcp_call", Target: "github.issue"}, DecisionAsk},
 		{"ask-all profile", askAll, glue.PermissionRequest{Tool: "write_file", Target: "README.md"}, DecisionAsk},
+		{"auto default profile", autoDefault, glue.PermissionRequest{Tool: "shell_exec", Action: "exec", Target: "bash -c 'rg foo | head'"}, DecisionAllow},
+		{"auto named profile", autoNamed, glue.PermissionRequest{Tool: "shell_exec", Action: "exec", Target: "git push origin main"}, DecisionAllow},
 		{"yolo profile", yolo, glue.PermissionRequest{Tool: "shell_exec", Action: "exec", Target: "git push origin main"}, DecisionAllow},
 		{"rule order deny before allow", ordered, glue.PermissionRequest{Tool: "write_file", Target: "secret/key.pem"}, DecisionDeny},
 		{"rule order allow after specific deny", ordered, glue.PermissionRequest{Tool: "write_file", Target: "public/app.go"}, DecisionAllow},
@@ -177,12 +188,12 @@ func TestWorkspaceAutoJob(t *testing.T) {
 	if _, err := m.Create(context.Background(), Spec{Objective: "bad", Repo: RepoSpec{Path: repo}, Policy: "unknown"}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected ErrInvalid for unknown policy, got %v", err)
 	}
-	job, err := m.Create(context.Background(), Spec{Objective: "edit and push", Repo: RepoSpec{Path: repo}})
+	job, err := m.Create(context.Background(), Spec{Objective: "edit and push", Repo: RepoSpec{Path: repo}, Policy: "workspace-auto"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if job.Spec.Policy != "workspace-auto" {
-		t.Fatalf("default policy = %q, want workspace-auto", job.Spec.Policy)
+		t.Fatalf("policy = %q, want workspace-auto", job.Spec.Policy)
 	}
 	if err := m.Start(context.Background(), job.ID); err != nil {
 		t.Fatal(err)
@@ -248,5 +259,66 @@ func TestWorkspaceAutoJob(t *testing.T) {
 	dec, err := (jobPermission{manager: denyMgr, id: denyJob.ID, run: &execution{ctx: context.Background(), cancel: func() {}}}).Decide(context.Background(), glue.PermissionRequest{Tool: "write_file", Target: "x.txt"})
 	if err != nil || dec.Allow {
 		t.Fatalf("deny decision = %+v, err = %v", dec, err)
+	}
+}
+
+func TestDefaultAutoJob(t *testing.T) {
+	repo, outside := repoFixture(t), t.TempDir()
+	outsideSecret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideSecret, []byte("untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const fakeToken = "ghp_AutoPolicyRedactionToken1234567890"
+	p := &scriptProvider{turns: [][]glue.ProviderEvent{
+		turn(`{"items":[{"title":"autonomous work"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w1", Name: "write_file", Arguments: []byte(`{"path":"notes.txt","content":"hello\n"}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w2", Name: "write_file", Arguments: []byte(`{"path":"../escape.txt","content":"bad\n"}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w3", Name: "write_file", Arguments: []byte(`{"path":".env","content":"SECRET=1\n"}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "sh1", Name: "shell_exec", Arguments: []byte(`{"argv":["env"]}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "sh2", Name: "shell_exec", Arguments: []byte(`{"argv":["sh","-c","ln -s ` + outside + ` escape-dir && printf 'pipe-ok %s\\n' ` + fakeToken + `"]}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "e1", Name: "edit_file", Arguments: []byte(`{"path":"escape-dir/secret.txt","old_string":"untouched","new_string":"pwned"}`)}}, {Type: glue.ProviderEventDone}},
+		turn("done"),
+		turn(`{"done":true,"items":[{"title":"autonomous work","done":true}],"summary":"ok"}`),
+	}}
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) { return p, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	job, err := m.Create(context.Background(), Spec{Objective: "autonomous work", Repo: RepoSpec{Path: repo}})
+	if err != nil || job.Spec.Policy != "auto" {
+		t.Fatalf("job = %+v, err = %v", job, err)
+	}
+	if err := m.Start(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	finished := waitJob(t, m, job.ID)
+	if finished.Status != Achieved {
+		t.Fatalf("status = %s, want achieved", finished.Status)
+	}
+	if data, err := os.ReadFile(filepath.Join(finished.Workspace, "notes.txt")); err != nil || string(data) != "hello\n" {
+		t.Fatalf("notes.txt = %q, err = %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(finished.Workspace), "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("escaped workspace write succeeded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(finished.Workspace, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("blocklisted .env write succeeded: %v", err)
+	}
+	if data, err := os.ReadFile(outsideSecret); err != nil || string(data) != "untouched\n" {
+		t.Fatalf("symlink edit escaped workspace: %q, err = %v", data, err)
+	}
+	events, err := m.Events(context.Background(), job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawEvents, _ := json.Marshal(events)
+	if bytes.Contains(rawEvents, []byte(fakeToken)) || !bytes.Contains(rawEvents, []byte("pipe-ok [REDACTED]")) {
+		t.Fatalf("expected redacted shell pipeline output in events: %s", rawEvents)
+	}
+	for _, e := range events {
+		if e.Type == "permission_request" {
+			t.Fatalf("unexpected permission_request under auto policy: %+v", e)
+		}
 	}
 }

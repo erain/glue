@@ -39,7 +39,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.StringVar(&conn.MetadataPath, "metadata", conn.MetadataPath, "local daemon metadata JSON path")
 	repo, objective, baseRef, backend := fs.String("repo", "", "repo"), fs.String("objective", "", "objective"), fs.String("base", "", "base ref"), fs.String("backend", "", "backend")
 	provider, model, thinking := fs.String("provider", "", "provider"), fs.String("model", "", "model"), fs.String("thinking", "", "thinking")
-	policy, deliver := fs.String("policy", "", "permission policy"), fs.String("deliver", "", "delivery mode")
+	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
 	status, before, remember, reason := fs.String("status", "", "status"), fs.String("before", "", "before cursor"), fs.String("remember", "", "remember scope"), fs.String("reason", "", "reason")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
