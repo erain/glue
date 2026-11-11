@@ -128,10 +128,13 @@ The module path is `github.com/erain/glue`.
 - `tools/mcp`: a Model Context Protocol client (stdio / Streamable HTTP)
   that maps MCP server tools to permission-gated `glue.Tool` values. See
   [`adr/0011-mcp-client-integration.md`](adr/0011-mcp-client-integration.md).
-- `internal/axbackend`: internal AX gRPC (`DialAX`) and control-plane dialing
-  plus mTLS HTTP `CONNECT` `RouterTransport` (`ate-target-actor`) with dynamic
-  TLS rotation. Kept strictly internal so root `package glue` has zero imports
-  of AX or Substrate SDKs.
+- `internal/axbackend`: internal AX gRPC (`DialAX`) and control-plane dialing,
+  out-of-cluster kubeconfig resolution (`ResolveKubeTarget`), reusable local
+  `kubectl port-forward` tunnels (`Connect`, `StopTunnels`), `0600`-cached
+  short-lived `PodCertificateRequest` mTLS + bearer token minting, and HTTP
+  `CONNECT` `RouterTransport` (`ate-target-actor`) with dynamic TLS rotation.
+  Kept strictly internal so root `package glue` has zero imports of AX or
+  Substrate SDKs.
 - `cmd/glue`: local CLI runner and HTTP+SSE daemon (`run` / `serve` /
   `connect`) built on top of the public library.
 
