@@ -1,8 +1,8 @@
 # `glue-gateway`
 
-`gateway/` is a standalone Go module (`github.com/erain/glue/gateway`) that provides one front door for Glue coding jobs across backends. It owns the persistent SQLite job registry and event cache, hosts the embedded browser UI (`webui`), authenticates CLI and browser requests, and proxies `/v1/jobs...` requests and SSE event streams to configured backends.
+`gateway/` is an optional host/VM HTTP portal (`github.com/erain/glue/gateway`) for Glue coding jobs. Laptop and CLI users can run jobs directly on AX via `glue --remote "<objective>"` and `glue job ...` without deploying a gateway; run `glue-gateway` on a host or VM when you want the mobile/desktop browser UI (`webui`), GitHub OAuth allowlist sign-in, personal API tokens, idle AX task suspension while waiting on human input, or public HTTPS access behind a [Cloudflare Tunnel](../deploy/cloudflared/README.md).
 
-Keeping `gateway/` in its own nested module isolates future Agent Substrate / AX dependencies (Go 1.27) from the root `github.com/erain/glue` module.
+`glue-gateway` runs entirely outside Kubernetes with zero `glue-system` cluster manifests, delegating `type: ax` backends to `internal/axbackend` with pure AX configuration.
 
 ## Building and Running
 
@@ -16,7 +16,7 @@ go build -o /tmp/glue-gateway ./cmd/glue-gateway
 
 ## YAML Configuration Reference
 
-Every configuration field is validated strictly (`KnownFields(true)` rejects unknown keys):
+Every configuration field is validated strictly (`KnownFields(true)` rejects unknown or legacy keys):
 
 ```yaml
 # TCP address for the gateway HTTP server (optional; defaults to "127.0.0.1:8800").
@@ -55,19 +55,12 @@ auth:
 # One or more execution backends (required; unique names).
 backends:
   - # Logical backend identifier used in job specs and ?backend=<name> (required).
-    name: local
-    # Backend implementation type ("local" or "ax").
-    type: local
-    # Base HTTP URL of the upstream glue serve instance (required for type: local).
-    url: http://127.0.0.1:8787
-    # Bearer token for authenticating upstream requests to glue serve (required for type: local).
-    token: replace-with-local-daemon-token
-
-  - name: ax
+    name: ax
+    # Backend implementation type ("ax" or "local").
     type: ax
-    # AX atespace where Workspaces, Tasks, and EgressPolicies are created (defaults to "default").
+    # AX atespace where Workspaces and Tasks are created (defaults to "default").
     atespace: default
-    # Digest-pinned AX task image reference (required for type: ax).
+    # Digest-pinned AX task image reference (defaults to GLUE_AX_IMAGE / GLUE_TASK_IMAGE / ~/.cache/glue/ax-dev/images.env; required non-empty after default lookup).
     image: localhost:5001/glue-task@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     # Per-task resource limits (defaults to cpu: "4", memory: "8Gi").
     resources:
@@ -83,13 +76,21 @@ backends:
       - storage.googleapis.com
       - generativelanguage.googleapis.com
       - openrouter.ai
-    # Control-plane and router endpoints (optional; default to in-cluster service DNS names).
-    ax_server: ax-server.ax-system.svc.cluster.local:8080
-    substrate: api.ate-system.svc.cluster.local:443
-    router: atenet-router.ate-system.svc.cluster.local:8444
+    # Optional AX server gRPC endpoint (defaults to "" so internal/axbackend auto-tunnels via kubectl).
+    # ax_server: 127.0.0.1:8080
+    # Optional kubeconfig path and context for AX target discovery (fall back to GLUE_AX_KUBECONFIG / GLUE_AX_CONTEXT / KUBECONFIG / ~/.kube/config).
+    # kube_config: /etc/glue-gateway/kubeconfig
+    # kube_context: kind-glue-ax
+
+  - name: local
+    type: local
+    # Base HTTP URL of an upstream glue serve instance (required for type: local).
+    url: http://127.0.0.1:8787
+    # Bearer token for authenticating upstream requests to glue serve (required for type: local).
+    token: replace-with-local-daemon-token
 
 # Default backend when a job submission omits backend (optional; defaults to backends[0].name).
-default_backend: local
+default_backend: ax
 
 # Idle duration in waiting_for_input (with no live SSE viewer) before AX SuspendTask (optional; defaults to 2m).
 suspend_after: 2m
@@ -100,28 +101,30 @@ resume_timeout: 1m
 # Whether to call AX SuspendTask after caching Result when a job finishes (optional; defaults to true).
 suspend_on_finish: true
 
-# Duration to retain terminal AX Tasks/Workspaces/EgressPolicies before deleting them (optional; defaults to 168h / GLUE_RETAIN_TASKS).
+# Duration to retain terminal AX Tasks/Workspaces before deleting them (optional; defaults to 168h / GLUE_RETAIN_TASKS).
 retain_tasks: 168h
 ```
 
-## AX Backend (`gateway/backend/ax`)
+Runtime credentials pushed in memory to AX tasks (`github_token` and `provider_keys`) are read from `credentials` in `gateway.yaml` or picked up automatically from `GLUE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `gh auth token` and `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `NVIDIA_API_KEY`, and `OPENAI_API_KEY`.
 
-For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-shot AX `Task` (`glue-<job-id>`) backed by an AX `Workspace` (`glue-<job-id>-ws`):
+## AX Backend (`internal/axbackend`)
 
-1. **Ordered provisioning:** `Create` calls `UpdateWorkspace` (`dir: "."`, `depth: 1`, and `.glue/token`) and `CreateTask` (`glue serve --coding --jobs --job-from-ax --listen :8080 --state-dir /workspace/.glue/state --token-file /workspace/.glue/token`, with `spec.ID` in `Task.spec.config` and no task bearer token in `Task.spec.config`). `Start` applies `CreateActorEgressPolicy` (`tls_passthrough:443`) before calling `ResumeTask`, polls `GetTask` until `Running` + `WorkspaceReady=True`, and calls `POST /v1/jobs/{id}/start` through the router.
-2. **Ambiguous submit reconciliation:** If `CreateTask` fails with a deadline or transport error, the job is marked `submit_unknown` and reconciled via `GetTask` before retrying so duplicate tasks are never created.
-3. **mTLS HTTP `CONNECT` router transport:** `RouterTransport` dials `atenet-router.ate-system.svc.cluster.local:8444` with the gateway pod's `podidentity.podcert.ate.dev/identity` mTLS certificate and sends `CONNECT glue-<job-id>:8080 HTTP/1.1` with header `ate-target-actor: <atespace>/glue-<job-id>`. Status reads (`GET /v1/jobs`, `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/permissions`, cached transcript) read only the gateway SQLite registry and AX `GetTask` so inspecting a job never wakes a suspended task.
-4. **Idle & terminal suspend and on-demand resume:** When a job stays in `waiting_for_input` longer than `suspend_after` (default `2m`) with no live SSE viewer attached, the watcher calls `SuspendTask`, marks the job `suspended` (`status_reason: "waiting_for_input"`), and appends `task_suspended`. When a job reaches a terminal state (`job_done`) and `suspend_on_finish` is enabled (default `true`), the watcher caches `Result` and calls `SuspendTask` (`status_reason: "finished"`). Any state-changing action (`approve`/`deny`, `messages`, `continue`, `cancel`) or live SSE stream attachment calls `ResumeTask`, waits for `Running` + `WorkspaceReady` within `resume_timeout`, appends `task_resumed`, reconnects the upstream stream using the last upstream sequence number, and (for permission decisions) matches the user's decision to the re-issued `permission_request` with the same tool and target while recording both permission IDs in `permission_decision`.
-5. **Result persistence, task retention, purge, and orphan reconciliation:** On terminal status, the gateway fetches `GET /v1/jobs/{id}/result` once, persists it in SQLite (`result_json`), and serves `GET /v1/jobs/{id}/result` from SQLite thereafter. After `retain_tasks` (default `168h`, or `GLUE_RETAIN_TASKS`) in a terminal state, `deleteJobTask` ensures the completion result is stored in SQLite before calling `DeleteTask`, `DeleteWorkspace`, and `DeleteActorEgressPolicy`, then marks the registry record `task_deleted: true` while keeping the job row, events, and result intact. `DELETE /v1/jobs/{id}?purge=true` (`glue job delete <id>`) deletes the backend task (if any) and purges the job row and event history from SQLite. On startup (and via `GET /v1/diagnostics`), the gateway reconciles AX tasks in the configured atespace (`ListTasks`) and reports any `glue-*` tasks without a registry row in logs and `{"orphan_tasks": [...]}` without deleting them automatically.
+For `type: ax` backends, `glue-gateway` delegates to `internal/axbackend.Backend` — the exact same AX lifecycle and transport engine used by `glue --remote`:
+
+1. **Client auto-tunneling & shared task HMAC:** `axbackend.Connect` discovers the target Kubernetes context (`kube_config` / `kube_context` or ambient environment), manages local port-forwards and short-lived router TLS / control credentials automatically in `TunnelDir()`, and shares the cluster's `ax-system/glue-ax-task-hmac` Secret so jobs submitted via `glue-gateway` and direct `glue job --ax` interoperate seamlessly.
+2. **Ordered provisioning & reconciliation:** `Create` updates the AX `Workspace` (`glue-<job-id>-ws`, `dir: "."`, `depth: 1`, `.glue/token`) and creates the AX `Task` (`glue-<job-id>`). Ambiguous transport failures record `submit_unknown` and reconcile via `GetTask` before retrying so duplicate tasks are never created. `Start` configures task egress before calling `ResumeTask`, waits for `Running` + `WorkspaceReady=True`, pushes credentials in memory (`POST /v1/credentials`), and starts the job.
+3. **Zero-wakeup read-only views:** Status reads (`GET /v1/jobs`, `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/permissions`, cached `/events`, and cached `/result`) read only the gateway SQLite registry and AX `GetTask`, never waking a `Suspended` task.
+4. **Idle & terminal suspend and on-demand resume:** When a job stays in `waiting_for_input` longer than `suspend_after` (default `2m`) with no live SSE viewer attached, the watcher calls `SuspendTask`, marks the job `suspended` (`status_reason: "waiting_for_input"`), and appends `task_suspended`. When a job finishes (`job_done`) and `suspend_on_finish` is enabled (default `true`), the watcher caches `Result` in SQLite and calls `SuspendTask` (`status_reason: "finished"`). State-changing actions (`approve`/`deny`, `messages`, `continue`, `cancel`) or live SSE stream attachments resume the task within `resume_timeout`, append `task_resumed`, reconnect using the last upstream sequence number, and remap re-issued permission IDs (`original_permission_id` + `permission_id`).
+5. **Result persistence, task retention, purge, and orphan reconciliation:** On terminal status, the gateway persists `result_json` in SQLite before any task deletion. After `retain_tasks` (default `168h`), `deleteJobTask` deletes the AX task resources and marks `task_deleted: true` while keeping the SQLite record, events, and result. `DELETE /v1/jobs/{id}?purge=true` (`glue job delete --server ... <id>`) deletes the backend task and purges all SQLite rows for that job. Startup and `GET /v1/diagnostics` report any orphan `glue-*` tasks without deleting them.
 
 ## SQLite Registry and Event Cache
 
 `OpenRegistry(state_dir)` opens `<state_dir>/events.sqlite` (WAL mode) with four tables:
 
-- `jobs(id, backend, backend_ref, owner, spec_json, status, created_at, updated_at, last_seq, result_json)`: tracks each gateway-allocated job ID, its owning backend and backend reference, owning user login (`owner`), job specification, derived lifecycle status, highest mirrored sequence number, and cached completion `jobs.Result`. Users only see and act on jobs where `owner` matches their authenticated login.
+- `jobs(id, backend, backend_ref, owner, spec_json, status, created_at, updated_at, last_seq, result_json)`: tracks each gateway-allocated job ID, owning backend, owning user login (`owner`), job specification, derived lifecycle status, highest mirrored sequence number, and cached completion `jobs.Result`.
 - `events(run_id, seq, payload_json, PRIMARY KEY(run_id, seq))`: stores an immutable copy of every `eventlog.Envelope` streamed from the backend.
-- `sessions(id, login, github_id, csrf_token, created_at, last_seen_at, expires_at)`: stores server-side browser sessions with random 256-bit IDs, `HttpOnly; Secure; SameSite=Lax` cookies, 7-day absolute TTL, and 24-hour idle TTL. State-changing cookie requests require the `X-Glue-CSRF` double-submit header.
-- `api_tokens(id, name, owner, token_hash, prefix, created_at, last_used_at)`: stores personal API tokens as SHA-256 hashes (`token_hash`) for CLI `Authorization: Bearer <token>` authentication.
+- `sessions(id, login, github_id, csrf_token, created_at, last_seen_at, expires_at)`: stores server-side browser sessions with random 256-bit IDs, `HttpOnly; Secure; SameSite=Lax` cookies, 7-day absolute TTL, 24-hour idle TTL, and `X-Glue-CSRF` double-submit enforcement.
+- `api_tokens(id, name, owner, token_hash, prefix, created_at, last_used_at)`: stores SHA-256-hashed personal API tokens for CLI `Authorization: Bearer <token>` authentication.
 
 ## Creating a GitHub OAuth App and Personal API Tokens
 
@@ -132,18 +135,11 @@ For `type: ax` backends, `gateway/backend/ax` executes each Glue job as a one-sh
 
 ## Public Exposure and Hardening (`deploy/cloudflared`)
 
-When exposed publicly behind a named Cloudflare Tunnel (see [`deploy/cloudflared`](../deploy/cloudflared/README.md) and [`docs/runbooks/public-gateway.md`](../docs/runbooks/public-gateway.md)):
+When exposed publicly on a host or VM behind a named Cloudflare Tunnel (see [`deploy/cloudflared`](../deploy/cloudflared/README.md) and [`docs/runbooks/public-gateway.md`](../docs/runbooks/public-gateway.md)):
 
 - **HSTS & trusted `X-Forwarded-Proto`:** Responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains` and session cookies carry `Secure` whenever `public_url` starts with `https://`, TLS is terminated directly, or `trust_forwarded_proto: true` with `X-Forwarded-Proto: https`.
 - **Request limits & HTTP timeouts:** Request bodies are capped at `max_body_bytes` (default `1 MiB`, rejecting larger payloads with `413 Request Entity Too Large`), and `NewHTTPServer` configures `ReadHeaderTimeout: 10s`, `ReadTimeout: 30s`, and `IdleTimeout: 120s`.
 - **Redacted structured access logs & `/healthz`:** Every request logs `method`, `path` (without query parameters), `status`, `duration_ms`, and `remote_ip`, never logging bearer tokens, cookies, or OAuth secrets. `GET /healthz` returns `{"ok":true}` with no version or internal details.
-
-## Event Stream Proxying and Offline Replay
-
-1. **End-to-end job IDs:** On `POST /v1/jobs`, the gateway allocates the job ID (`job-<12 hex chars>`) and forwards it in `Spec.ID` to the backend so the gateway ID and backend ID match.
-2. **Single upstream watcher per active job:** `ensureWatcher` maintains one upstream `GET /v1/jobs/{id}/events` stream per non-terminal job, appending events idempotently into SQLite and broadcasting to downstream SSE subscribers.
-3. **Seamless upstream reconnect:** If the upstream connection drops before a terminal event, the watcher reconnects with `Last-Event-ID: <last_seq>`. Downstream clients read from the gateway's SQLite log and never observe gaps or duplicate sequence numbers.
-4. **Offline inspection and replay:** When `job_done` arrives, the watcher caches `result_json` in SQLite. `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/events`, `GET /v1/jobs/{id}/permissions`, and `GET /v1/jobs/{id}/result` continue to work from SQLite even when the backend is stopped.
 
 ## Using with `glue job` and the Browser UI
 
@@ -151,10 +147,10 @@ When exposed publicly behind a named Cloudflare Tunnel (see [`deploy/cloudflared
 export GLUE_SERVER=http://127.0.0.1:8800
 export GLUE_TOKEN=replace-with-gateway-token
 
-glue job submit --repo /path/to/repo --objective "Add unit tests"
-glue job attach <job-id>
-glue job approve <job-id> <perm-id>
-glue job result <job-id>
+glue job submit --server "$GLUE_SERVER" --repo https://github.com/org/repo --objective "Add unit tests"
+glue job attach --server "$GLUE_SERVER" <job-id>
+glue job approve --server "$GLUE_SERVER" <job-id> <perm-id>
+glue job result --server "$GLUE_SERVER" <job-id>
 ```
 
-Open `http://127.0.0.1:8800` in a browser and sign in with the gateway token to view, steer, and approve jobs through the embedded `webui`.
+Open `http://127.0.0.1:8800` in a browser to view, steer, and approve jobs through the embedded `webui`.
