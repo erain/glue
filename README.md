@@ -2,14 +2,32 @@
 
 [![CI](https://github.com/erain/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/erain/glue/actions/workflows/ci.yml)
 
-**Glue is a Go framework for building agents.** It gives you a reusable,
-provider-agnostic agent loop, a small code-first `Agent` / `Session`
-API, typed tools, pluggable model providers, and optional persistence —
-so you can build anything from a one-shot CLI to a long-running,
-multi-channel assistant without rewriting the loop each time.
+**Glue is an AX-first, remote-first coding agent and Go agent framework.**
+Start a coding job from your laptop in one command, close your lid, and come
+back to verified commits and a draft pull request — or import Glue's Go SDK to
+build your own tool-calling agents on the same provider-agnostic loop.
 
-Inspired by [Flue](https://github.com/withastro/flue) and
-[pi-mono](https://github.com/badlogic/pi-mono).
+- **Remote-first coding agent (`glue --remote` / `glue job`):** Dispatch
+  autonomous coding jobs directly from a git checkout into isolated
+  [AX](https://github.com/google/ax) sandboxes with zero gateway deployment or
+  custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)).
+  Inspect, stream, or steer anytime (`glue job list|show|attach|say|result`),
+  run offline locally (`glue run`, `glue goal`, `glue serve`), or add the
+  optional host-mode [`glue-gateway`](gateway/README.md) for mobile browser UI
+  and GitHub OAuth.
+- **Composable Go agent framework (`github.com/erain/glue`):** A small,
+  code-first `Agent` / `Session` API, typed tools, five model providers,
+  context compaction, and optional SQLite FTS5 persistence — inspired by
+  [Flue](https://github.com/withastro/flue) and
+  [pi-mono](https://github.com/badlogic/pi-mono).
+
+```sh
+# Start an autonomous coding job on AX from any git checkout, then close your lid:
+id=$(glue --remote "Fix the race in pool_test.go" --verify "go test -race ./..." --deliver pr)
+glue job list
+glue job attach "$id"   # replays missed events; Ctrl-C detaches without canceling
+glue job result "$id"   # branch, verification exit codes, and draft PR URL
+```
 
 ```go
 agent := glue.NewAgent(glue.AgentOptions{
@@ -22,11 +40,9 @@ result, _ := session.Prompt(ctx, "What's the weather in Toronto?")
 fmt.Println(result.Text)
 ```
 
-- **New here and want to build an agent?** → [docs/building-agents.md](docs/building-agents.md)
-- **Just want to send a prompt?** → [Quickstart](#quickstart)
-- **Want the architecture?** → [Concepts](#concepts) · [docs/design.md](docs/design.md)
-- **Want the direction?** → [Local coding + AX execution](docs/project-plan.md) · [Remote mode roadmap](docs/remote-mode-roadmap.md)
-- **See it in action:** → [Demo: use AX to develop AX with Glue](docs/demo-ax-develops-ax.md)
+- **Run remote coding jobs on AX:** → [Showcase & runbook](docs/demo-ax-develops-ax.md) · [Jobs reference](docs/jobs.md) · [ADR-0020](docs/adr/0020-ax-first-direct-execution.md)
+- **Build an agent with the Go SDK:** → [docs/building-agents.md](docs/building-agents.md) · [Quickstart](#quickstart)
+- **Architecture & roadmap:** → [Concepts](#concepts) · [docs/design.md](docs/design.md) · [Project plan](docs/project-plan.md) · [Remote roadmap](docs/remote-mode-roadmap.md)
 
 ## Install
 
@@ -465,11 +481,17 @@ own `Executor` to run in a container/VM. See
 
 ## The `glue` CLI
 
-A thin CLI over the same library API, for trying things without writing
-a `main.go` — and a full terminal coding agent in its own right
-(homepage: <https://glue-coding-agent-site.vercel.app>):
+`cmd/glue` is a remote-first coding agent for AX and local checkouts, built on
+the public `glue` library API (homepage: <https://glue-coding-agent-site.vercel.app>):
 
 ```sh
+# Launch an autonomous coding job directly on AX (auto policy by default, zero gateway needed):
+id=$(go run ./cmd/glue --remote "Add a Makefile test target" --verify "make test" --deliver pr)
+go run ./cmd/glue job list
+go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without canceling
+go run ./cmd/glue job say "$id" "Keep existing target names unchanged."
+go run ./cmd/glue job result "$id"
+
 # Interactive TUI (default when stdin/stdout are a terminal and no --prompt):
 go run ./cmd/glue run --provider codex --coding --work .
 
@@ -487,15 +509,9 @@ go run ./cmd/glue connect --prompt "Say hi" --id demo
 
 # Headless goal loop (schedulable from cron/CI; exit code reflects the
 # outcome: 0 achieved · 2 blocked · 3 max-iterations · 4 budget · 1 error):
-go run ./cmd/glue goal --coding --yolo --worktree "Make the linter pass on ./..."
+go run ./cmd/glue goal --coding --worktree "Make the linter pass on ./..."
 go run ./cmd/glue goal --list
 go run ./cmd/glue goal --resume
-
-# Launch a coding job directly on AX from a git checkout (zero gateway deployment needed):
-id=$(go run ./cmd/glue --remote "Add a Makefile test target" --verify "make test" --deliver pr)
-go run ./cmd/glue job list
-go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without cancelling
-go run ./cmd/glue job result "$id"
 
 # Or run jobs against a local HTTP+SSE daemon (or open http://127.0.0.1:8787 in a browser):
 go run ./cmd/glue serve --coding --state-dir .glue/state --listen 127.0.0.1:8787 --token "$GLUE_TOKEN" &
@@ -557,11 +573,12 @@ zero TUI code.
 `--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
 `--tools name1,name2` (allowlist) / `--no-tools` (text-only),
 `--mode text|json` (one-shot output format; `json` emits stable
-JSONL events for scripting), **`--yolo`** (auto-approve every
-side-effecting tool call — daily-driver mode for trusted feature
-branches), `--usage`, and repeatable `--env`. `serve` brokers coding-tool
-permission requests to the connected `connect` client; it writes
-connection metadata to the user config dir (never the bearer token).
+JSONL events for scripting), `--yolo` (auto-approve interactive `glue run` /
+`glue goal` tool calls), `--usage`, and repeatable `--env`. Coding jobs and
+`glue serve` default to the autonomous `auto` policy (`--policy auto`, with
+opt-in `workspace-auto`, `ask-all`, and `--policy-file`; see
+[docs/policies.md](docs/policies.md)) and write local daemon connection metadata
+to the user config dir (never the bearer token).
 The daemon protocol is [ADR-0010](docs/adr/0010-daemon-protocol.md).
 
 **Standard flags for your own binary.** `cli.RegisterStandardFlags`
@@ -613,14 +630,18 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 
 ## Project status & contributing
 
-Glue focuses on the **agent framework** and the **coding agent** (interactive
-TUI, coding tools, and autonomous goals). Peggy is retired. Both local coding
-and asynchronous remote execution through [AX](https://github.com/google/ax)
-(`glue --remote`, `glue job`, `glue-gateway`, and `webui`) are available — **[see it in action](docs/demo-ax-develops-ax.md)**.
-Execution mode is independent of model/provider selection. The [project plan](docs/project-plan.md)
+Glue focuses on two surfaces: the **AX-first, remote-first coding agent**
+(`glue --remote`, `glue job`, interactive TUI, local goals, and optional
+host-mode `glue-gateway` + `webui`) and the **Go agent framework**
+(`github.com/erain/glue`). Peggy is retired. Remote jobs execute directly on
+[AX](https://github.com/google/ax) with `auto` policy by default and zero
+custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md))
+— **[see it in action](docs/demo-ax-develops-ax.md)**. Execution mode is
+independent of model/provider selection. The [project plan](docs/project-plan.md)
 and [remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
-[tracker #392](https://github.com/erain/glue/issues/392) and
-[tracker #402](https://github.com/erain/glue/issues/402). Releases are tagged on
+[tracker #392](https://github.com/erain/glue/issues/392),
+[tracker #402](https://github.com/erain/glue/issues/402), and
+[tracker #526](https://github.com/erain/glue/issues/526). Releases are tagged on
 a `1.x` line
 (currently well past `v1.10`), but the stability stance is still the
 pre-stability one recorded in

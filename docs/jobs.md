@@ -83,11 +83,13 @@ terminal `job_done` event:
 }
 ```
 
-## CLI (`glue job`)
+## CLI (`glue --remote` and `glue job`)
 
-`glue job` speaks `/v1/jobs` against `--server`/`GLUE_SERVER` using `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`, `--attach`), `start`, `list`, `show`, `attach`, `result [--json]`, `approve`, `deny`, `say`, `continue`, `cancel`, and `delete` (`DELETE /v1/jobs/{id}?purge=true`).
+From a git checkout, `glue --remote "<objective>"` and `glue job <subcommand>` execute directly against AX via `internal/axbackend` (`--ax`, `--kubeconfig`, `--context`, `--atespace`, `--image`, `--env`) with zero gateway deployment required ([ADR-0020](adr/0020-ax-first-direct-execution.md)): `glue` normalizes `remote.origin.url` to HTTPS, detects the default base branch, pushes ambient GitHub and provider credentials in memory (`POST /v1/credentials`), authenticates tasks via `ax-system/glue-ax-task-hmac`, and caches terminal `jobs.Result` records under `~/.config/glue/ax-jobs/` (`0600`) so `list`, `show`, and `result` do not wake suspended sandboxes.
 
-`glue job attach <id>` (and `glue job submit ... --attach`) replays events strictly after the last seen sequence cached in `~/.config/glue/jobs/<server-hash>/<id>.seq` (`0600`), renders the transcript (`plan`, `iteration_start`, `text_delta`, `tool_start`, `tool_end`, `verdict`, `operator_message`, `run_interrupted`, `job_resumed`, `job_done`), prompts inline for pending permissions, detaches on Ctrl-C without cancelling the server job, and reconnects with `Last-Event-ID` backoff when the stream drops before `job_done`.
+Against a local `glue serve` daemon or optional host `glue-gateway`, `glue job` speaks `/v1/jobs` over HTTP using `--server`/`GLUE_SERVER` and `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata. Subcommands: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`, `--attach`), `start`, `list`, `show`, `attach`, `result [--json]`, `approve`, `deny`, `say`, `continue`, `cancel`, and `delete`.
+
+`glue job attach <id>` (and `glue --remote ... --attach` / `glue job submit ... --attach`) replays events strictly after the last seen sequence cached in `~/.config/glue/jobs/<server-hash>/<id>.seq` (`0600`), renders the transcript (`plan`, `iteration_start`, `text_delta`, `tool_start`, `tool_end`, `verdict`, `operator_message`, `run_interrupted`, `job_resumed`, `job_done`), prompts inline for pending permissions, detaches on Ctrl-C without canceling the server job, and reconnects with `Last-Event-ID` backoff when the stream drops before `job_done`.
 
 ## Browser UI (`webui`) and Session Auth
 

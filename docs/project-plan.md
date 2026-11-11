@@ -10,11 +10,11 @@ Glue has two product surfaces:
 
 - **Agent framework:** the reusable Go API, provider-independent loop,
   tools, sessions, persistence, permissions, and goal execution.
-- **Coding agent:** `cmd/glue`, using that framework for interactive coding
-  and unattended jobs with reviewable changes and verification evidence.
+- **Coding agent:** `cmd/glue`, an AX-first, remote-first coding agent for
+  one-command remote jobs (`glue --remote`, `glue job`), local interactive TUI /
+  headless goals, and optional browser access (`glue-gateway`) with verified PRs.
 
-Peggy is retired. Its remaining schedule/channel/dashboard work is canceled,
-not shipped. Source removal is tracked in
+Peggy is retired; its source was removed in
 [#393](https://github.com/erain/glue/issues/393). Keep reusable framework
 capabilities; do not move Peggy's product features into core. Preserve Git
 history, historical ADRs, and release records. Personal databases, credentials,
@@ -27,24 +27,24 @@ backend. Local execution can still call a hosted model API.
 
 | Mode | Intended experience | Status |
 |------|---------------------|--------|
-| Local | Code interactively or run a goal in a workspace on this machine. | Existing `run`, TUI, and `goal` paths. |
-| Remote | Submit a complete coding job to AX, disconnect, inspect it later, and retrieve changes and test evidence. | Planned in [remote-mode-roadmap.md](remote-mode-roadmap.md) (tracker [#402](https://github.com/erain/glue/issues/402)); not implemented yet. |
+| Remote (`AX-first`) | Dispatch a coding job directly from your laptop to AX (`glue --remote`), close the lid, inspect/attach/steer later (`glue job`), and get verified commits and a draft PR — plus optional host `glue-gateway` for browser UI. | Shipped ([#402](https://github.com/erain/glue/issues/402), [#526](https://github.com/erain/glue/issues/526), [ADR-0019](adr/0019-remote-jobs-architecture.md), [ADR-0020](adr/0020-ax-first-direct-execution.md)). |
+| Local | Code interactively or run a goal in a workspace on this machine without AX or a cluster. | Shipped (`run`, TUI, `goal`, and `serve --coding`). |
 
-Glue owns agent behavior and the coding-job contract. [AX](https://github.com/google/ax)
-owns remote task orchestration and sandbox lifecycle on Agent Substrate.
-Plan to execute the whole Glue coding job remotely. Redirecting only
-`shell_exec` would leave filesystem/git tools and the agent workspace local.
-Keep local execution usable without AX or a cluster.
+Glue owns agent behavior and the coding-job contract; [AX](https://github.com/google/ax)
+is Glue's sole external platform dependency ([ADR-0020](adr/0020-ax-first-direct-execution.md)).
+`glue --remote` and `glue job` talk directly to AX via `internal/axbackend` with
+zero `glue-system` Kubernetes manifests, default to the autonomous `auto` policy
+(with opt-in `workspace-auto`, `ask-all`, and `--policy-file`), verify against a
+standing `kind-glue-ax` cluster (Agent Substrate `v1.0.0` GA + AX `56bd0fc55574`),
+and keep `glue-gateway` as an optional out-of-cluster host/VM browser portal.
 
-## Next step: write the detailed roadmap
+## Historical planning baseline (2026-11-07)
 
-**Done 2026-11-07:** the detailed roadmap is
-[remote-mode-roadmap.md](remote-mode-roadmap.md), with decisions in
-[ADR-0019](adr/0019-remote-jobs-architecture.md) and one issue per step under
-tracker [#402](https://github.com/erain/glue/issues/402). The planning steps
-below are kept as the record of how it was produced; the hand-run AX job in
-[#418](https://github.com/erain/glue/issues/418) is the remaining feasibility
-gate.
+Phase 1 ([remote-mode-roadmap.md](remote-mode-roadmap.md),
+[ADR-0019](adr/0019-remote-jobs-architecture.md), [#402](https://github.com/erain/glue/issues/402))
+and Phase 2 ([ADR-0020](adr/0020-ax-first-direct-execution.md),
+[#526](https://github.com/erain/glue/issues/526)) are shipped. The 2026-11-07
+planning steps below record how the initial roadmap was produced:
 
 This is the plan for producing that roadmap, not an implementation backlog.
 Work through these deliverables in order under #392:
@@ -127,6 +127,8 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 [#1](https://github.com/erain/glue/issues/1) preserves the bootstrap roadmap;
 [#110](https://github.com/erain/glue/issues/110) preserves Peggy and subsequent
-coding-agent milestones. [ADR-0018](adr/0018-framework-coding-and-ax-direction.md)
-records the current product boundary. [design.md](design.md) describes shipped
-architecture; proposed remote APIs belong in future ADRs after the probe.
+coding-agent milestones. [ADR-0018](adr/0018-framework-coding-and-ax-direction.md),
+[ADR-0019](adr/0019-remote-jobs-architecture.md), and
+[ADR-0020](adr/0020-ax-first-direct-execution.md) record the product boundary
+and AX-first remote architecture; [design.md](design.md) describes the core
+framework and job internals.

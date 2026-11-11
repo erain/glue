@@ -1,6 +1,6 @@
 # Runbook: Public `glue-gateway` via Cloudflare Tunnel (`deploy/cloudflared`)
 
-This runbook covers exposing `glue-gateway` at `https://<your-host>` through a named [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) with GitHub OAuth allowlist sign-in, HSTS, request body size limits, server timeouts, and redacted access logs — without opening any inbound ports on the host.
+CLI users run coding jobs directly on AX via `glue --remote "<objective>"` without deploying a gateway ([ADR-0020](../adr/0020-ax-first-direct-execution.md)). Deploy `glue-gateway` out-of-cluster on a host or VM when you want the mobile/desktop browser UI (`webui`), GitHub OAuth allowlist sign-in, personal API tokens, or background idle-wait AX task suspension exposed at `https://<your-host>` through a named [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — with HSTS, request body size limits, server timeouts, redacted access logs, zero open inbound host ports, and zero `glue-system` Kubernetes manifests.
 
 ## 1. Create the Cloudflare Tunnel and DNS Record
 
@@ -22,39 +22,37 @@ In GitHub **Settings -> Developer settings -> OAuth Apps -> New OAuth App**:
 
 Record the **Client ID** (`GLUE_GITHUB_CLIENT_ID`) and generate a **Client secret** (`GLUE_GITHUB_CLIENT_SECRET`).
 
-## 3. Configure and Deploy
+## 3. Configure and Start on a Host or VM (`systemd` + Pure `type: ax`)
 
-### Option A: In-Cluster Deployment (`glue-system` on Kubernetes / `kind`)
-
-1. Create or update the gateway and tunnel secrets in `glue-system`:
-   ```sh
-   kubectl -n glue-system create secret generic glue-gateway-secrets \
-     --from-literal=GLUE_GITHUB_CLIENT_ID="${GLUE_GITHUB_CLIENT_ID}" \
-     --from-literal=GLUE_GITHUB_CLIENT_SECRET="${GLUE_GITHUB_CLIENT_SECRET}" \
-     --from-literal=GLUE_ALLOWED_LOGINS="your-github-login" \
-     --from-literal=GLUE_GITHUB_TOKEN="${GLUE_GITHUB_TOKEN}" \
-     --from-literal=GEMINI_API_KEY="${GEMINI_API_KEY}" \
-     --dry-run=client -o yaml | kubectl apply -f -
-
-   kubectl -n glue-system create secret generic cloudflared-credentials \
-     --from-literal=token="${TUNNEL_TOKEN}" \
-     --dry-run=client -o yaml | kubectl apply -f -
+1. Write `/etc/glue-gateway/gateway.yaml` (`KnownFields(true)` strict YAML; omit `kube_config`/`kube_context` to use ambient host configuration, or add a `type: local` entry when fronting a local `glue serve` daemon):
+   ```yaml
+   listen: 127.0.0.1:8800
+   public_url: https://glue.example.com
+   trust_forwarded_proto: true
+   state_dir: /var/lib/glue-gateway
+   auth:
+     mode: github
+     allowed_logins:
+       - your-github-login
+   default_backend: ax
+   backends:
+     - name: ax
+       type: ax
+       atespace: default
+       image: ghcr.io/your-org/glue-task@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+       kube_config: /etc/glue-gateway/kubeconfig
+       kube_context: your-ax-context
    ```
-2. Set `public_url: https://<your-host>`, `trust_forwarded_proto: true`, and `auth.mode: github` in `ConfigMap/glue-gateway-config`, then apply both manifests:
+2. Store OAuth and runtime task credentials in `/etc/glue-gateway/gateway.env` (`chmod 0600`, never stored in AX `Task.spec.env`):
    ```sh
-   kubectl -n glue-system rollout restart deployment/glue-gateway
-   envsubst '${GLUE_PUBLIC_HOST}' < deploy/cloudflared/manifests.yaml | kubectl apply -f -
-   kubectl -n glue-system rollout status deployment/glue-gateway deployment/cloudflared --timeout=60s
+   GLUE_GITHUB_CLIENT_ID=...
+   GLUE_GITHUB_CLIENT_SECRET=...
+   GLUE_GITHUB_TOKEN=...
+   GEMINI_API_KEY=...
    ```
-
-### Option B: Host-Mode Alternative (`systemd` + Local Backend)
-
-When running `glue-gateway` directly on the host outside Kubernetes against a local `glue serve` daemon (`127.0.0.1:8787`):
-
-1. Write `/etc/glue-gateway/gateway.yaml` with `listen: 127.0.0.1:8800`, `public_url: https://<your-host>`, `trust_forwarded_proto: true`, `auth.mode: github`, and `allowed_logins: [your-github-login]`.
-2. Store `GLUE_GITHUB_CLIENT_ID`, `GLUE_GITHUB_CLIENT_SECRET`, and backend tokens in `/etc/glue-gateway/gateway.env` (`chmod 0600`).
-3. Install `deploy/cloudflared/glue-gateway.service` to `/etc/systemd/system/glue-gateway.service`, configure host `cloudflared` ingress to route `https://<your-host>` to `http://127.0.0.1:8800`, and start both services:
+3. Install [`deploy/cloudflared/glue-gateway.service`](../../deploy/cloudflared/glue-gateway.service) to `/etc/systemd/system/glue-gateway.service`, configure the host `cloudflared` service to forward `https://<your-host>` to `http://127.0.0.1:8800`, and start both services:
    ```sh
+   sudo install -m 0644 deploy/cloudflared/glue-gateway.service /etc/systemd/system/glue-gateway.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now glue-gateway cloudflared
    ```
@@ -70,7 +68,7 @@ curl -s "https://${GLUE_PUBLIC_HOST}/healthz"                            # {"ok"
 curl -sI "https://${GLUE_PUBLIC_HOST}/" | grep -i strict-transport-security
 ```
 
-On the host machine, verify no new listener is bound to a public interface:
+On the host machine, verify no listener is bound to a public interface (`glue-gateway` listens only on `127.0.0.1:8800`):
 
 ```sh
 ss -tlnp
@@ -80,24 +78,19 @@ In a browser:
 
 1. Sign in with an allowlisted GitHub account -> lands on the **Jobs** list (`#/`) with an `HttpOnly; Secure; SameSite=Lax` `glue_session` cookie.
 2. Sign in with a non-allowlisted GitHub account -> receives `403 Forbidden` (**Access Denied** page) and no session cookie.
-3. Restart recovery: `kubectl -n glue-system rollout restart deployment/cloudflared deployment/glue-gateway` (or `sudo systemctl restart cloudflared glue-gateway`) recovers automatically without manual intervention.
+3. Restart recovery: `sudo systemctl restart cloudflared glue-gateway` reloads `/var/lib/glue-gateway/events.sqlite` and reconnects the tunnel automatically.
 
 ## 5. Rotate Secrets
 
-- **GitHub OAuth client secret:** Generate a new secret in the GitHub OAuth App settings, update `GLUE_GITHUB_CLIENT_SECRET` in `glue-gateway-secrets` (or `/etc/glue-gateway/gateway.env`), restart `glue-gateway`, then delete the old secret in GitHub.
-- **Cloudflare Tunnel token:** Run `cloudflared tunnel token glue-gateway` (or rotate credentials in the Cloudflare dashboard), update `cloudflared-credentials`, and run `kubectl -n glue-system rollout restart deployment/cloudflared`.
+- **GitHub OAuth client secret:** Generate a new secret in the GitHub OAuth App settings, update `GLUE_GITHUB_CLIENT_SECRET` in `/etc/glue-gateway/gateway.env`, run `sudo systemctl restart glue-gateway`, then delete the old secret in GitHub.
+- **Cloudflare Tunnel token:** Run `cloudflared tunnel token glue-gateway` (or rotate credentials in the Cloudflare dashboard), update the host `cloudflared` service token, and run `sudo systemctl restart cloudflared`.
 - **Personal API tokens & browser sessions:** Revoke individual CLI tokens from `#/tokens` (`DELETE /v1/tokens/{id}`), or clear all active browser sessions with `sqlite3 /var/lib/glue-gateway/events.sqlite 'DELETE FROM sessions;'`.
 
 ## 6. Take It Offline Quickly (One Command)
 
-- **In-cluster:**
-  ```sh
-  kubectl -n glue-system scale deployment/cloudflared --replicas=0
-  ```
-- **Host-mode (`systemd`):**
-  ```sh
-  sudo systemctl stop cloudflared
-  ```
+```sh
+sudo systemctl stop cloudflared
+```
 
 ## 7. Optional Second Factor: Cloudflare Access
 

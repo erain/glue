@@ -5,7 +5,11 @@
 Accepted, 2026-11-07. Implements the remote-mode direction of
 [ADR-0018](0018-framework-coding-and-ax-direction.md). Tracked in
 [#402](https://github.com/erain/glue/issues/402); the step-by-step plan is
-[remote-mode-roadmap.md](../remote-mode-roadmap.md).
+[remote-mode-roadmap.md](../remote-mode-roadmap.md). Refined by
+[ADR-0020](0020-ax-first-direct-execution.md), which adds direct Laptop-to-AX
+CLI execution via `internal/axbackend`, defaults jobs to autonomous `auto`
+policy, removes `glue-system` Kubernetes manifests, and makes `glue-gateway` an
+optional out-of-cluster browser portal.
 
 ## Context
 
