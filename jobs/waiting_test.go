@@ -136,7 +136,7 @@ func TestJobWaitsForEveryPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Close() })
-	job, err := m.Create(context.Background(), Spec{Objective: "permissions", Repo: RepoSpec{Path: "unused"}})
+	job, err := m.Create(context.Background(), Spec{Objective: "permissions", Repo: RepoSpec{Path: "unused"}, Policy: "ask-all"})
 	if err != nil {
 		t.Fatal(err)
 	}

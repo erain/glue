@@ -269,9 +269,12 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 func (m *Manager) codingOptions(id string, spec Spec, workspacePath, baseSHA string) coding.Options {
 	bins, envPass, timeout := slices.Clone(spec.AllowedBinaries), spec.ShellEnvPass, spec.ShellTimeout
 	if len(bins) == 0 {
-		bins = DefaultAllowedBinaries
 		if len(m.options.AllowedBinaries) > 0 {
-			bins = m.options.AllowedBinaries
+			bins = slices.Clone(m.options.AllowedBinaries)
+		} else if policy, err := m.policyFor(spec.Policy); err == nil && policy.Default == DecisionAllow && len(policy.Rules) == 0 {
+			bins = []string{"*"}
+		} else {
+			bins = slices.Clone(DefaultAllowedBinaries)
 		}
 	}
 	if envPass == nil {

@@ -37,7 +37,8 @@ type ExecOptions struct {
 	// Env is the exact child environment. The model cannot add env vars.
 	Env []string
 
-	// AllowedBinaries is a basename allowlist. Empty means deny all.
+	// AllowedBinaries is a basename allowlist ("*" allows any binary basename).
+	// Empty means deny all.
 	AllowedBinaries []string
 
 	// Timeout caps each command. Zero falls back to DefaultTimeout.
@@ -152,7 +153,9 @@ func buildCommand(args execArgs, workDir string, env []string, timeout time.Dura
 		return glue.ExecCommand{}, fmt.Errorf("shell: argv[0] %q must be a binary basename, not a path", argv[0])
 	}
 	if _, ok := allowed[bin]; !ok {
-		return glue.ExecCommand{}, fmt.Errorf("shell: binary %q is not allowed", bin)
+		if _, all := allowed["*"]; !all {
+			return glue.ExecCommand{}, fmt.Errorf("shell: binary %q is not allowed", bin)
+		}
 	}
 	argv[0] = bin
 

@@ -147,6 +147,11 @@ func editFile(workDir string, args fileEditArgs, policy editPolicy) (glue.ToolRe
 	if info.Mode()&os.ModeSymlink != 0 {
 		return glue.ToolResult{}, fmt.Errorf("fs: target %q is a symlink; refusing to edit", rel)
 	}
+	if baseEval, err := filepath.EvalSymlinks(workDir); err == nil {
+		if eval, err := filepath.EvalSymlinks(target); err != nil || !pathWithin(baseEval, eval) {
+			return glue.ToolResult{}, fmt.Errorf("fs: target %q escapes work directory through symlink", rel)
+		}
+	}
 	if info.IsDir() {
 		return glue.ToolResult{}, fmt.Errorf("fs: target %q is a directory; refusing to edit", rel)
 	}

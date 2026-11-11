@@ -54,7 +54,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	coding := flags.Bool("coding", false, "enable local coding tools for daemon runs")
 	jobsEnabled := flags.Bool("jobs", false, "host durable coding jobs (default on with --coding)")
 	jobFromAX := flags.Bool("job-from-ax", false, "create a job from AX task metadata or AX_TASK_YAML on startup (idempotent)")
-	policyName := flags.String("policy", "workspace-auto", "permission policy profile: ask-all, workspace-auto, or yolo")
+	policyName := flags.String("policy", "auto", "permission policy profile: auto, workspace-auto, ask-all, or yolo")
 	policyFile := flags.String("policy-file", "", "path to custom JSON permission policy file")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and daemon permission approval")
 	listenAddr := flags.String("listen", defaultListenAddr, "local listen address")
@@ -102,7 +102,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err != nil {
 		return err
 	}
-	if policy.Name == "yolo" || (policy.Default == jobs.DecisionAllow && len(policy.Rules) == 0) {
+	if policy.Name == "yolo" {
 		fmt.Fprintln(stderr, "WARNING: glue serve: --policy yolo enabled; permission prompts are off.")
 	}
 
@@ -137,7 +137,11 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 		return errors.New("metadata disabled requires --token or GLUE_DAEMON_TOKEN")
 	}
 	codingCfg.Enabled, codingCfg.WorkDir, codingCfg.StateDir, codingCfg.AllowOverwrite = *coding, *workDir, *stateDir, *codingAllowOverwrite
-	tools, _, err := buildCodingTools(codingCfg)
+	daemonCodingCfg := codingCfg
+	if len(daemonCodingCfg.AllowedBinaries) == 0 && policy.Default == jobs.DecisionAllow && len(policy.Rules) == 0 {
+		daemonCodingCfg.AllowedBinaries = repeatedStrings{"*"}
+	}
+	tools, _, err := buildCodingTools(daemonCodingCfg)
 	if err != nil {
 		return err
 	}

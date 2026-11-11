@@ -16,7 +16,7 @@ Options:
   --objective <text>      Coding objective for the Glue job (required)
   --base <branch>         Base branch to fetch and target (default: main)
   --name <task-name>      AX Task name (default: glue-manual; Workspace is <name>-ws)
-  --policy <profile>      Permission policy: workspace-auto, ask-all, or yolo (default: workspace-auto)
+  --policy <profile>      Permission policy: auto, workspace-auto, ask-all, or yolo (default: auto)
   --deliver <mode>        Delivery mode: draft_pr, branch, or none (default: draft_pr)
   --verify <cmd>          Verification command (repeatable; default: "go test ./...")
   --no-verify             Run no post-goal verification commands
@@ -34,7 +34,7 @@ EOF
 }
 
 REPO_URL="" OBJECTIVE="" BASE_REF="main" TASK_NAME="glue-manual"
-POLICY="workspace-auto" DELIVERY="draft_pr" VERIFY_CMDS=() NO_VERIFY="false"
+POLICY="auto" DELIVERY="draft_pr" VERIFY_CMDS=() NO_VERIFY="false"
 MAX_ITERATIONS=10 PROVIDER="" MODEL="" CPU_LIMIT="4" MEMORY_LIMIT="8Gi"
 PROXY_PORT="${GLUE_AX_PROXY_PORT:-18080}"
 RECREATE="false" NO_START="false" NO_ATTACH="false" KEEP_PROXY="false"

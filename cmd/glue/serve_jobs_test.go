@@ -65,8 +65,8 @@ func TestServeJobEndToEnd(t *testing.T) {
 	serve := func(ctx context.Context, _ serveConfig, handler http.Handler, _ io.Writer) error {
 		ts := httptest.NewServer(handler)
 		defer ts.Close()
-		job := serveJobRequest(t, ts.URL, "/v1/jobs", jobs.Spec{Objective: "add README", Repo: jobs.RepoSpec{Path: repo}, Policy: "yolo"})
-		if job.Status != jobs.Created {
+		job := serveJobRequest(t, ts.URL, "/v1/jobs", jobs.Spec{Objective: "add README", Repo: jobs.RepoSpec{Path: repo}})
+		if job.Status != jobs.Created || job.Spec.Policy != "auto" {
 			t.Fatal(job)
 		}
 		serveJobRequest(t, ts.URL, "/v1/jobs/"+job.ID+"/start", nil)
@@ -97,7 +97,7 @@ func TestServeJobEndToEnd(t *testing.T) {
 	}
 	var out, errs bytes.Buffer
 	code := runCLIWithServe(context.Background(), []string{"serve", "--coding", "--jobs", "--state-dir", state, "--store", t.TempDir(), "--work", repo, "--metadata", "", "--token", "fixture-token"}, &out, &errs, fakeFactory(p), serve)
-	if code != 0 || finished.Status != jobs.Achieved {
+	if code != 0 || finished.Status != jobs.Achieved || strings.Contains(errs.String(), "WARNING:") {
 		t.Fatalf("code %d job %+v errors %s", code, finished, errs.String())
 	}
 	if data, err := os.ReadFile(filepath.Join(finished.Workspace, "README.md")); err != nil || string(data) != "A scratch repository.\n" {
@@ -243,8 +243,113 @@ func TestServePolicyFlags(t *testing.T) {
 		created = serveJobRequest(t, ts.URL, "/v1/jobs", jobs.Spec{Objective: "check policy", Repo: jobs.RepoSpec{Path: repo}})
 		return nil
 	}
-	if code := runCLIWithServe(context.Background(), append(baseArgs(), "--jobs", "--policy-file", policyPath), io.Discard, &errs, fakeFactory(&scriptedProvider{}), serve); code != 0 || created.Spec.Policy != "custom-deny" {
+	errs.Reset()
+	if code := runCLIWithServe(context.Background(), append(baseArgs(), "--jobs", "--policy-file", policyPath), io.Discard, &errs, fakeFactory(&scriptedProvider{}), serve); code != 0 || created.Spec.Policy != "custom-deny" || strings.Contains(errs.String(), "WARNING:") {
 		t.Fatalf("code %d policy %q stderr %s", code, created.Spec.Policy, errs.String())
+	}
+	for _, tc := range []struct {
+		name       string
+		flags      []string
+		wantPolicy string
+		turns      [][]glue.ProviderEvent
+		wantAsk    bool
+	}{
+		{
+			name:       "default auto runs shell pipelines and unlisted binaries",
+			flags:      nil,
+			wantPolicy: "auto",
+			turns: [][]glue.ProviderEvent{
+				textTurn(`{"items":[{"title":"auto shell"}]}`),
+				toolCallTurn("sh1", "shell_exec", `{"argv":["env"]}`),
+				toolCallTurn("sh2", "shell_exec", `{"argv":["sh","-c","printf auto-pipe-ok"]}`),
+				textTurn("ran commands"),
+				textTurn(`{"done":true,"items":[{"title":"auto shell","done":true}],"summary":"ok"}`),
+			},
+		},
+		{
+			name:       "workspace-auto prompts on git push",
+			flags:      []string{"--policy", "workspace-auto"},
+			wantPolicy: "workspace-auto",
+			turns: [][]glue.ProviderEvent{
+				textTurn(`{"items":[{"title":"push"}]}`),
+				toolCallTurn("w1", "write_file", `{"path":"note.txt","content":"hi\n"}`),
+				toolCallTurn("push", "shell_exec", `{"argv":["git","push","origin","main"]}`),
+				textTurn("stopped"),
+				textTurn(`{"done":true,"items":[{"title":"push","done":true}],"summary":"ok"}`),
+			},
+			wantAsk: true,
+		},
+		{
+			name:       "ask-all prompts on workspace write",
+			flags:      []string{"--policy", "ask-all"},
+			wantPolicy: "ask-all",
+			turns: [][]glue.ProviderEvent{
+				textTurn(`{"items":[{"title":"write"}]}`),
+				toolCallTurn("w1", "write_file", `{"path":"note.txt","content":"hi\n"}`),
+				textTurn("stopped"),
+				textTurn(`{"done":true,"items":[{"title":"write","done":true}],"summary":"ok"}`),
+			},
+			wantAsk: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := serveJobRepo(t)
+			p := &scriptedProvider{turns: tc.turns}
+			var stderr bytes.Buffer
+			runServe := func(ctx context.Context, _ serveConfig, h http.Handler, _ io.Writer) error {
+				ts := httptest.NewServer(h)
+				defer ts.Close()
+				job := serveJobRequest(t, ts.URL, "/v1/jobs?start=true", jobs.Spec{Objective: tc.name, Repo: jobs.RepoSpec{Path: r}})
+				if job.Spec.Policy != tc.wantPolicy {
+					t.Fatalf("policy = %q, want %q", job.Spec.Policy, tc.wantPolicy)
+				}
+				if tc.wantAsk {
+					deadline := time.Now().Add(10 * time.Second)
+					for {
+						req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/jobs/"+job.ID+"/permissions?state=pending", nil)
+						req.Header.Set("Authorization", "Bearer fixture-token")
+						resp, err := http.DefaultClient.Do(req)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var perms struct {
+							Permissions []struct {
+								ID string `json:"id"`
+							} `json:"permissions"`
+						}
+						_ = json.NewDecoder(resp.Body).Decode(&perms)
+						resp.Body.Close()
+						if len(perms.Permissions) == 1 {
+							serveJobRequest(t, ts.URL, "/v1/jobs/"+job.ID+"/permissions/"+perms.Permissions[0].ID+"/decision", map[string]any{"allow": false, "reason": "denied in test"})
+							break
+						}
+						if time.Now().After(deadline) {
+							t.Fatalf("timed out waiting for permission prompt on %s", tc.name)
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+				}
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/jobs/"+job.ID+"/events", nil)
+				req.Header.Set("Authorization", "Bearer fixture-token")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				events, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if !bytes.Contains(events, []byte("event: job_done")) {
+					t.Fatalf("missing job_done:\n%s", events)
+				}
+				if !tc.wantAsk && (bytes.Contains(events, []byte("event: permission_request")) || !bytes.Contains(events, []byte("auto-pipe-ok"))) {
+					t.Fatalf("unexpected events under auto:\n%s", events)
+				}
+				return nil
+			}
+			args := append([]string{"serve", "--coding", "--jobs", "--state-dir", t.TempDir(), "--store", t.TempDir(), "--work", r, "--metadata", "", "--token", "fixture-token"}, tc.flags...)
+			if code := runCLIWithServe(context.Background(), args, io.Discard, &stderr, fakeFactory(p), runServe); code != 0 || strings.Contains(stderr.String(), "WARNING:") {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
 	}
 }
 

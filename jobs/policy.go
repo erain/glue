@@ -60,10 +60,12 @@ var deniedExecPrefixes = [][]string{
 	{"curl"}, {"wget"}, {"ssh"}, {"scp"},
 }
 
-// BuiltInPolicy returns a named built-in policy profile ("ask-all", "workspace-auto", or "yolo").
+// BuiltInPolicy returns a named built-in policy profile ("auto", "ask-all", "workspace-auto", or "yolo").
 func BuiltInPolicy(name string, allowedBinaries ...string) (Policy, error) {
 	switch strings.TrimSpace(name) {
-	case "", "workspace-auto":
+	case "", "auto":
+		return Policy{Name: "auto", Default: DecisionAllow}, nil
+	case "workspace-auto":
 		return WorkspaceAutoPolicy(allowedBinaries...), nil
 	case "ask-all":
 		return Policy{Name: "ask-all", Default: DecisionAsk}, nil
@@ -88,6 +90,10 @@ func WorkspaceAutoPolicy(allowedBinaries ...string) Policy {
 		rules = append(rules, PolicyRule{Name: "ask-" + strings.Join(prefix, "-"), Action: "exec", ArgvPrefix: slices.Clone(prefix), Decision: DecisionAsk})
 	}
 	for _, bin := range bins {
+		if bin == "*" {
+			rules = append(rules, PolicyRule{Name: "allow-exec-all", Action: "exec", Target: "*", Decision: DecisionAllow})
+			continue
+		}
 		rules = append(rules, PolicyRule{Name: "allow-exec-" + bin, Action: "exec", Target: "*", ArgvPrefix: []string{bin}, Decision: DecisionAllow})
 	}
 	return Policy{Name: "workspace-auto", Rules: rules, Default: DecisionAsk}

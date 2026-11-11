@@ -16,6 +16,15 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Default Glue coding jobs (`jobs.BuiltInPolicy("")`) and `glue serve --policy`
+  to the new `auto` permission profile (`Default: allow`, no `yolo` startup
+  warning), support `"*"` in `AllowedBinaries` (`tools/shell`, `tools/coding`,
+  `jobs`) so `auto` jobs can run arbitrary workspace binary basenames (`rg`,
+  `gofmt`, `jq`, `sed`, `curl`, `gh`, `bash -c`) while preserving workspace
+  path/symlink confinement, secret file blocklists, and secret redaction, and
+  keep `workspace-auto`, `ask-all`, and `--policy-file` as opt-in human-approval
+  profiles.
+
 - Upgrade `scripts/ax-dev` (`kind-glue-ax`) to Agent Substrate `v1.0.0` GA
   (`b34fbee74290`) published release images and AX `56bd0fc55574`, add
   `scripts/ax-dev/env.sh` (`make ax-dev-env`) to export `KUBECONFIG`,

@@ -74,11 +74,11 @@ export GLUE_CONFIG_DIR="${TMP_DIR}/glue-config"
 
 glue job login --server "${GLUE_SERVER}" --token "${GLUE_TOKEN}" >/dev/null
 log "Submitting job via glue-gateway (${GLUE_SERVER}, backend=ax, repo=${REPO_URL})..."
-(yes s || true) | glue job submit --server "${GLUE_SERVER}" --backend ax \
+glue job submit --server "${GLUE_SERVER}" --backend ax \
   --repo "${REPO_URL}" --base "${BASE_REF}" \
   --objective "${OBJECTIVE}" \
-  --policy workspace-auto --deliver draft_pr --verify "go test ./..." \
-  --attach | tee "${TMP_DIR}/submit.out"
+  --deliver draft_pr --verify "go test ./..." \
+  --attach </dev/null | tee "${TMP_DIR}/submit.out"
 
 JOB_ID="$(head -n1 "${TMP_DIR}/submit.out" | tr -d '\r\n')"
 [[ "${JOB_ID}" =~ ^job- ]] || fail "Expected job ID on first line of submit output, got: ${JOB_ID}"

@@ -36,8 +36,8 @@ type Options struct {
 	// process working directory. Leading ~ and $HOME are expanded.
 	WorkDir string
 
-	// AllowedBinaries is the shell_exec basename allowlist. Empty falls
-	// back to DefaultAllowedBinaries.
+	// AllowedBinaries is the shell_exec basename allowlist ("*" allows any
+	// binary basename). Empty falls back to DefaultAllowedBinaries.
 	AllowedBinaries []string
 
 	// AllowOverwrite is the host-level write_file overwrite policy.

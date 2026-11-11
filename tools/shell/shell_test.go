@@ -302,3 +302,26 @@ func TestExecPerCallTimeoutCappedAtHostMax(t *testing.T) {
 		}
 	}
 }
+
+func TestExecWildcardAllowedBinaries(t *testing.T) {
+	work := t.TempDir()
+	fake := &fakeExecutor{result: glue.ExecResult{Stdout: []byte("ok\n")}}
+	tool, err := Exec(ExecOptions{Executor: fake, WorkDir: work, AllowedBinaries: []string{"*"}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	for _, args := range []string{`{"argv":["rg","TODO"]}`, `{"argv":["bash","-c","gofmt -l . | wc -l"]}`} {
+		if res := callTool(t, tool, args); res.IsError {
+			t.Fatalf("args %s failed: %s", args, res.Content[0].Text)
+		}
+	}
+	for _, tc := range []struct{ args, want string }{
+		{`{"argv":["./custom"]}`, "must be a binary basename"},
+		{`{"argv":["/bin/sh","-c","true"]}`, "must be a binary basename"},
+		{`{"argv":["rg"],"dir":"../outside"}`, "escapes work directory"},
+	} {
+		if res := callTool(t, tool, tc.args); !res.IsError || !strings.Contains(res.Content[0].Text, tc.want) {
+			t.Fatalf("args %s = %+v, want error containing %q", tc.args, res, tc.want)
+		}
+	}
+}
