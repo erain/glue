@@ -16,6 +16,14 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Add direct AX coding-job lifecycle and stateless task discovery in
+  `internal/axbackend` (`Backend`, `NewBackend`, `DefaultImage`, `SubmitUnknown`)
+  supporting ordered `Workspace` + `Task` provisioning, egress setup before
+  `ResumeTask`, in-memory runtime credential push, per-cluster random HMAC task
+  tokens (`glue-ax-task-hmac`), `ListJobs` / `Show` reconstruction from AX tasks
+  without waking suspended sandboxes, and cached terminal `Result` retrieval
+  with transparent resume and re-suspend.
+
 - Add client-side AX auto-tunneling and short-lived router TLS / control-token
   caching in `internal/axbackend` (`Connect`, `ResolveKubeTarget`, `TunnelDir`,
   `StopTunnels`) so host tools connect directly to AX (`ax-server`,
