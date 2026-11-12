@@ -177,18 +177,22 @@ func ghAuthToken(parent context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
-func resolveSubmitRepo(ctx context.Context, directAX, remote bool, backend, rawRepo, baseRef, obj string) (jobs.RepoSpec, error) {
+func resolveSubmitRepo(ctx context.Context, directAX, remote, ignoreLocal bool, backend, rawRepo, baseRef, obj string) (jobs.RepoSpec, error) {
 	rawRepo, baseRef = strings.TrimSpace(rawRepo), strings.TrimSpace(baseRef)
 	if directAX {
 		if obj == "" {
 			return jobs.RepoSpec{}, errors.New("missing required --objective")
 		}
-		return resolveAXRepoSpec(ctx, rawRepo, baseRef)
+		return resolveRemoteCheckout(ctx, rawRepo, baseRef, ignoreLocal)
 	}
 	if remote && rawRepo == "" {
-		if strings.TrimSpace(backend) != "local" {
-			if rs, err := resolveAXRepoSpec(ctx, ".", baseRef); err == nil && obj != "" {
+		if strings.TrimSpace(backend) != "local" && obj != "" {
+			rs, err := resolveRemoteCheckout(ctx, ".", baseRef, ignoreLocal)
+			if err == nil {
 				return rs, nil
+			}
+			if lse := (*localStateError)(nil); errors.As(err, &lse) {
+				return jobs.RepoSpec{}, err
 			}
 		}
 		rawRepo = "."
@@ -200,6 +204,73 @@ func resolveSubmitRepo(ctx context.Context, directAX, remote bool, backend, rawR
 		return jobs.RepoSpec{URL: rawRepo, BaseRef: baseRef}, nil
 	}
 	return jobs.RepoSpec{Path: rawRepo, BaseRef: baseRef}, nil
+}
+
+// resolveRemoteCheckout resolves the repo spec for a job that runs from a
+// fresh clone. For a local checkout without an explicit base ref, it refuses
+// to proceed when the clone would miss local work, unless ignoreLocal is set.
+func resolveRemoteCheckout(ctx context.Context, raw, baseRef string, ignoreLocal bool) (jobs.RepoSpec, error) {
+	rs, err := resolveAXRepoSpec(ctx, raw, baseRef)
+	if err != nil || ignoreLocal || strings.TrimSpace(baseRef) != "" || isRemoteRepoRef(cmp.Or(strings.TrimSpace(raw), ".")) {
+		return rs, err
+	}
+	if err := checkLocalState(ctx, cmp.Or(strings.TrimSpace(raw), "."), rs.BaseRef); err != nil {
+		return jobs.RepoSpec{}, err
+	}
+	return rs, nil
+}
+
+// localStateError reports local work that a remote clone of the base ref would not contain.
+type localStateError struct {
+	branch, base       string
+	dirtyFiles         int
+	unpushed           int
+	branchMissingOnRem bool
+}
+
+func (e *localStateError) Error() string {
+	var b strings.Builder
+	b.WriteString("the remote job would start from a fresh clone of ")
+	b.WriteString(cmp.Or(e.base, "the default branch"))
+	b.WriteString(" on origin and miss local work:")
+	if e.branchMissingOnRem {
+		fmt.Fprintf(&b, "\n  - branch %q does not exist on origin", e.branch)
+	}
+	if e.unpushed > 0 {
+		fmt.Fprintf(&b, "\n  - %d commit(s) on HEAD are not on origin", e.unpushed)
+	}
+	if e.dirtyFiles > 0 {
+		fmt.Fprintf(&b, "\n  - %d file(s) with uncommitted or untracked changes", e.dirtyFiles)
+	}
+	b.WriteString("\nTo continue, either:")
+	b.WriteString("\n  - commit and push your work (git push -u origin HEAD), then submit again,")
+	b.WriteString("\n  - pass --base <ref> to choose the remote ref to start from, or")
+	b.WriteString("\n  - pass --ignore-local to start from the remote ref anyway.")
+	return b.String()
+}
+
+// checkLocalState compares the checkout in dir with what a clone of baseRef
+// from origin would contain. Remote-tracking refs are used, so no network is needed.
+func checkLocalState(ctx context.Context, dir, baseRef string) error {
+	e := &localStateError{base: baseRef}
+	e.branch, _ = gitOutput(ctx, dir, "branch", "--show-current")
+	if e.branch != "" && e.branch != baseRef {
+		e.branchMissingOnRem = true
+	}
+	if n, err := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"); err == nil {
+		fmt.Sscan(n, &e.unpushed)
+	}
+	if out, err := gitOutput(ctx, dir, "status", "--porcelain", "--untracked-files=all"); err == nil {
+		for line := range strings.SplitSeq(out, "\n") {
+			if len(line) > 3 && !strings.HasPrefix(strings.Trim(line[3:], `"`), ".glue/") {
+				e.dirtyFiles++
+			}
+		}
+	}
+	if e.branchMissingOnRem || e.unpushed > 0 || e.dirtyFiles > 0 {
+		return e
+	}
+	return nil
 }
 
 func isRemoteRepoRef(raw string) bool {
@@ -266,14 +337,15 @@ func resolveSSHHost(parent context.Context, host string) string {
 	return host
 }
 
+// detectDefaultBaseRef prefers the current branch when origin has it, then origin's default branch.
 func detectDefaultBaseRef(ctx context.Context, dir string) string {
-	if sym, err := gitOutput(ctx, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil && len(sym) > len("origin/") && strings.HasPrefix(sym, "origin/") {
-		return strings.TrimPrefix(sym, "origin/")
-	}
 	if cur, err := gitOutput(ctx, dir, "branch", "--show-current"); err == nil && cur != "" {
 		if _, err := gitOutput(ctx, dir, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+cur); err == nil {
 			return cur
 		}
+	}
+	if sym, err := gitOutput(ctx, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil && len(sym) > len("origin/") && strings.HasPrefix(sym, "origin/") {
+		return strings.TrimPrefix(sym, "origin/")
 	}
 	return ""
 }

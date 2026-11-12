@@ -22,6 +22,28 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   silently falling back to a one-item plan. `loop.ErrMaxTurns` is now an
   exported sentinel (the error message is unchanged).
 
+- `glue --remote --snapshot` sends the working tree, including uncommitted and
+  untracked changes and unpushed commits, to a remote job without touching the
+  local index, branch or stash. The snapshot is pushed to
+  `glue/snapshot-<job-id>`, recorded as `repo.snapshot_of`, and removed by
+  `glue job delete`; draft PRs target the developer's branch.
+
+- Remote jobs submitted from a local checkout now start from the current
+  branch when `origin` has it, and refuse to submit when the remote clone
+  would miss local work (unpushed branch or commits, uncommitted or untracked
+  files). Pass `--base <ref>` or `--ignore-local` to proceed anyway.
+
+- Remote jobs submitted from a local checkout now start from the current
+  branch when `origin` has it, and refuse to submit when the remote clone
+  would miss local work (unpushed branch or commits, uncommitted or untracked
+  files). Pass `--base <ref>` or `--ignore-local` to proceed anyway.
+
+- Add the remote mode Phase 3 design
+  ([docs/remote-mode-phase3-design.md](docs/remote-mode-phase3-design.md)): a
+  hands-on review of `glue --remote` on the standing AX cluster and a
+  dependency-ordered work queue (milestones K–P) linked from the remote
+  roadmap and project plan.
+
 - Record [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) (direct
   Laptop-to-AX execution via `internal/axbackend`, AX as sole external platform
   dependency with zero `glue-system` manifests, `auto` default job policy, and
