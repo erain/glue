@@ -82,6 +82,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	verbose := fs.Bool("verbose", false, "attach: show full tool output")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
+	var notify repeatedStrings
+	fs.Var(&notify, "notify", "remote jobs: URL to POST to when the job waits for input or finishes; repeatable (default GLUE_NOTIFY_URL)")
 	var verifyRaw repeatedStrings
 	fs.Var(&verifyRaw, "verify", "verification command")
 	pos, err := parseInterspersed(fs, args)
@@ -122,7 +124,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		*provider, *model, *thinking = sel.Provider, sel.Model, sel.Thinking
 	}
-	target.conn, target.remote, target.backend = conn, remote.enabled, *backend
+	target.conn, target.remote, target.backend, target.notify = conn, remote.enabled, *backend, notify
+	for _, u := range notify {
+		if err := jobs.ValidNotifyURL(u); err != nil {
+			return err
+		}
+	}
 	submitStart := time.Now()
 	if sub == "submit" && !*quiet {
 		target.progress = func(stage string) {

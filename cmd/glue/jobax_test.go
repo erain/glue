@@ -625,3 +625,30 @@ func TestSubmitQuiet(t *testing.T) {
 		t.Fatalf("--quiet: stdout=%q stderr=%q", stdout, stderr)
 	}
 }
+
+type notifyFakeAPI struct{ jobAPI }
+
+func (notifyFakeAPI) Close() error { return nil }
+func (notifyFakeAPI) Submit(_ context.Context, spec jobs.Spec, _ bool) (jobs.Job, error) {
+	return jobs.Job{ID: "job-notify000001", Spec: spec}, nil
+}
+
+func TestNotifyHostInEgress(t *testing.T) {
+	clearJobTestEnv(t)
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	var got axbackend.Options
+	newAXJobAPI = func(_ context.Context, opts axbackend.Options) (jobAPI, error) { got = opts; return notifyFakeAPI{}, nil }
+	var out bytes.Buffer
+	err := jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "--notify", "https://ntfy.sh/glue-secret-topic", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
+	checkAX(t, err == nil, "submit: %v", err)
+	checkAX(t, slices.Contains(got.EgressHosts, "ntfy.sh") && slices.Contains(got.EgressHosts, "github.com"), "egress = %v", got.EgressHosts)
+	checkAX(t, len(got.Credentials.NotifyURLs) == 1 && got.Credentials.NotifyURLs[0] == "https://ntfy.sh/glue-secret-topic", "notify creds = %v", got.Credentials.NotifyURLs)
+
+	t.Setenv("GLUE_NOTIFY_URL", "https://hooks.example.com/abc")
+	err = jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
+	checkAX(t, err == nil && slices.Contains(got.EgressHosts, "hooks.example.com"), "env default: %v %v", err, got.EgressHosts)
+
+	err = jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "--notify", "ntfy.sh/x", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
+	checkAX(t, err != nil && strings.Contains(err.Error(), "invalid notify URL"), "bad URL: %v", err)
+}
