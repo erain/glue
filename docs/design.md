@@ -194,11 +194,12 @@ until the provider stops or the context is canceled.
    (the Gemini narrate-then-stop stall).
 5. If the assistant requested tools, execute the requested tools.
 6. Append tool result messages in deterministic order.
-7. Guardrails inspect the round: repeated identical calls or
+7. `RunRequest.Steer` (wired to `Session.Steer`) is drained before every model request; each returned text becomes a user message and an `EventSteer` event, so input that arrives mid-run reaches the next turn.
+8. Guardrails inspect the round: repeated identical calls or
    consecutive all-error rounds first draw a corrective injected
    message, then halt the run with a typed error
    (`RunRequest.Guardrails`).
-8. Repeat from step 2 until no tool calls remain.
+9. Repeat from step 2 until no tool calls remain.
 
 The concrete P0 entry point is `loop.Run(ctx, loop.RunRequest)`. It returns a
 `loop.RunResult` containing both the full transcript and the messages produced by

@@ -66,6 +66,29 @@ type Session struct {
 
 	nextSubscriberID int
 	subscribers      map[int]func(Event)
+
+	steerMu sync.Mutex
+	steer   []string
+}
+
+// Steer queues text for the model. It is added to the conversation as a
+// user message before the next model request of the running prompt, or of
+// the next prompt if none is running. It is safe to call from any goroutine.
+func (s *Session) Steer(text string) {
+	if s == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	s.steerMu.Lock()
+	s.steer = append(s.steer, text)
+	s.steerMu.Unlock()
+}
+
+func (s *Session) drainSteer() []string {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	out := s.steer
+	s.steer = nil
+	return out
 }
 
 // ID returns the session id.
@@ -280,6 +303,7 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 			SessionID:    s.id,
 			Permission:   permission,
 			Hooks:        cloneHooks(s.agent.hooks),
+			Steer:        s.drainSteer,
 			AutoContinue: s.agent.autoContinue,
 			Emit: func(event Event) {
 				if config.emit != nil {

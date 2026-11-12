@@ -129,6 +129,8 @@ func (r *jobRenderer) render(ev eventlog.Envelope) {
 		if text := payloadString(ev.Payload, "text"); text != "" {
 			r.line(ev.Time, "operator: %s", oneLine(text))
 		}
+	case "operator_message_delivered":
+		r.line(ev.Time, "operator message delivered to the agent")
 	case "run_interrupted":
 		r.line(ev.Time, "interrupted: %s", cmp.Or(payloadString(ev.Payload, "reason"), payloadString(ev.Payload, "message"), "run interrupted"))
 	case "task_suspended":

@@ -82,6 +82,7 @@ const (
 	EventToolStart    = loop.EventToolStart
 	EventToolEnd      = loop.EventToolEnd
 	EventError        = loop.EventError
+	EventSteer        = loop.EventSteer
 )
 
 // ProviderEventType constants re-exported from package loop.

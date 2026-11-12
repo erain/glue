@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
+
+// EventSteer is emitted when RunRequest.Steer input is added to the
+// conversation. Event.Message carries the user message.
+const EventSteer EventType = "steer"
 
 const defaultMaxTurns = 32
 
@@ -40,6 +45,10 @@ type RunRequest struct {
 	Permission   Permission
 	Hooks        []Hook
 	Emit         func(Event)
+	// Steer, when set, is called before every model request. Each returned
+	// text is appended to the conversation as a user message, so input that
+	// arrives while the run is working reaches the model at its next turn.
+	Steer func() []string
 
 	// Retry bounds loop-level provider retries (transient failures,
 	// dropped streams). The zero value enables retries with defaults;
@@ -120,6 +129,17 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 
 		emit(Event{Type: EventTurnStart})
+		if req.Steer != nil {
+			for _, text := range req.Steer() {
+				if text = strings.TrimSpace(text); text == "" {
+					continue
+				}
+				msg := Message{Role: MessageRoleUser, Content: []ContentPart{{Type: ContentTypeText, Text: text}}}
+				messages = append(messages, msg)
+				newMessages = append(newMessages, msg)
+				emit(Event{Type: EventSteer, Message: messagePtr(msg)})
+			}
+		}
 		assistant, err := runAssistantTurnWithRetry(ctx, req, messages, emit)
 		if err != nil {
 			return fail(err)
