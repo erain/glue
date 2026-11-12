@@ -135,6 +135,12 @@ type Manager struct {
 	mu, eventsMu sync.Mutex
 	active       map[string]*execution
 	wg           sync.WaitGroup
+
+	// notifyMu guards notifyClosed; notifyWG tracks notifications in flight
+	// so Close can let them finish before closing the store.
+	notifyMu     sync.Mutex
+	notifyClosed bool
+	notifyWG     sync.WaitGroup
 	closed       bool
 	closeOnce    sync.Once
 	closeErr     error

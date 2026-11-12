@@ -215,3 +215,35 @@ func TestNotifyNtfyPlainText(t *testing.T) {
 		t.Fatalf("json post: %v type=%q body=%q title=%q", err, gotType, gotBody, gotTitle)
 	}
 }
+
+func TestNotifyDeliveredBeforeClose(t *testing.T) {
+	orig := notifyBackoff
+	notifyBackoff = []time.Duration{0, 300 * time.Millisecond, 300 * time.Millisecond}
+	t.Cleanup(func() { notifyBackoff = orig })
+	sink := newNotifySink(t, 1) // the first attempt fails, so delivery is still retrying at Close
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) {
+		return &scriptProvider{turns: [][]glue.ProviderEvent{
+			turn(`{"items":[{"title":"look"}]}`),
+			turn("looked"),
+			turn(`{"done":true,"items":[{"title":"look","done":true,"evidence":"ok"}],"summary":"done"}`),
+		}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetCredentials(Credentials{NotifyURLs: []string{sink.ts.URL}})
+	job, _ := m.Create(context.Background(), Spec{Objective: "look", Repo: RepoSpec{Path: repoFixture(t)}})
+	if err := m.Start(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitJob(t, m, job.ID)
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	got := len(sink.got)
+	sink.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("notifications delivered by the time Close returned = %d, want 1", got)
+	}
+}

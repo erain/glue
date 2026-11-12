@@ -15,6 +15,23 @@ import (
 	"time"
 )
 
+// notifyCloseTimeout bounds how long notifications may run, and how long
+// Manager.Close waits for those still in flight.
+const notifyCloseTimeout = 20 * time.Second
+
+// waitNotifications stops new notifications and waits up to d for the rest.
+func (m *Manager) waitNotifications(d time.Duration) {
+	m.notifyMu.Lock()
+	m.notifyClosed = true
+	m.notifyMu.Unlock()
+	done := make(chan struct{})
+	go func() { m.notifyWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
 // notifyBackoff is the wait before each notification attempt.
 var notifyBackoff = []time.Duration{0, 2 * time.Second, 5 * time.Second}
 
@@ -71,32 +88,40 @@ func (m *Manager) maybeNotify(id, typ string, payload any) {
 	if len(urls) == 0 {
 		return
 	}
+	ctx := context.Background()
+	job, err := m.Get(ctx, id)
+	if err != nil {
+		return
+	}
+	n := Notification{JobID: id, Event: event, Status: job.Status, Objective: job.Spec.Objective}
+	if event == "done" {
+		if res, err := m.Result(ctx, id); err == nil {
+			n.Status, n.Summary, n.PRURL = res.Status, res.Summary, res.PRURL
+		}
+		n.Text = strings.TrimSpace(fmt.Sprintf("Glue job %s %s: %s %s", id, n.Status, cmp.Or(n.Summary, oneLineObjective(n.Objective)), n.PRURL))
+	} else {
+		n.Status = WaitingForInput
+		if p, ok := payload.(map[string]any); ok {
+			if req, ok := p["request"]; ok {
+				raw, _ := json.Marshal(req)
+				var r struct{ Tool, Action, Target string }
+				_ = json.Unmarshal(raw, &r)
+				n.Question = strings.TrimSpace("approve " + strings.TrimSpace(r.Tool+" "+r.Action) + " " + r.Target)
+			}
+		}
+		n.Text = strings.TrimSpace(fmt.Sprintf("Glue job %s needs you: %s (%s)", id, cmp.Or(n.Question, "waiting for input"), oneLineObjective(n.Objective)))
+	}
+	m.notifyMu.Lock()
+	if m.notifyClosed {
+		m.notifyMu.Unlock()
+		return
+	}
+	m.notifyWG.Add(1)
+	m.notifyMu.Unlock()
 	go func() {
-		ctx := context.Background()
-		job, err := m.Get(ctx, id)
-		if err != nil {
-			return
-		}
-		n := Notification{JobID: id, Event: event, Status: job.Status, Objective: job.Spec.Objective}
-		if event == "done" {
-			if res, err := m.Result(ctx, id); err == nil {
-				n.Status, n.Summary, n.PRURL = res.Status, res.Summary, res.PRURL
-			}
-			n.Text = strings.TrimSpace(fmt.Sprintf("Glue job %s %s: %s %s", id, n.Status, cmp.Or(n.Summary, oneLineObjective(n.Objective)), n.PRURL))
-		} else {
-			n.Status = WaitingForInput
-			if typ == "permission_request" {
-				if p, ok := payload.(map[string]any); ok {
-					if req, ok := p["request"]; ok {
-						raw, _ := json.Marshal(req)
-						var r struct{ Tool, Action, Target string }
-						_ = json.Unmarshal(raw, &r)
-						n.Question = strings.TrimSpace("approve " + strings.TrimSpace(r.Tool+" "+r.Action) + " " + r.Target)
-					}
-				}
-			}
-			n.Text = strings.TrimSpace(fmt.Sprintf("Glue job %s needs you: %s (%s)", id, cmp.Or(n.Question, "waiting for input"), oneLineObjective(n.Objective)))
-		}
+		defer m.notifyWG.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), notifyCloseTimeout)
+		defer cancel()
 		for _, u := range urls {
 			if err := postNotification(ctx, u, n); err != nil {
 				_ = m.record(id, "notify_failed", map[string]any{"event": event, "error": sanitizeToken(redactURL(err.Error(), u))}, "", nil, "")
