@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue job say` now reaches a running maker at its next model turn instead of
+  the next iteration, and the job logs `operator_message_delivered`. The loop
+  gains `RunRequest.Steer` / `EventSteer`, and sessions gain `Session.Steer`
+  for library users.
+
 - `glue job attach` prints a readable transcript: elapsed-time prefixes,
   phase headers, one line per tool call with its key argument, outcome and
   duration, the first 10 lines of failed output, and a closing summary with

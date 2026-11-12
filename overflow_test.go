@@ -85,3 +85,33 @@ func TestSessionOverflowWithoutCompactorSurfaces(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 2 (no retry without compactor)", provider.calls)
 	}
 }
+
+func TestSteeredMessageSurvivesOverflowRetry(t *testing.T) {
+	provider := &overflowOnceProvider{failAt: 4}
+	agent := NewAgent(AgentOptions{Provider: provider, Compactor: KeepRecentMessages(1), CompactionThreshold: 100})
+	session, err := agent.Session(context.Background(), "overflow-steer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"one", "two", "three"} {
+		if _, err := session.Prompt(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session.Steer("operator: stop and summarize")
+	if _, err := session.Prompt(context.Background(), "fourth"); err != nil {
+		t.Fatal(err)
+	}
+	retried := provider.requests[4].Messages
+	found := false
+	for _, m := range retried {
+		for _, c := range m.Content {
+			if c.Text == "operator: stop and summarize" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("steered text missing from the retried request: %+v", retried)
+	}
+}

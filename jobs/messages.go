@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/erain/glue"
+
 	"github.com/erain/glue/internal/eventlog"
 )
 
@@ -27,7 +29,33 @@ func (m *Manager) Message(ctx context.Context, id, text string) error {
 	if m.closed {
 		return errors.New("jobs: manager is closed")
 	}
-	return m.record(id, "operator_message", map[string]any{"text": text}, "", nil, "")
+	if err := m.record(id, "operator_message", map[string]any{"text": text}, "", nil, ""); err != nil {
+		return err
+	}
+	if run := m.active[id]; run != nil {
+		run.mu.Lock()
+		maker := run.maker
+		run.mu.Unlock()
+		// Deliver at the maker's next model turn. The durable guidance above
+		// still reaches later iterations and the checker.
+		maker.Steer(operatorSteerPrefix + text)
+	}
+	return nil
+}
+
+// operatorSteerPrefix marks a message steered into a running maker turn.
+const operatorSteerPrefix = "Message from the developer, sent while you were working. Take it into account now:\n"
+
+func steerMessageText(e glue.Event) string {
+	if e.Message == nil {
+		return ""
+	}
+	for _, c := range e.Message.Content {
+		if c.Type == glue.ContentTypeText {
+			return strings.TrimPrefix(c.Text, operatorSteerPrefix)
+		}
+	}
+	return ""
 }
 
 func (m *Manager) guidance(ctx context.Context, id string, iteration int) (string, error) {

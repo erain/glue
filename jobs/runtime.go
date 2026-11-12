@@ -29,6 +29,8 @@ type execution struct {
 	mu                      sync.Mutex
 	cancel                  context.CancelFunc
 	writeErr                error
+	// maker is the running maker session; operator messages steer it.
+	maker *glue.Session
 }
 
 // Start detaches execution from the caller after durably recording its start.
@@ -256,7 +258,20 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 		Guidance: func(ctx context.Context, iteration int) (string, error) { return m.guidance(ctx, id, iteration) },
 		Emit:     func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
 		OnSession: func(phase string, iteration int, s *glue.Session) {
-			unsubscribe = append(unsubscribe, s.Subscribe(func(e glue.Event) { emit(string(e.Type), e, phase, &iteration) }))
+			unsubscribe = append(unsubscribe, s.Subscribe(func(e glue.Event) {
+				if e.Type == glue.EventSteer {
+					emit("operator_message_delivered", map[string]any{"text": steerMessageText(e)}, phase, &iteration)
+					return
+				}
+				emit(string(e.Type), e, phase, &iteration)
+			}))
+			run.mu.Lock()
+			if phase == "maker" {
+				run.maker = s
+			} else {
+				run.maker = nil
+			}
+			run.mu.Unlock()
 		},
 	}
 	if run.resume != nil {
