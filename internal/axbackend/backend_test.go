@@ -397,3 +397,21 @@ func TestWorkspaceSeedsOnlyTokenHash(t *testing.T) {
 	content := files[0].GetContent()
 	check(t, content == daemon.HashToken(b.taskToken(id))+"\n" && !strings.Contains(content, b.taskToken(id)), "workspace token file must hold only the hash, got %q", content)
 }
+
+func TestSubmitProgress(t *testing.T) {
+	_, _, opts, _ := newFakeBackendEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/credentials" {
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		jobID := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")[0]
+		_, _ = fmt.Fprintf(w, `{"id":%q,"status":"running","credentials":"present"}`, jobID)
+	})
+	var stages []string
+	opts.Progress = func(stage string) { stages = append(stages, stage) }
+	b := must(NewBackend(t.Context(), opts))(t)
+	defer b.Close()
+	must(b.Submit(t.Context(), "job-progress0001", jobs.Spec{Objective: "Show stages", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
+	want := []string{"workspace", "task", "egress", "sandbox ready", "credentials", "started"}
+	check(t, reflect.DeepEqual(stages, want), "stages = %v, want %v", stages, want)
+}

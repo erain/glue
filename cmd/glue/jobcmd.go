@@ -79,6 +79,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull: switch to the job branch"), fs.Bool("apply", false, "pull: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull: overwrite an existing local branch or apply over local changes")
 	noBudget := fs.Bool("no-budget", false, "remote jobs: do not apply the default wall-clock and token budgets")
 	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting")
+	quiet := fs.Bool("quiet", false, "submit: print only the job ID")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -122,6 +123,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		*provider, *model, *thinking = sel.Provider, sel.Model, sel.Thinking
 	}
 	target.conn, target.remote, target.backend = conn, remote.enabled, *backend
+	submitStart := time.Now()
+	if sub == "submit" && !*quiet {
+		target.progress = func(stage string) {
+			fmt.Fprintf(stderr, "  %-14s %5.1fs\n", stage, time.Since(submitStart).Seconds())
+		}
+	}
 	c, directAX, err := resolveJobAPI(ctx, target, httpClient)
 	if err != nil {
 		return err
@@ -173,6 +180,17 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			return err
 		}
 		fmt.Fprintln(stdout, job.ID)
+		if !*quiet {
+			summary := job.Spec
+			if summary.Objective == "" {
+				summary = jobs.Spec{
+					Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
+					Budgets: jobs.Budgets{MaxIterations: *maxIter, TokenBudget: *budget, WallClock: *wallClock},
+					Policy:  strings.TrimSpace(*policy), Delivery: strings.TrimSpace(*deliver), Verify: verify,
+				}
+			}
+			printSubmitSummary(stderr, job.ID, directAX, *start, summary)
+		}
 		if *attach {
 			return attachJob(ctx, c, job.ID, stdin, stdout, stderr)
 		}
@@ -281,6 +299,42 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 }
 func budgetText(v string, unlimited bool) string {
+	if unlimited {
+		return "unlimited"
+	}
+	return v
+}
+
+// printSubmitSummary reports what a submitted job got and how to follow it.
+// It writes to stderr so stdout stays the bare job ID for scripts.
+func printSubmitSummary(w io.Writer, id string, directAX, started bool, spec jobs.Spec) {
+	where := "server"
+	if directAX {
+		where = "AX"
+	}
+	state := "started"
+	if !started {
+		state = "created (not started; run glue job start " + id + ")"
+	}
+	fmt.Fprintf(w, "job %s %s on %s\n", id, state, where)
+	repo := cmp.Or(spec.Repo.URL, spec.Repo.Path)
+	if spec.Repo.BaseRef != "" {
+		repo += " @ " + spec.Repo.BaseRef
+	}
+	fmt.Fprintf(w, "  %-9s %s\n", "repo", repo)
+	if prov, mod, err := resolveSelection(true, spec.Provider, spec.Model); err == nil {
+		fmt.Fprintf(w, "  %-9s %s/%s (thinking: %s)\n", "model", prov, mod, cmp.Or(spec.Thinking, "default"))
+	}
+	fmt.Fprintf(w, "  %-9s %s · delivery %s\n", "policy", cmp.Or(spec.Policy, "auto"), cmp.Or(spec.Delivery, "none"))
+	b := spec.Budgets
+	fmt.Fprintf(w, "  %-9s wall clock %s · tokens %s · max %d iterations\n", "budgets", budgetSummary(b.WallClock.String(), b.WallClock == 0), budgetSummary(fmt.Sprint(b.TokenBudget), b.TokenBudget == 0), cmp.Or(b.MaxIterations, 10))
+	for _, v := range spec.Verify {
+		fmt.Fprintf(w, "  %-9s %s\n", "verify", strings.Join(v, " "))
+	}
+	fmt.Fprintf(w, "  %-9s glue job attach %s\n  %-9s glue job show %s\n  %-9s glue job cancel %s\n", "watch", id, "status", id, "stop", id)
+}
+
+func budgetSummary(v string, unlimited bool) string {
 	if unlimited {
 		return "unlimited"
 	}
