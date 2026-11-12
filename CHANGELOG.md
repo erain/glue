@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Secret redaction no longer corrupts ordinary words that contain a token
+  prefix (for example `ax-task-runner` was shown as `ax-ta[REDACTED]`):
+  token shapes must start at a word boundary and be at least 20 characters
+  after the prefix. GitHub `ghs_`, `ghu_` and `ghr_` tokens are now matched too.
+
 - New `glue job pull <id> [--checkout|--apply] [--force]` brings a finished
   job's changes into the local checkout, as the `glue/<id>` branch (built from
   the job patch when the branch was never pushed) or as uncommitted changes.
