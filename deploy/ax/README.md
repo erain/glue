@@ -5,7 +5,8 @@ Container image for running Glue durable coding jobs directly as [AX](https://gi
 ## Task Image (`deploy/ax/task-image/Dockerfile`)
 
 - **Base image:** digest-pinned `ax-task-runner` (`ARG BASE_IMAGE` from `${STATE}/images.env`), keeping `ENTRYPOINT ["/usr/local/bin/ax-task-runner"]` untouched as PID 1.
-- **Toolchain:** Go `1.27.3` from the official tarball with pinned SHA-256 verification (`65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40` on `linux/amd64`), `git`, `make`, `ca-certificates`, `bash`, and `/usr/local/bin/glue` built from this repo in a multi-stage build.
+- **Toolchain:** Go `1.27.3` and Node.js `26.13.0` LTS (with `npm`) from their official tarballs with pinned SHA-256 verification, the base image's Python `3.12` with `pip` and `venv` plus `uv 0.13.6`, `gcc`/`g++` with libc headers, `git`, `make`, `ripgrep`, `jq`, `curl`, `ca-certificates`, `bash`, and `/usr/local/bin/glue` built from this repo in a multi-stage build. The image is about 1.4 GiB (up from about 0.7 GiB with Go only); AX workers cache it after the first pull. `scripts/ax-dev/e2e/image-smoke.sh [image]` prints each tool's version and the image size.
+- **Default egress:** besides GitHub, the Go module proxy and the model providers, tasks may reach `registry.npmjs.org`, `pypi.org`, and `files.pythonhosted.org` (TLS passthrough on port 443).
 - **Optional module cache pre-warm:** pass `--build-arg PREWARM_GOMOD_REPO=<url>` (or set `PREWARM_GOMOD_REPO` / `PREWARM_GOMOD_REF` when running `scripts/ax-dev/build-task-image.sh`) to pre-populate `GOMODCACHE=/go/pkg/mod`.
 - **Build & push:** `scripts/ax-dev/build-task-image.sh` (or `make ax-dev-task-image`) pushes `localhost:5001/glue-task:dev`, prints its `@sha256:...` digest, and records `GLUE_TASK_IMAGE` in `${STATE}/images.env`.
 
