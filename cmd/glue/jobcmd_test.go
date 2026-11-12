@@ -300,3 +300,55 @@ func waitJob(t *testing.T, mgr *jobs.Manager, jobID string, want jobs.Status) st
 	t.Fatalf("timed out waiting for %s status %s", jobID, want)
 	return ""
 }
+
+type pruneFakeAPI struct {
+	jobAPI
+	list    []jobs.Job
+	deleted []string
+	pruned  []string
+}
+
+func (f *pruneFakeAPI) List(context.Context, jobs.Filter) ([]jobs.Job, error) { return f.list, nil }
+func (f *pruneFakeAPI) Delete(_ context.Context, id string) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+type pruneFakeAXAPI struct{ *pruneFakeAPI }
+
+func (f pruneFakeAXAPI) Prune(_ context.Context, id string) error {
+	f.pruned = append(f.pruned, id)
+	return nil
+}
+
+func TestJobPrune(t *testing.T) {
+	now := time.Now()
+	list := []jobs.Job{
+		{ID: "job-old-done", Status: jobs.Achieved, UpdatedAt: now.Add(-10 * 24 * time.Hour)},
+		{ID: "job-old-running", Status: jobs.Running, UpdatedAt: now.Add(-10 * 24 * time.Hour)},
+		{ID: "job-new-done", Status: jobs.Canceled, UpdatedAt: now.Add(-time.Hour)},
+	}
+	var out bytes.Buffer
+	f := &pruneFakeAPI{list: list}
+	if err := pruneJobs(context.Background(), f, now.Add(-7*24*time.Hour), true, &out); err != nil || len(f.deleted) != 0 || !strings.Contains(out.String(), "would delete job-old-done") || strings.Contains(out.String(), "job-new-done") || strings.Contains(out.String(), "job-old-running") {
+		t.Fatalf("dry run: err=%v deleted=%v out=%q", err, f.deleted, out.String())
+	}
+	out.Reset()
+	if err := pruneJobs(context.Background(), f, now.Add(-7*24*time.Hour), false, &out); err != nil || len(f.deleted) != 1 || f.deleted[0] != "job-old-done" {
+		t.Fatalf("prune: err=%v deleted=%v out=%q", err, f.deleted, out.String())
+	}
+	ax := pruneFakeAXAPI{&pruneFakeAPI{list: list}}
+	if err := pruneJobs(context.Background(), ax, now.Add(-7*24*time.Hour), false, &out); err != nil || len(ax.pruned) != 1 || len(ax.deleted) != 0 {
+		t.Fatalf("ax prune: err=%v pruned=%v deleted=%v", err, ax.pruned, ax.deleted)
+	}
+	for in, want := range map[string]time.Duration{"7d": 7 * 24 * time.Hour, "12h": 12 * time.Hour, "0d": 0} {
+		if got, err := parseAge(in); err != nil || got != want {
+			t.Fatalf("parseAge(%q) = %v, %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"7x", "-1h", "1.5d"} {
+		if _, err := parseAge(in); err == nil {
+			t.Fatalf("parseAge(%q) succeeded", in)
+		}
+	}
+}

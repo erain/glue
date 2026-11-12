@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/jobs"
@@ -47,7 +48,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|diff|pull|approve|deny|say|continue|cancel|delete> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|diff|pull|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -77,6 +78,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
 	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull: switch to the job branch"), fs.Bool("apply", false, "pull: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull: overwrite an existing local branch or apply over local changes")
 	noBudget := fs.Bool("no-budget", false, "remote jobs: do not apply the default wall-clock and token budgets")
+	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -102,7 +104,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		_, err := fmt.Fprintf(stdout, "saved token in %s\n", jobclient.ServersPath())
 		return err
 	}
-	if sub != "submit" && sub != "list" && len(pos) == 0 {
+	if sub != "submit" && sub != "list" && sub != "prune" && len(pos) == 0 {
 		return fmt.Errorf("usage: glue job %s <id>", sub)
 	}
 	if sub == "submit" && *selectFlag {
@@ -268,6 +270,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			}
 		}
 		return nil
+	case "prune":
+		age, err := parseAge(*olderThan)
+		if err != nil {
+			return err
+		}
+		return pruneJobs(ctx, c, time.Now().Add(-age), *dryRun, stdout)
 	default:
 		return fmt.Errorf("unknown job subcommand %q", sub)
 	}
@@ -278,6 +286,62 @@ func budgetText(v string, unlimited bool) string {
 	}
 	return v
 }
+
+// parseAge parses a Go duration or a whole number of days such as "7d".
+func parseAge(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if days, ok := strings.CutSuffix(raw, "d"); ok {
+		var n int
+		if _, err := fmt.Sscan(days, &n); err == nil && n >= 0 && fmt.Sprint(n) == days {
+			return time.Duration(n) * 24 * time.Hour, nil
+		}
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("invalid --older-than %q (use a duration such as 12h or a day count such as 7d)", raw)
+	}
+	return d, nil
+}
+
+// jobPruner deletes a job's backend resources while keeping its cached result.
+type jobPruner interface {
+	Prune(ctx context.Context, id string) error
+}
+
+// pruneJobs deletes finished jobs last updated before cutoff.
+func pruneJobs(ctx context.Context, c jobAPI, cutoff time.Time, dryRun bool, stdout io.Writer) error {
+	list, err := c.List(ctx, jobs.Filter{Limit: 10000})
+	if err != nil {
+		return err
+	}
+	var errs []error
+	n := 0
+	for _, j := range list {
+		if !axbackend.IsTerminal(j.Status) || j.UpdatedAt.After(cutoff) {
+			continue
+		}
+		n++
+		if dryRun {
+			fmt.Fprintf(stdout, "would delete %s\t%s\tupdated %s\n", j.ID, j.Status, j.UpdatedAt.Format(time.RFC3339))
+			continue
+		}
+		if p, ok := c.(jobPruner); ok {
+			err = p.Prune(ctx, j.ID)
+		} else {
+			err = c.Delete(ctx, j.ID)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", j.ID, err))
+			continue
+		}
+		fmt.Fprintf(stdout, "deleted %s\t%s\n", j.ID, j.Status)
+	}
+	if n == 0 {
+		fmt.Fprintln(stdout, "nothing to prune")
+	}
+	return errors.Join(errs...)
+}
+
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {

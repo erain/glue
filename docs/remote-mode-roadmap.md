@@ -51,6 +51,8 @@ milestones below.
 
 ## Job lifecycle
 
+In direct mode, finished tasks are suspended by the next `glue job attach`, `list`, `show`, or `cancel` (see [jobs.md](jobs.md)); `glue job prune` deletes old ones.
+
 ```
 created ──start──► running ⇄ waiting_for_input ──► achieved | blocked | max_iterations
    │                  │  (opt-in ask policy)        | budget_limited | errored | canceled
