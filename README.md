@@ -25,7 +25,7 @@ build your own tool-calling agents on the same provider-agnostic loop.
 # Check that remote jobs will work from here (cluster, image, repo, tokens):
 glue job doctor
 # Start an autonomous coding job on AX from any git checkout, then close your lid:
-id=$(glue --remote "Fix the race in pool_test.go" --verify "go test -race ./..." --deliver pr)
+id=$(glue --remote "Fix the race in pool_test.go" --verify "go test -race ./..." --deliver pr --notify https://ntfy.sh/<your-topic>)
 glue job list
 glue job attach "$id"   # replays missed events; Ctrl-C detaches without canceling
 glue job result "$id"   # branch, verification exit codes, and draft PR URL

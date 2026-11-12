@@ -91,6 +91,10 @@ const (
 type Credentials struct {
 	GitHubToken  string            `json:"github_token,omitempty"`
 	ProviderKeys map[string]string `json:"provider_keys,omitempty"`
+	// NotifyURLs receive a JSON POST when a job waits for input or finishes.
+	// They are secrets: kept in memory and redacted like tokens. A push
+	// without them keeps the URLs already set.
+	NotifyURLs []string `json:"notify_urls,omitempty"`
 }
 
 // Job is a persisted specification and its execution metadata.
@@ -131,6 +135,12 @@ type Manager struct {
 	mu, eventsMu sync.Mutex
 	active       map[string]*execution
 	wg           sync.WaitGroup
+
+	// notifyMu guards notifyClosed; notifyWG tracks notifications in flight
+	// so Close can let them finish before closing the store.
+	notifyMu     sync.Mutex
+	notifyClosed bool
+	notifyWG     sync.WaitGroup
 	closed       bool
 	closeOnce    sync.Once
 	closeErr     error
@@ -191,8 +201,18 @@ func (m *Manager) SetCredentials(creds Credentials) {
 			redact.Register(v)
 		}
 	}
+	var notify []string
+	for _, u := range creds.NotifyURLs {
+		if u = strings.TrimSpace(u); ValidNotifyURL(u) == nil {
+			notify = append(notify, u)
+			redact.Register(u)
+		}
+	}
 	m.credsMu.Lock()
-	m.creds, m.hasCreds = Credentials{GitHubToken: tok, ProviderKeys: keys}, tok != "" || len(keys) > 0
+	if len(notify) == 0 {
+		notify = m.creds.NotifyURLs
+	}
+	m.creds, m.hasCreds = Credentials{GitHubToken: tok, ProviderKeys: keys, NotifyURLs: notify}, tok != "" || len(keys) > 0
 	close(m.credsNotify)
 	m.credsNotify = make(chan struct{})
 	m.credsMu.Unlock()

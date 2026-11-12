@@ -113,6 +113,7 @@ func (m *Manager) Close() error {
 		}
 		m.mu.Unlock()
 		m.wg.Wait()
+		m.waitNotifications(notifyCloseTimeout)
 		m.closeErr = errors.Join(m.closeErr, m.store.DB.Close())
 		m.closeErr = errors.Join(m.closeErr, releaseLock(m.lock))
 	})
@@ -130,7 +131,11 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 	if err := m.appendEvent(tx, id, typ, payload, phase, iteration, status); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	m.maybeNotify(id, typ, payload)
+	return nil
 }
 
 func (m *Manager) appendEvent(tx *sql.Tx, id, typ string, payload any, phase string, iteration *int, status Status) error {

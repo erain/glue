@@ -132,18 +132,27 @@ type jobTargetOpts struct {
 	metadataExplicit, ax, remote                  bool
 	backend, kubeconfig, kubectx, atespace, image string
 	progress                                      func(stage string)
+	notify                                        []string
 }
 
 func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (jobAPI, bool, error) {
 	serverFlag, backend := strings.TrimSpace(t.conn.ServerURL), strings.TrimSpace(t.backend)
 	kubeCfg, kubeCtx := strings.TrimSpace(t.kubeconfig), strings.TrimSpace(t.kubectx)
 	openAX := func() (jobAPI, bool, error) {
+		creds := resolveAXCredentials(ctx)
+		egress := slices.Clone(axbackend.DefaultEgressHosts)
+		for _, u := range notifyURLs(t.notify) {
+			creds.NotifyURLs = append(creds.NotifyURLs, u)
+			if p, err := url.Parse(u); err == nil && !slices.Contains(egress, p.Hostname()) {
+				egress = append(egress, p.Hostname())
+			}
+		}
 		api, err := newAXJobAPI(ctx, axbackend.Options{
 			Connect: axbackend.ConnectOptions{
 				AXServer:   cmp.Or(strings.TrimSpace(os.Getenv("GLUE_AX_SERVER")), strings.TrimSpace(os.Getenv("AX_SERVER_ADDR"))),
 				KubeConfig: kubeCfg, KubeContext: kubeCtx, Atespace: cmp.Or(strings.TrimSpace(t.atespace), "default"),
 			},
-			Image: strings.TrimSpace(t.image), Credentials: resolveAXCredentials(ctx), Progress: t.progress,
+			Image: strings.TrimSpace(t.image), Credentials: creds, EgressHosts: egress, Progress: t.progress,
 		})
 		return api, true, err
 	}
@@ -172,6 +181,22 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 		return openAX()
 	}
 	return nil, false, fmt.Errorf("%w\nNo AX cluster was found either (pass --context, set GLUE_AX_CONTEXT, or source scripts/ax-dev/env.sh). Run glue job doctor for details", resolveErr)
+}
+
+// notifyURLs returns the valid --notify URLs, or GLUE_NOTIFY_URL when none were given.
+func notifyURLs(flags []string) []string {
+	if len(flags) == 0 {
+		if v := strings.TrimSpace(os.Getenv("GLUE_NOTIFY_URL")); v != "" {
+			flags = []string{v}
+		}
+	}
+	var out []string
+	for _, u := range flags {
+		if u = strings.TrimSpace(u); jobs.ValidNotifyURL(u) == nil {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 func envSet(keys ...string) bool {
