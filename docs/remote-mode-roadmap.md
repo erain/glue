@@ -78,9 +78,18 @@ on finish, resuming them automatically on user action.
 | H. Autonomous default | Default coding jobs and `glue serve` to `auto` policy (`DecisionAllow`, `"*"` binaries) | #521 |
 | I. AX-first direct CLI | `internal/axbackend`, `glue --remote`, pure `type: ax` host gateway, remove `glue-system` manifests | #522–#524, #529–#530 |
 | J. AX-first docs & E2E | ADR-0020, product-first docs/runbooks, and live Laptop-to-AX showcase verification | #525 |
+| K. Trust the first run (planned) | Setup checks, submit feedback, local state respected, default limits, agent kept away from Glue's token, finished tasks suspended | #538–#546 |
+| L. Watch (planned) | Readable transcript, re-readable history, live status, latency budgets | #547–#550 |
+| M. Steer (planned) | Messages land at the next step, the job can ask questions, notifications | #551–#553 |
+| N. Bring the work home (planned) | Branch by default, `diff`, `pull`, continue from PR feedback, TUI handoff | #554–#558 |
+| O. Environments (planned) | Per-repo remote settings, setup phase, Node.js and Python image published to GHCR | #559–#562 |
+| P. Scale out and showcase (planned) | Queueing, parallel attempts, jobs from issues, quickstart and scripted demo | #563–#566 |
 
 Milestones A–F shipped in tracker [#402](https://github.com/erain/glue/issues/402);
 Milestones G–J refine remote execution in tracker [#526](https://github.com/erain/glue/issues/526).
+Milestones K–P are Phase 3, designed in
+[remote-mode-phase3-design.md](remote-mode-phase3-design.md) and queued in
+[#402](https://github.com/erain/glue/issues/402).
 
 ## How each step is verified
 
