@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Finished AX jobs no longer hold a worker in direct mode: `glue job attach`
+  suspends the task after `job_done`, `glue job list`/`show` reconcile awake
+  tasks whose job has finished, and `glue job cancel` suspends the task. New
+  `glue job prune [--older-than 7d] [--dry-run]` deletes old finished jobs'
+  AX resources while keeping their cached results.
+
 - The daemon token file seeded into AX tasks now holds only `sha256:<hex>` of
   the per-job token, so an agent that reads `/workspace/.glue/token` can no
   longer use it to call the daemon (for example to approve its own permission

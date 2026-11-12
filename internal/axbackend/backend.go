@@ -451,6 +451,7 @@ func (b *Backend) ListJobs(ctx context.Context, f jobs.Filter) ([]jobs.Job, erro
 			out = append(out, j)
 		}
 	}
+	b.reconcileAwake(ctx, resp.GetTasks(), out)
 	slices.SortFunc(out, func(a, b jobs.Job) int { return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID)) })
 	if idx := slices.IndexFunc(out, func(j jobs.Job) bool { return f.Before != "" && j.ID == f.Before }); idx >= 0 {
 		out = out[idx+1:]
@@ -462,6 +463,62 @@ func (b *Backend) ListJobs(ctx context.Context, f jobs.Filter) ([]jobs.Job, erro
 		out = out[:f.Limit]
 	}
 	return out, nil
+}
+
+// IsTerminal reports whether st is a finished job status.
+func IsTerminal(st jobs.Status) bool { return isTerminal(st) }
+
+// reconcileTimeout bounds each status query reconcileAwake sends to an awake task.
+const reconcileTimeout = 3 * time.Second
+
+// reconcileAwake asks every awake task for its job status, four at a time.
+// Finished jobs get their result cached and their task suspended, so they
+// stop holding a worker. Suspended tasks are never contacted.
+func (b *Backend) reconcileAwake(ctx context.Context, tasks []*v1alpha1.Task, out []jobs.Job) {
+	idx := map[string]int{}
+	for i, j := range out {
+		idx[TaskName(j.ID)] = i
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sem := make(chan struct{}, 4)
+	for _, t := range tasks {
+		i, ok := idx[t.GetMetadata().GetName()]
+		if !ok || !isWorkspaceReady(t) {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			qctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+			defer cancel()
+			d, err := b.jobClient(id).Show(qctx, id)
+			if err != nil || d.Status == "" {
+				return
+			}
+			if isTerminal(d.Status) {
+				b.settleFinished(qctx, id)
+			}
+			b.updateCache(id, func(c *cachedJob) { c.Status = d.Status })
+			mu.Lock()
+			out[i].Status = d.Status
+			mu.Unlock()
+		}(i, out[i].ID)
+	}
+	wg.Wait()
+}
+
+// settleFinished caches the completion record of a finished job whose task
+// is awake, then suspends the task. It does nothing while the job is active.
+func (b *Backend) settleFinished(ctx context.Context, id string) bool {
+	res, err := b.jobClient(id).Result(ctx, id)
+	if err != nil || !isTerminal(res.Status) {
+		return false
+	}
+	b.updateCache(id, func(c *cachedJob) { c.Status, c.Result = res.Status, &res })
+	return b.Suspend(ctx, id) == nil
 }
 
 // Show inspects a Glue job, querying the live task when running and reconstructing without waking when suspended.
@@ -485,6 +542,9 @@ func (b *Backend) Show(ctx context.Context, id string) (jobs.Detail, error) {
 				c.Result = nil
 			}
 		})
+		if isTerminal(d.Status) {
+			b.settleFinished(ctx, id)
+		}
 		return d, nil
 	}
 	if c := b.loadCache(id); c != nil && c.Detail != nil {
@@ -585,15 +645,21 @@ func (b *Backend) Patch(ctx context.Context, id string) ([]byte, error) {
 func (b *Backend) Stream(ctx context.Context, id string, after int64, h func(eventlog.Envelope) error) error {
 	return b.withRunning(ctx, id, func(cli *jobclient.Client) error {
 		return cli.StreamEvents(ctx, id, after, func(ev eventlog.Envelope) error {
+			finished := false
 			if ev.Type == "job_waiting_for_credentials" {
 				_ = b.PushCredentials(ctx, id)
 			} else if ev.Type == "job_done" {
 				var p struct{ Status jobs.Status }
 				if raw, err := json.Marshal(ev.Payload); err == nil && json.Unmarshal(raw, &p) == nil && isTerminal(p.Status) {
 					b.updateCache(id, func(c *cachedJob) { c.Status = p.Status })
+					finished = true
 				}
 			}
-			return h(ev)
+			err := h(ev)
+			if finished {
+				b.settleFinished(context.WithoutCancel(ctx), id)
+			}
+			return err
 		})
 	})
 }
@@ -611,10 +677,31 @@ func (b *Backend) Decide(ctx context.Context, id, permID string, allow bool, rem
 func (b *Backend) Say(ctx context.Context, id, text string) error {
 	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Say(ctx, id, text) })
 }
+
+// Cancel cancels the job and suspends its task once the job has finished.
 func (b *Backend) Cancel(ctx context.Context, id string) error {
-	err := b.withTempWake(ctx, id, func(c *jobclient.Client) error { return c.Cancel(ctx, id) })
+	err := b.withTempWake(ctx, id, func(c *jobclient.Client) error {
+		if err := c.Cancel(ctx, id); err != nil {
+			return err
+		}
+		for range 40 {
+			if b.settleFinished(ctx, id) {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(b.opts.PollInterval):
+			}
+		}
+		return nil
+	})
 	if err == nil {
-		b.updateCache(id, func(c *cachedJob) { c.Status = jobs.Canceled })
+		b.updateCache(id, func(c *cachedJob) {
+			if !isTerminal(c.Status) {
+				c.Status = jobs.Canceled
+			}
+		})
 	}
 	return err
 }
@@ -631,7 +718,21 @@ func (b *Backend) Continue(ctx context.Context, id, text string, maxIterations i
 func (b *Backend) LoadSeq(id string) int64            { return b.jobClient(id).LoadSeq(id) }
 func (b *Backend) SaveSeq(id string, seq int64) error { return b.jobClient(id).SaveSeq(id, seq) }
 
+// DeleteTask deletes the job's AX task, workspace, and egress policy and its local cache.
 func (b *Backend) DeleteTask(ctx context.Context, id string) error {
+	return b.deleteResources(ctx, id, false)
+}
+
+// Prune deletes the job's AX task, workspace, and egress policy but keeps the
+// locally cached completion record, so glue job result still works.
+func (b *Backend) Prune(ctx context.Context, id string) error {
+	if _, err := b.Result(ctx, id); err != nil {
+		return fmt.Errorf("axbackend: cache result before pruning %s: %w", id, err)
+	}
+	return b.deleteResources(ctx, id, true)
+}
+
+func (b *Backend) deleteResources(ctx context.Context, id string, keepCache bool) error {
 	_, err1 := b.conn.AX.DeleteTask(ctx, &v1alpha1.DeleteTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)})
 	_, err2 := b.conn.AX.DeleteWorkspace(ctx, &v1alpha1.DeleteWorkspaceRequest{Atespace: b.conn.Atespace, Name: WorkspaceName(id)})
 	_, err3 := b.conn.Control.DeleteActorEgressPolicy(ctx, &ateapipb.DeleteActorEgressPolicyRequest{Actor: &ateapipb.ObjectRef{Atespace: b.conn.Atespace, Name: TaskName(id)}, Name: "default"})
@@ -639,6 +740,9 @@ func (b *Backend) DeleteTask(ctx context.Context, id string) error {
 		if err != nil && status.Code(err) != codes.NotFound {
 			return fmt.Errorf("axbackend: delete task resources for %s: %w", id, err)
 		}
+	}
+	if keepCache {
+		return nil
 	}
 	b.cacheMu.Lock()
 	_ = os.Remove(b.cachePath(id))
