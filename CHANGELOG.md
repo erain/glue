@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `--notify <url>` (or `GLUE_NOTIFY_URL`) makes remote jobs POST a short
+  notification when they wait for input or finish: JSON with a `text` line for
+  Slack-style webhooks, plain text with a title for ntfy topics. URLs are kept
+  in memory with the runtime credentials and redacted.
+
 - The AX task image now includes Node.js 26 LTS with npm, uv, gcc/g++,
   ripgrep and jq, and AX tasks may reach `registry.npmjs.org`, `pypi.org` and
   `files.pythonhosted.org` by default, so JavaScript and Python repos work as
