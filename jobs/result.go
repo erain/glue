@@ -70,8 +70,6 @@ type Result struct {
 	// Partial marks a canceled or errored job whose unfinished work was
 	// committed (and pushed when delivery allows) so it is not lost.
 	Partial bool `json:"partial,omitempty"`
-}
-
 	// BudgetExceeded names the budget that stopped a budget_limited job: "wall_clock" or "token_budget".
 	BudgetExceeded string `json:"budget_exceeded,omitempty"`
 }

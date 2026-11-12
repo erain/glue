@@ -237,6 +237,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		if res.DeliveryError != "" {
 			fmt.Fprintf(stdout, "delivery_error: %s\n", res.DeliveryError)
+		}
 		if res.BudgetExceeded != "" {
 			fmt.Fprintf(stdout, "budget_exceeded: %s\n", res.BudgetExceeded)
 		}

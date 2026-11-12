@@ -81,9 +81,7 @@ terminal `job_done` event:
   "summary": "Add created.txt greeting",
   "finished_at": "2026-11-10T00:00:00Z",
   "delivery_error": "",
-  "partial": false
-}
-
+  "partial": false,
   "budget_exceeded": ""
 }
 ```
