@@ -287,7 +287,7 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 		return job, fmt.Errorf("axbackend: update workspace %s: %w", WorkspaceName(id), err)
 	}
 	taskCfg := spec
-	taskCfg.ID, taskCfg.Repo = id, jobs.RepoSpec{Path: "/workspace", BaseRef: spec.Repo.BaseRef}
+	taskCfg.ID, taskCfg.Repo = id, jobs.RepoSpec{Path: "/workspace", BaseRef: spec.Repo.BaseRef, SnapshotOf: spec.Repo.SnapshotOf}
 	rawCfg, _ := json.Marshal(taskCfg)
 	var cfgMap map[string]any
 	_ = json.Unmarshal(rawCfg, &cfgMap)
@@ -417,7 +417,7 @@ func (b *Backend) taskToJob(t *v1alpha1.Task) (jobs.Job, bool) {
 	}
 	spec.ID = ""
 	if u, _ := cfgMap["repo_url"].(string); strings.TrimSpace(u) != "" {
-		spec.Repo = jobs.RepoSpec{URL: strings.TrimSpace(u), BaseRef: spec.Repo.BaseRef}
+		spec.Repo = jobs.RepoSpec{URL: strings.TrimSpace(u), BaseRef: spec.Repo.BaseRef, SnapshotOf: spec.Repo.SnapshotOf}
 	}
 	createdAt, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(cfgMap["created_at"]))
 	if createdAt.IsZero() && t.GetMetadata().GetCreateTime().IsValid() {

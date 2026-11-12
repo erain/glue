@@ -70,6 +70,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
 	status, before, remember, reason := fs.String("status", "", "status"), fs.String("before", "", "before cursor"), fs.String("remember", "", "remember scope"), fs.String("reason", "", "reason")
+	snapshot := fs.Bool("snapshot", false, "remote jobs: start from a snapshot of the working tree, including uncommitted changes")
+	snapshotMax := fs.Int64("snapshot-max-size", defaultSnapshotMaxBytes, "remote jobs: largest new file content a snapshot may push, in bytes")
 	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
@@ -122,8 +124,25 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	switch sub {
 	case "submit":
 		obj := cmp.Or(strings.TrimSpace(*objective), strings.TrimSpace(remote.objective), strings.TrimSpace(strings.Join(pos, " ")))
-		repoSpec, err := resolveSubmitRepo(ctx, directAX, remote.enabled, *ignoreLocal, *backend, *repo, *baseRef, obj)
-		if err != nil {
+		var repoSpec jobs.RepoSpec
+		var jobID string
+		if *snapshot {
+			if !directAX {
+				return errors.New("--snapshot needs direct AX execution (--ax or an AX context)")
+			}
+			dir := cmp.Or(strings.TrimSpace(*repo), ".")
+			if isRemoteRepoRef(dir) || strings.TrimSpace(*baseRef) != "" {
+				return errors.New("--snapshot works from a local checkout; drop --repo <url> and --base")
+			}
+			if jobID, err = jobs.NewID(); err != nil {
+				return err
+			}
+			var ref snapshotRef
+			if repoSpec, ref, err = resolveSnapshotRepo(ctx, dir, jobID, *snapshotMax); err != nil {
+				return err
+			}
+			fmt.Fprintf(stderr, "snapshot: %d changed file(s), %d KiB on top of %s -> origin %s\n", ref.files, ref.bytes>>10, repoSpec.SnapshotOf, repoSpec.BaseRef)
+		} else if repoSpec, err = resolveSubmitRepo(ctx, directAX, remote.enabled, *ignoreLocal, *backend, *repo, *baseRef, obj); err != nil {
 			return err
 		}
 		var verify [][]string
@@ -136,7 +155,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			*deliver = "draft_pr"
 		}
 		job, err := c.Submit(ctx, jobs.Spec{
-			Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
+			ID: jobID, Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
 			Budgets: jobs.Budgets{MaxIterations: *maxIter, TokenBudget: *budget, WallClock: *wallClock},
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 		}, *start)
@@ -171,6 +190,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			return writeJSONOrErr(stdout, d, err)
 		}
 		fmt.Fprintf(stdout, "id: %s\nstatus: %s\nobjective: %s\niteration: %d\ntokens: %d\npending_permissions: %d\n", d.ID, d.Status, d.Spec.Objective, d.Iteration, d.Usage.TotalTokens, d.PendingPermissionCount)
+		if d.Spec.Repo.SnapshotOf != "" {
+			fmt.Fprintf(stdout, "snapshot_of: %s\n", d.Spec.Repo.SnapshotOf)
+		}
 		perms, _ := c.Permissions(ctx, d.ID, "pending")
 		for _, p := range perms {
 			fmt.Fprintf(stdout, "pending_permission: %s\t%s\t%s\t%s\n", p.ID, p.Request.Tool, p.Request.Action, p.Request.Target)
@@ -199,7 +221,16 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	case "cancel":
 		return c.Cancel(ctx, pos[0])
 	case "delete":
-		return c.Delete(ctx, pos[0])
+		d, _ := c.Show(ctx, pos[0])
+		if err := c.Delete(ctx, pos[0]); err != nil {
+			return err
+		}
+		if d.Spec.Repo.SnapshotOf != "" {
+			if err := deleteSnapshotBranch(ctx, ".", pos[0]); err != nil {
+				fmt.Fprintf(stderr, "could not delete origin branch %s (%v); delete it by hand from a checkout of the repo\n", snapshotBranch(pos[0]), err)
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown job subcommand %q", sub)
 	}
