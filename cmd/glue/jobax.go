@@ -97,6 +97,10 @@ func (a *axJobAPI) Submit(ctx context.Context, spec jobs.Spec, start bool) (jobs
 		return jobs.Job{}, err
 	}
 	spec.Backend = "ax"
+	if spec.Delivery == "" {
+		// Work done in a remote sandbox must reach origin, or it is lost with the task.
+		spec.Delivery = "branch"
+	}
 	if start {
 		return a.Backend.Submit(ctx, id, spec)
 	}

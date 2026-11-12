@@ -205,6 +205,23 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, result)
 			return
+		case "patch":
+			if !jobMethod(w, r, http.MethodGet) {
+				return
+			}
+			patch, err := s.jobs.Patch(r.Context(), id)
+			if errors.Is(err, jobs.ErrPatchTooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "too_large", err.Error(), false)
+				return
+			}
+			if err != nil {
+				jobError(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", "text/x-diff; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(patch)
+			return
 		}
 	}
 	if len(parts) == 4 && parts[1] == "permissions" && parts[2] != "" && parts[3] == "decision" {

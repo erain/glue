@@ -67,6 +67,9 @@ type Result struct {
 	Summary       string         `json:"summary"`
 	FinishedAt    time.Time      `json:"finished_at"`
 	DeliveryError string         `json:"delivery_error"`
+	// Partial marks a canceled or errored job whose unfinished work was
+	// committed (and pushed when delivery allows) so it is not lost.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // Result reads the durable completion record for a finished job.
@@ -158,6 +161,15 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 				res.DeliveryError = sanitizeToken(err.Error())
 			}
 		}
+		// Canceled and errored jobs keep their unfinished work on the job
+		// branch. Interrupted jobs are skipped: a restart resumes them.
+		partial := status == Canceled || status == Errored
+		if partial {
+			msg := "Unfinished work from Glue job " + job.ID + " (" + string(status) + ")"
+			if err := commitWorkspaceChanges(context.Background(), job, msg); err != nil && res.DeliveryError == "" {
+				res.DeliveryError = sanitizeToken(err.Error())
+			}
+		}
 		if head, err := workspaceGit(context.Background(), job.Workspace, nil, "rev-parse", "HEAD"); err == nil {
 			res.HeadSHA = head
 		}
@@ -166,7 +178,8 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 				res.Diffstat = diffstat
 			}
 		}
-		if deliverable && res.DeliveryError == "" && (job.Spec.Delivery == "branch" || job.Spec.Delivery == "draft_pr") && res.BaseSHA != "" && res.HeadSHA != "" && res.HeadSHA != res.BaseSHA {
+		res.Partial = partial && res.BaseSHA != "" && res.HeadSHA != "" && res.HeadSHA != res.BaseSHA
+		if (deliverable || res.Partial) && res.DeliveryError == "" && (job.Spec.Delivery == "branch" || job.Spec.Delivery == "draft_pr") && res.BaseSHA != "" && res.HeadSHA != "" && res.HeadSHA != res.BaseSHA {
 			if err := deliverJob(context.Background(), job, goal, &res, m.githubToken()); err != nil {
 				res.DeliveryError = sanitizeToken(err.Error())
 			}
@@ -174,6 +187,45 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 	}
 	res.FinishedAt = m.options.Now().UTC()
 	return m.writeResult(res)
+}
+
+// MaxPatchBytes caps the size of a job patch served by Manager.Patch.
+var MaxPatchBytes int64 = 5 << 20
+
+// ErrPatchTooLarge reports a job patch over MaxPatchBytes.
+var ErrPatchTooLarge = errors.New("jobs: patch is too large")
+
+// Patch returns the binary git diff from the job's base to its final commit.
+func (m *Manager) Patch(ctx context.Context, id string) ([]byte, error) {
+	res, err := m.Result(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if res.BaseSHA == "" || res.HeadSHA == "" || res.BaseSHA == res.HeadSHA {
+		return []byte{}, nil
+	}
+	job, err := m.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", job.Workspace, "diff", "--binary", res.BaseSHA+".."+res.HeadSHA)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(out, MaxPatchBytes+1))
+	if int64(len(data)) > MaxPatchBytes {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("%w: over %d MiB; fetch the branch %s instead", ErrPatchTooLarge, MaxPatchBytes>>20, res.Branch)
+	}
+	if err := errors.Join(readErr, cmd.Wait()); err != nil {
+		return nil, fmt.Errorf("jobs: diff %s: %w", id, err)
+	}
+	return data, nil
 }
 
 func runVerifyCommand(ctx context.Context, dir string, env []string, timeout time.Duration, argv []string) VerifyResult {

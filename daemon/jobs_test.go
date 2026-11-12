@@ -221,6 +221,22 @@ func TestJobHTTPPermissionDecision(t *testing.T) {
 	if result["job_id"] != id || result["status"] != "achieved" || result["branch"] != "glue/"+id || !strings.Contains(result["diffstat"].(string), "hello.txt") {
 		t.Fatal(result)
 	}
+	patchReq := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path+"/patch", nil)
+		req.Header.Set("Authorization", "Bearer token")
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		return w
+	}
+	if w := patchReq(); w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/x-diff") || !strings.Contains(w.Body.String(), "hello.txt") {
+		t.Fatalf("patch = %d %q %q", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	orig := jobs.MaxPatchBytes
+	jobs.MaxPatchBytes = 8
+	t.Cleanup(func() { jobs.MaxPatchBytes = orig })
+	if w := patchReq(); w.Code != http.StatusRequestEntityTooLarge || !strings.Contains(w.Body.String(), "glue/"+id) {
+		t.Fatalf("oversized patch = %d %s", w.Code, w.Body.String())
+	}
 }
 func TestJobHTTPIdleKeepalive(t *testing.T) {
 	s, ts, repo := jobHTTPFixture(t, nil)

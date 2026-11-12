@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote work is no longer stranded in the sandbox: jobs submitted directly
+  to AX default to `--deliver branch`, canceled or errored jobs commit and push
+  their unfinished work (`partial: true` in the result), and the new
+  `GET /v1/jobs/{id}/patch` endpoint and `glue job diff <id> [--stat]` show a
+  job's changes. Direct AX mode caches the patch locally, so later `diff`
+  calls do not wake the task. `glue job result` prints `delivery_error`.
+
 - Goal checkers are limited to 12 tool turns and then return a verdict from
   the evidence they gathered, and a maker that runs out of turns hands over to
   the checker instead of failing. Jobs no longer end `errored` because the

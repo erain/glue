@@ -14,7 +14,7 @@ with `--coding`).
 | `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. |
 | `policy` | `string` | Permission profile (`auto` default, `workspace-auto`, `ask-all`, `yolo`, or custom policy name). |
 | `verify` | `[][]string` | Post-goal verification commands (`argv` slices) executed in the job workspace. |
-| `delivery` | `string` | `none` (default), `branch`, or `draft_pr`. |
+| `delivery` | `string` | `none`, `branch`, or `draft_pr`. Defaults to `none` for local jobs and to `branch` for jobs submitted directly to AX, so work done in a sandbox always reaches `origin`. |
 | `allowed_binaries`, `shell_env_pass`, `shell_env`, `shell_env_secret_allow`, `shell_timeout` | shell config | Per-job overrides for the coding shell and verification environment. |
 
 ## Lifecycle Statuses (`jobs.Status`)
@@ -57,9 +57,10 @@ terminal `job_done` event:
    body includes the objective, summary, checklist, verification results, token
    usage, and `"Opened by Glue job <id>"`. Push or API failures record
    `delivery_error` while preserving the job's terminal status.
-4. **Completion record:** The manager atomically writes
+4. **Unfinished work:** When a job ends `canceled` or `errored` with changes in its workspace, the manager commits them on `glue/<job-id>` ("Unfinished work from Glue job …") and pushes the branch when `delivery` is `branch` or `draft_pr` (it never opens a PR for them). The result is marked `partial: true`. `interrupted` jobs are left alone, because a restart resumes them.
+5. **Completion record:** The manager atomically writes
    `<state>/jobs/<id>/result.json` (`0600`) and serves it at
-   `GET /v1/jobs/{id}/result` (`409 conflict` while the job is still active):
+   `GET /v1/jobs/{id}/result` (`409 conflict` while the job is still active). `GET /v1/jobs/{id}/patch` returns `git diff --binary <base_sha>..<head_sha>` as `text/x-diff` (empty when nothing changed, `413` above 5 MiB with the branch to fetch instead):
 
 ```json
 {
@@ -79,7 +80,8 @@ terminal `job_done` event:
   "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
   "summary": "Add created.txt greeting",
   "finished_at": "2026-11-10T00:00:00Z",
-  "delivery_error": ""
+  "delivery_error": "",
+  "partial": false
 }
 ```
 
@@ -91,7 +93,7 @@ When `--repo` is omitted (or is a local checkout) and `--base` is not given, a r
 
 `--snapshot` hands off work in progress instead. Glue builds one commit from the working tree (tracked changes plus untracked files that are not ignored, excluding `.glue/`) on top of `HEAD` using a temporary index, so your index, branch and stash are untouched. It pushes that commit to `glue/snapshot-<job-id>` on `origin` (unpushed commits come along as its parents) and starts the job from it. The job records `repo.snapshot_of: <branch>@<sha>` (shown by `glue job show`), and a draft PR targets that branch when `origin` has it, otherwise the default branch. A snapshot that adds more than 50 MiB of file content is refused unless `--snapshot-max-size` raises the limit. `glue job delete`, run from the checkout, also deletes the snapshot branch.
 
-Against a local `glue serve` daemon or optional host `glue-gateway`, `glue job` speaks `/v1/jobs` over HTTP using `--server`/`GLUE_SERVER` and `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata. Subcommands: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`, `--attach`), `start`, `list`, `show`, `attach`, `result [--json]`, `approve`, `deny`, `say`, `continue`, `cancel`, and `delete`.
+Against a local `glue serve` daemon or optional host `glue-gateway`, `glue job` speaks `/v1/jobs` over HTTP using `--server`/`GLUE_SERVER` and `--token`/`GLUE_TOKEN`, `~/.config/glue/servers.json` (`0600`, written by `glue job login --server <url>`), or local daemon metadata. Subcommands: `login`, `submit` (`--select`, `--backend`, `--policy`, `--verify`, `--deliver`, `--attach`), `start`, `list`, `show`, `attach`, `result [--json]`, `diff [--stat]`, `approve`, `deny`, `say`, `continue`, `cancel`, and `delete`.
 
 `glue job attach <id>` (and `glue --remote ... --attach` / `glue job submit ... --attach`) replays events strictly after the last seen sequence cached in `~/.config/glue/jobs/<server-hash>/<id>.seq` (`0600`), renders the transcript (`plan`, `iteration_start`, `text_delta`, `tool_start`, `tool_end`, `verdict`, `operator_message`, `run_interrupted`, `job_resumed`, `job_done`), prompts inline for pending permissions, detaches on Ctrl-C without canceling the server job, and reconnects with `Last-Event-ID` backoff when the stream drops before `job_done`.
 
