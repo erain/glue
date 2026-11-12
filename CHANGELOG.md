@@ -96,22 +96,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   silently falling back to a one-item plan. `loop.ErrMaxTurns` is now an
   exported sentinel (the error message is unchanged).
 
-- The goal planner is limited to 6 tool turns. When it runs out, or a loop
-  guardrail stops it for repeating a call, Glue asks once more in a fresh
-  session without tools, passing what the planner observed, instead of
-  silently falling back to a one-item plan. `loop.ErrMaxTurns` is now an
-  exported sentinel (the error message is unchanged).
-
 - `glue --remote --snapshot` sends the working tree, including uncommitted and
   untracked changes and unpushed commits, to a remote job without touching the
   local index, branch or stash. The snapshot is pushed to
   `glue/snapshot-<job-id>`, recorded as `repo.snapshot_of`, and removed by
   `glue job delete`; draft PRs target the developer's branch.
-
-- Remote jobs submitted from a local checkout now start from the current
-  branch when `origin` has it, and refuse to submit when the remote clone
-  would miss local work (unpushed branch or commits, uncommitted or untracked
-  files). Pass `--base <ref>` or `--ignore-local` to proceed anyway.
 
 - Remote jobs submitted from a local checkout now start from the current
   branch when `origin` has it, and refuse to submit when the remote clone
