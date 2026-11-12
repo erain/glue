@@ -83,6 +83,16 @@ func (s *Session) Steer(text string) {
 	s.steerMu.Unlock()
 }
 
+// requeueSteer puts texts back at the front of the steer queue.
+func (s *Session) requeueSteer(texts []string) {
+	if len(texts) == 0 {
+		return
+	}
+	s.steerMu.Lock()
+	s.steer = append(append([]string(nil), texts...), s.steer...)
+	s.steerMu.Unlock()
+}
+
 func (s *Session) drainSteer() []string {
 	s.steerMu.Lock()
 	defer s.steerMu.Unlock()
@@ -291,6 +301,14 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 		permission = config.permission
 	}
 
+	// steered records what this prompt's runs took from the steer queue, so
+	// an overflow retry can hand it to the retried run.
+	var steered []string
+	steer := func() []string {
+		out := s.drainSteer()
+		steered = append(steered, out...)
+		return out
+	}
 	run := func(messages []Message) (loop.RunResult, error) {
 		return loop.Run(ctx, loop.RunRequest{
 			Provider:     s.agent.provider,
@@ -303,7 +321,7 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 			SessionID:    s.id,
 			Permission:   permission,
 			Hooks:        cloneHooks(s.agent.hooks),
-			Steer:        s.drainSteer,
+			Steer:        steer,
 			AutoContinue: s.agent.autoContinue,
 			Emit: func(event Event) {
 				if config.emit != nil {
@@ -331,6 +349,9 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 			s.updatedAt = time.Now().UTC()
 			s.mu.Unlock()
 			base = compacted
+			// Steered text taken by the failed run never reached the model.
+			s.requeueSteer(steered)
+			steered = nil
 			result, runErr = run(withPrompt(base))
 		}
 	}
