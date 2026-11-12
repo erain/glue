@@ -343,13 +343,20 @@ func TestLiveAXJobLifecycle(t *testing.T) {
 }
 
 func TestJobDiffUsesCache(t *testing.T) {
+	var head atomic.Value
+	head.Store("aaa111")
 	cp, _, _, b := newFakeBackendEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/credentials":
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		case strings.HasSuffix(r.URL.Path, "/patch"):
 			w.Header().Set("Content-Type", "text/x-diff")
-			_, _ = w.Write([]byte("diff --git a/x b/x\n+hello\n"))
+			_, _ = fmt.Fprintf(w, "diff --git a/x b/x\n+hello from %s\n", head.Load())
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			_, _ = fmt.Fprintf(w, `{"status":"achieved","base_sha":"base","head_sha":%q}`, head.Load())
+		case strings.HasSuffix(r.URL.Path, "/continue"):
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{}`))
 		default:
 			_, _ = w.Write([]byte(`{"status":"achieved","credentials":"present"}`))
 		}
@@ -360,11 +367,20 @@ func TestJobDiffUsesCache(t *testing.T) {
 	cp.egress[TaskName(id)] = true
 	cp.mu.Unlock()
 	p1 := must(b.Patch(t.Context(), id))(t)
-	check(t, strings.Contains(string(p1), "+hello") && cp.tasks[TaskName(id)].GetStatus().GetPhase() == "Suspended", "first patch = %q phase %q", p1, cp.tasks[TaskName(id)].GetStatus().GetPhase())
+	check(t, strings.Contains(string(p1), "+hello from aaa111") && cp.tasks[TaskName(id)].GetStatus().GetPhase() == "Suspended", "first patch = %q phase %q", p1, cp.tasks[TaskName(id)].GetStatus().GetPhase())
 	hits, resumes := cp.taskHTTPHits.Load(), cp.resumeCalls
 	p2 := must(b.Patch(t.Context(), id))(t)
 	check(t, string(p2) == string(p1) && cp.taskHTTPHits.Load() == hits && cp.resumeCalls == resumes, "cached patch woke the task: hits %d->%d resumes %d->%d", hits, cp.taskHTTPHits.Load(), resumes, cp.resumeCalls)
+
+	// Continuing the job and finishing on a new commit must not serve the old patch.
+	mustOK(t, b.Continue(t.Context(), id, "also add a test", 0))
+	head.Store("bbb222")
+	p3 := must(b.Patch(t.Context(), id))(t)
+	check(t, strings.Contains(string(p3), "+hello from bbb222"), "patch after continue = %q, want the new run's patch", p3)
+	_, oldErr := os.Stat(b.patchPath(id, "aaa111"))
+	check(t, errors.Is(oldErr, os.ErrNotExist), "old run's patch still cached: %v", oldErr)
+
 	mustOK(t, b.DeleteTask(t.Context(), id))
-	_, err := os.Stat(b.patchPath(id))
+	_, err := os.Stat(b.patchPath(id, "bbb222"))
 	check(t, errors.Is(err, os.ErrNotExist), "patch cache not removed on delete: %v", err)
 }

@@ -536,25 +536,47 @@ func (b *Backend) Result(ctx context.Context, id string) (res jobs.Result, err e
 	return res, err
 }
 
-func (b *Backend) patchPath(id string) string { return filepath.Join(b.opts.CacheDir, id+".patch") }
+// patchPath names the cached patch for one finished run of a job. It is
+// keyed by the result's head commit, so a continued job never reads the
+// patch of an earlier run.
+func (b *Backend) patchPath(id, headSHA string) string {
+	return filepath.Join(b.opts.CacheDir, id+"-"+headSHA+".patch")
+}
 
-// Patch returns the job's patch, from the local cache when a finished job's
-// patch was fetched before, so repeated calls do not wake the task.
-func (b *Backend) Patch(ctx context.Context, id string) ([]byte, error) {
-	b.cacheMu.Lock()
-	data, err := os.ReadFile(b.patchPath(id))
-	b.cacheMu.Unlock()
-	if err == nil {
-		return data, nil
+// removePatches deletes every cached patch of a job. The caller holds cacheMu.
+func (b *Backend) removePatches(id string) {
+	old, _ := filepath.Glob(filepath.Join(b.opts.CacheDir, id+"-*.patch"))
+	for _, p := range old {
+		_ = os.Remove(p)
 	}
-	err = b.withTempWake(ctx, id, func(c *jobclient.Client) (e error) { data, e = c.Patch(ctx, id); return e })
+}
+
+// Patch returns the job's patch, from the local cache when this run's patch
+// was fetched before, so repeated calls do not wake the task.
+func (b *Backend) Patch(ctx context.Context, id string) ([]byte, error) {
+	res, err := b.Result(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	head := strings.TrimSpace(res.HeadSHA)
+	if head != "" {
+		b.cacheMu.Lock()
+		data, err := os.ReadFile(b.patchPath(id, head))
+		b.cacheMu.Unlock()
+		if err == nil {
+			return data, nil
+		}
+	}
+	var data []byte
+	err = b.withTempWake(ctx, id, func(c *jobclient.Client) (e error) { data, e = c.Patch(ctx, id); return e })
+	if err != nil || head == "" {
+		return data, err
+	}
 	b.cacheMu.Lock()
 	defer b.cacheMu.Unlock()
+	b.removePatches(id)
 	if mkErr := os.MkdirAll(b.opts.CacheDir, 0o700); mkErr == nil {
-		_ = os.WriteFile(b.patchPath(id), data, 0o600)
+		_ = os.WriteFile(b.patchPath(id, head), data, 0o600)
 	}
 	return data, nil
 }
@@ -599,6 +621,9 @@ func (b *Backend) Continue(ctx context.Context, id, text string, maxIterations i
 	err := b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Continue(ctx, id, text, maxIterations) })
 	if err == nil {
 		b.updateCache(id, func(cj *cachedJob) { cj.Status, cj.Result = jobs.Running, nil })
+		b.cacheMu.Lock()
+		b.removePatches(id)
+		b.cacheMu.Unlock()
 	}
 	return err
 }
@@ -616,7 +641,7 @@ func (b *Backend) DeleteTask(ctx context.Context, id string) error {
 	}
 	b.cacheMu.Lock()
 	_ = os.Remove(b.cachePath(id))
-	_ = os.Remove(b.patchPath(id))
+	b.removePatches(id)
 	b.cacheMu.Unlock()
 	_ = os.Remove(jobclient.SeqPath(b.jobClient(id).BaseURL, id))
 	return nil
