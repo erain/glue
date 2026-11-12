@@ -65,19 +65,23 @@ func buildSnapshot(ctx context.Context, dir string, maxBytes int64) (snapshotRef
 	if err != nil {
 		return ref, err
 	}
-	changed, err := gitOutput(ctx, dir, "diff-tree", "-r", "--no-commit-id", "--diff-filter=AM", head, tree)
+	changed, err := gitOutput(ctx, dir, "diff-tree", "-r", "--no-commit-id", head, tree)
 	if err != nil {
 		return ref, err
 	}
 	for line := range strings.SplitSeq(changed, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 4 {
+		if len(f) < 5 {
 			continue
 		}
 		ref.files++
-		if size, err := gitOutput(ctx, dir, "cat-file", "-s", f[3]); err == nil {
-			n, _ := strconv.ParseInt(size, 10, 64)
-			ref.bytes += n
+		// Only added or modified content counts toward the size limit;
+		// deletions and renames change files but push no new bytes.
+		if status := f[4]; status == "A" || status == "M" {
+			if size, err := gitOutput(ctx, dir, "cat-file", "-s", f[3]); err == nil {
+				n, _ := strconv.ParseInt(size, 10, 64)
+				ref.bytes += n
+			}
 		}
 	}
 	if maxBytes > 0 && ref.bytes > maxBytes {

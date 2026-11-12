@@ -126,3 +126,24 @@ func snapGit(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+func TestSnapshotIncludesDeletions(t *testing.T) {
+	user, bare := snapshotFixture(t)
+	// Make deletion the only working-tree change.
+	snapGit(t, user, "checkout", "-q", "--", "greet.go")
+	snapGit(t, user, "reset", "-q")
+	snapGit(t, user, "checkout", "-q", "--", "greet.go")
+	must(0, os.RemoveAll(filepath.Join(user, "notes")))
+	must(0, os.Remove(filepath.Join(user, "feature.go")))
+	_, ref, err := resolveSnapshotRepo(context.Background(), user, "job-snap00000004", defaultSnapshotMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := snapGit(t, user, "rev-parse", "HEAD")
+	if ref.sha == head || ref.files != 1 {
+		t.Fatalf("deletion-only snapshot = %s (files %d), HEAD %s", ref.sha, ref.files, head)
+	}
+	if files := snapGit(t, bare, "ls-tree", "-r", "--name-only", ref.sha); strings.Contains(files, "feature.go") {
+		t.Fatalf("snapshot still contains the deleted file:\n%s", files)
+	}
+}
