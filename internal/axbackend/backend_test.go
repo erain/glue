@@ -415,3 +415,9 @@ func TestSubmitProgress(t *testing.T) {
 	want := []string{"workspace", "task", "egress", "sandbox ready", "credentials", "started"}
 	check(t, reflect.DeepEqual(stages, want), "stages = %v, want %v", stages, want)
 }
+
+func TestDefaultEgressHosts(t *testing.T) {
+	for _, h := range []string{"github.com", "proxy.golang.org", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "generativelanguage.googleapis.com", "openrouter.ai"} {
+		check(t, slices.Contains(DefaultEgressHosts, h), "DefaultEgressHosts lacks %s", h)
+	}
+}
