@@ -49,12 +49,12 @@ func (s *Server) tokenMatches(presented string) bool {
 }
 
 func (s *Server) sessionCookieValue() string {
-	sum := sha256.Sum256([]byte("glue-session-v1:" + hex.EncodeToString(s.tokenDigest)))
+	sum := sha256.Sum256(append([]byte("glue-session-v1:"), s.sessionKey...))
 	return hex.EncodeToString(sum[:])
 }
 
 func (s *Server) csrfToken() string {
-	sum := sha256.Sum256([]byte("glue-csrf-v1:" + hex.EncodeToString(s.tokenDigest)))
+	sum := sha256.Sum256(append([]byte("glue-csrf-v1:"), s.sessionKey...))
 	return hex.EncodeToString(sum[:])
 }
 

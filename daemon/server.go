@@ -496,8 +496,12 @@ type Server struct {
 	log               *eventLog
 	keepaliveInterval time.Duration
 
-	host              Host
-	tokenDigest       []byte
+	host        Host
+	tokenDigest []byte
+	// sessionKey derives browser session cookies and CSRF tokens. It is the
+	// raw token when the server has it, else a random per-process secret, so
+	// it can never be computed from a stored token hash.
+	sessionKey        []byte
 	permissionPolicy  PermissionPolicy
 	permissionStore   PermissionStore
 	diagnostics       DiagnosticInfo
@@ -614,6 +618,13 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	sessionKey := []byte(token)
+	if strings.HasPrefix(token, TokenHashPrefix) {
+		sessionKey = make([]byte, 32)
+		if _, err := rand.Read(sessionKey); err != nil {
+			return nil, fmt.Errorf("daemon: session key: %w", err)
+		}
+	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -656,6 +667,7 @@ func New(opts Options) (*Server, error) {
 		keepaliveInterval: interval,
 		host:              opts.Host,
 		tokenDigest:       digest,
+		sessionKey:        sessionKey,
 		permissionPolicy:  opts.PermissionPolicy,
 		permissionStore:   opts.PermissionStore,
 		diagnostics:       diagnostics,
