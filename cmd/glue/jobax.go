@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -153,6 +152,7 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 		if err != nil {
 			return nil, false, err
 		}
+		c.HTTP = hintDoer{inner: httpClient, server: c.BaseURL, source: serverSource(t.conn)}
 		return httpJobAPI{c}, false, nil
 	}
 	if (t.ax || t.remote) && serverFlag == "" && backend != "local" {
@@ -166,12 +166,12 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 	}
 	cfg, resolveErr := jobclient.ResolveConfig(t.conn)
 	if resolveErr == nil {
-		return httpJobAPI{&jobclient.Client{BaseURL: cfg.ServerURL, Token: cfg.Token, HTTP: cmp.Or[jobclient.HTTPDoer](httpClient, http.DefaultClient)}}, false, nil
+		return httpJobAPI{&jobclient.Client{BaseURL: cfg.ServerURL, Token: cfg.Token, HTTP: hintDoer{inner: httpClient, server: cfg.ServerURL, source: serverSource(t.conn)}}}, false, nil
 	}
 	if _, _, kerr := resolveKubeTarget(kubeCfg, kubeCtx); kerr == nil {
 		return openAX()
 	}
-	return nil, false, resolveErr
+	return nil, false, fmt.Errorf("%w\nNo AX cluster was found either (pass --context, set GLUE_AX_CONTEXT, or source scripts/ax-dev/env.sh). Run glue job doctor for details", resolveErr)
 }
 
 func envSet(keys ...string) bool {
@@ -180,15 +180,12 @@ func envSet(keys ...string) bool {
 
 func resolveAXCredentials(ctx context.Context) jobs.Credentials {
 	pks := map[string]string{}
-	for p, env := range map[string]string{"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "nvidia": "NVIDIA_API_KEY", "codex": "OPENAI_API_KEY"} {
+	for p, env := range providerKeyEnv {
 		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
 			pks[p] = v
 		}
 	}
-	ghTok := cmp.Or(strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN")))
-	if ghTok == "" {
-		ghTok = resolveGitHubCLIToken(ctx)
-	}
+	ghTok, _ := githubToken(ctx)
 	creds := jobs.Credentials{GitHubToken: ghTok}
 	if len(pks) > 0 {
 		creds.ProviderKeys = pks
