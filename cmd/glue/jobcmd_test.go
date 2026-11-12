@@ -205,14 +205,18 @@ func TestJobAttachReplayPermissionsAndDetach(t *testing.T) {
 		t.Fatalf("second attach failed (%d): %s", code, err2.String())
 	}
 	for _, line := range strings.Split(strings.TrimSpace(out1.String()), "\n") {
-		if line = strings.TrimSpace(line); line != "" && strings.Contains(out2.String(), line) {
+		// Compare events, not the job ID line or the elapsed-time prefix.
+		if _, rest, ok := strings.Cut(line, "] "); ok {
+			line = rest
+		}
+		if line = strings.TrimSpace(line); line != "" && line != jobID && strings.Contains(out2.String(), line) {
 			t.Fatalf("duplicate line %q across attaches:\nout1:\n%s\nout2:\n%s", line, out1.String(), out2.String())
 		}
 	}
-	if !strings.Contains(out1.String(), "plan (1 items):") || !strings.Contains(out1.String(), "[tool done] write_file") {
+	if !strings.Contains(out1.String(), "plan (1 items):") || !strings.Contains(out1.String(), "✓ write_file Makefile") {
 		t.Fatalf("out1=%q", out1.String())
 	}
-	if !strings.Contains(out2.String(), "operator: keep Makefile minimal") || !strings.Contains(out2.String(), "[tool error] write_file: permission denied by user") || !strings.Contains(out2.String(), "wrote Makefile") || !strings.Contains(out2.String(), "job max_iterations") {
+	if !strings.Contains(out2.String(), "operator: keep Makefile minimal") || !strings.Contains(out2.String(), "✗ write_file extra.txt") || !strings.Contains(out2.String(), "permission denied by user") || !strings.Contains(out2.String(), "wrote Makefile") || !strings.Contains(out2.String(), "job max_iterations") {
 		t.Fatalf("out2=%q", out2.String())
 	}
 	mustJobCLI(t, "continue", jobID, "proceed", "--max-iterations", "1")
@@ -220,7 +224,7 @@ func TestJobAttachReplayPermissionsAndDetach(t *testing.T) {
 	if code := runCLIWithDeps(context.Background(), []string{"job", "attach", jobID}, strings.NewReader(""), &out3, &err3, fakeFactory(nil), serveDaemon, nil); code != 0 {
 		t.Fatalf("third attach failed (%d): %s", code, err3.String())
 	}
-	if !strings.Contains(out3.String(), "resumed: iteration 2 (continue)") || !strings.Contains(out3.String(), "confirmed Makefile") || !strings.Contains(out3.String(), "job achieved — Add Makefile test target") || strings.Contains(out3.String(), "— iteration 1") || strings.Contains(out3.String(), "wrote Makefile") {
+	if !strings.Contains(out3.String(), "resumed: iteration 2 (continue)") || !strings.Contains(out3.String(), "confirmed Makefile") || !strings.Contains(out3.String(), "job achieved — Add Makefile test target") || strings.Contains(out3.String(), "] iteration 1 ") || strings.Contains(out3.String(), "wrote Makefile") {
 		t.Fatalf("out3=%q", out3.String())
 	}
 	if out4 := mustJobCLI(t, "attach", jobID); out4 != "" {
@@ -244,6 +248,10 @@ func TestAttachReconnectsAfterDrop(t *testing.T) {
 		{Version: 2, Seq: 9, Type: "job_done", Payload: map[string]any{"status": jobs.Achieved, "result": glue.GoalResult{Summary: "Makefile ready"}}},
 	}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/events") {
+			http.NotFound(w, r)
+			return
+		}
 		n := attempts.Add(1)
 		gotLastEventID.Store(r.Header.Get("Last-Event-ID"))
 		var after int64
@@ -271,13 +279,12 @@ func TestAttachReconnectsAfterDrop(t *testing.T) {
 	}
 	for _, want := range []string{
 		"plan (1 items):",
-		"— iteration 1 (0 tokens so far)",
+		"] iteration 1 (0 tokens so far)",
 		"interrupted: node restart",
 		"resumed: iteration 1 (restart)",
-		`[tool] write_file {"path":"Makefile"}`,
-		"[tool done] write_file: ok",
+		"✓ write_file Makefile",
 		"wrote Makefile",
-		"verdict: 1/1 ✓ — done",
+		"verdict: 1/1 done — done",
 		"job achieved — Makefile ready",
 	} {
 		if c := strings.Count(out, want); c != 1 {
