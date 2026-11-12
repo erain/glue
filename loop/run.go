@@ -11,6 +11,9 @@ import (
 
 const defaultMaxTurns = 32
 
+// ErrMaxTurns ends a run that still had pending tool calls when it reached RunRequest.MaxTurns.
+var ErrMaxTurns = errors.New("loop: maximum turns exceeded")
+
 // RunRequest configures one [Run].
 //
 // Provider is required. MaxTurns defaults to 32 when zero or negative. Emit
@@ -180,7 +183,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if lastAssistantNew >= 0 {
 		newMessages[lastAssistantNew].StopReason = StopReasonMaxTurns
 	}
-	return fail(fmt.Errorf("loop: maximum turns exceeded (%d)", maxTurns))
+	return fail(fmt.Errorf("%w (%d)", ErrMaxTurns, maxTurns))
 }
 
 // executeToolCalls runs every tool call requested by an assistant turn and
