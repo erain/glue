@@ -34,6 +34,10 @@ type RepoSpec struct {
 	Path    string `json:"path,omitempty"`
 	URL     string `json:"url,omitempty"`
 	BaseRef string `json:"base_ref,omitempty"`
+	// SnapshotOf records "<branch>@<sha>" when BaseRef is a snapshot of a
+	// developer's working tree. Draft PRs then target that branch if origin
+	// has it, else the default branch.
+	SnapshotOf string `json:"snapshot_of,omitempty"`
 }
 
 // Budgets limits execution. Zero token and wall-clock budgets are unlimited.

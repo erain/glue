@@ -259,6 +259,8 @@ func TestAXRepoResolution(t *testing.T) {
 	checkAX(t, must(resolveAXRepoSpec(ctx, repo, "")).BaseRef == "feature/unpushed", "expected feature/unpushed")
 	runGit(t, repo, "update-ref", "refs/remotes/origin/trunk", sha)
 	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+	checkAX(t, must(resolveAXRepoSpec(ctx, repo, "")).BaseRef == "feature/unpushed", "current branch on origin should win over origin/HEAD")
+	runGit(t, repo, "checkout", "-qb", "local-only")
 	checkAX(t, must(resolveAXRepoSpec(ctx, repo, "")).BaseRef == "trunk", "expected trunk")
 	checkAX(t, must(resolveAXRepoSpec(ctx, repo, "release-1")).BaseRef == "release-1", "expected release-1")
 }
@@ -335,6 +337,7 @@ func TestDirectAXCLIEndToEnd(t *testing.T) {
 
 	localCheckout := serveJobRepo(t)
 	runGit(t, localCheckout, "remote", "add", "origin", "git@github.com:erain/glue-sandbox.git")
+	runGit(t, localCheckout, "update-ref", "refs/remotes/origin/main", "HEAD")
 	runTop := func(args ...string) string {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
@@ -485,4 +488,67 @@ func TestLiveDirectAXJob(t *testing.T) {
 	afterDel, _ := runLive("job", "list")
 	checkAX(t, !strings.Contains(afterDel, jobID), "expected %s deleted from AX task list", jobID)
 	t.Logf("live coding job (%s): submit=%s list=%s attach=%s result=%s laptop2_result=%s delete=%s head=%s", jobID, subDur, listDur, attachDur, resDur, res2Dur, delDur, res.HeadSHA)
+}
+
+// pushedCheckout returns a checkout on main whose HEAD is already on origin.
+func pushedCheckout(t *testing.T) string {
+	t.Helper()
+	repo := serveJobRepo(t)
+	runGit(t, repo, "remote", "add", "origin", "https://github.com/erain/glue-sandbox.git")
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	return repo
+}
+
+func TestRemoteBaseDefaultsToCurrentBranch(t *testing.T) {
+	clearJobTestEnv(t)
+	ctx := context.Background()
+	repo := pushedCheckout(t)
+	runGit(t, repo, "checkout", "-qb", "feature/retry")
+	runGit(t, repo, "commit", "--allow-empty", "-qm", "feature work")
+	runGit(t, repo, "update-ref", "refs/remotes/origin/feature/retry", "HEAD")
+	rs, err := resolveRemoteCheckout(ctx, repo, "", false)
+	checkAX(t, err == nil && rs.BaseRef == "feature/retry" && rs.URL == "https://github.com/erain/glue-sandbox.git", "got %+v, %v", rs, err)
+}
+
+func TestRemoteRefusesDirtyTree(t *testing.T) {
+	clearJobTestEnv(t)
+	ctx := context.Background()
+	repo := pushedCheckout(t)
+	must(0, os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("wip\n"), 0o600))
+	must(0, os.MkdirAll(filepath.Join(repo, ".glue", "sessions"), 0o700))
+	must(0, os.WriteFile(filepath.Join(repo, ".glue", "sessions", "s.json"), []byte("{}"), 0o600))
+	_, err := resolveRemoteCheckout(ctx, repo, "", false)
+	var lse *localStateError
+	checkAX(t, errors.As(err, &lse) && lse.dirtyFiles == 1 && lse.unpushed == 0 && !lse.branchMissingOnRem, "got %v", err)
+	checkAX(t, strings.Contains(err.Error(), "1 file(s) with uncommitted or untracked changes") && strings.Contains(err.Error(), "--ignore-local"), "message: %v", err)
+	rs, err := resolveRemoteCheckout(ctx, repo, "main", false)
+	checkAX(t, err == nil && rs.BaseRef == "main", "explicit --base should proceed: %+v, %v", rs, err)
+}
+
+func TestRemoteRefusesUnpushedCommits(t *testing.T) {
+	clearJobTestEnv(t)
+	ctx := context.Background()
+	repo := pushedCheckout(t)
+	runGit(t, repo, "checkout", "-qb", "my-feature")
+	runGit(t, repo, "commit", "--allow-empty", "-qm", "local only")
+	_, err := resolveRemoteCheckout(ctx, repo, "", false)
+	var lse *localStateError
+	checkAX(t, errors.As(err, &lse) && lse.unpushed == 1 && lse.branchMissingOnRem && lse.base == "main", "got %v", err)
+	checkAX(t, strings.Contains(err.Error(), `branch "my-feature" does not exist on origin`) && strings.Contains(err.Error(), "1 commit(s) on HEAD are not on origin"), "message: %v", err)
+}
+
+func TestRemoteIgnoreLocalProceeds(t *testing.T) {
+	clearJobTestEnv(t)
+	ctx := context.Background()
+	repo := pushedCheckout(t)
+	runGit(t, repo, "checkout", "-qb", "my-feature")
+	runGit(t, repo, "commit", "--allow-empty", "-qm", "local only")
+	must(0, os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("wip\n"), 0o600))
+	rs, err := resolveRemoteCheckout(ctx, repo, "", true)
+	checkAX(t, err == nil && rs.BaseRef == "main", "got %+v, %v", rs, err)
+	rs, err = resolveSubmitRepo(ctx, true, true, false, "", repo, "", "objective")
+	checkAX(t, err != nil && rs.URL == "", "submit without --ignore-local should refuse, got %+v, %v", rs, err)
+	rs, err = resolveSubmitRepo(ctx, true, true, true, "", repo, "", "objective")
+	checkAX(t, err == nil && rs.BaseRef == "main", "submit with --ignore-local: %+v, %v", rs, err)
 }
