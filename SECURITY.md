@@ -63,6 +63,12 @@ Out of scope (already known, not security bugs):
   with the tools we give it (prompt injection, jailbreaks, tool misuse)
   are model-behavior issues, not glue bugs, unless they exploit a flaw
   in the tool layer above.
+- **Glue state inside an AX task is readable by the agent.** AX task
+  containers cannot switch UID, so `shell_exec` runs as the same user as
+  `glue serve` and can read `/workspace/.glue`. The daemon token there is
+  stored only as a SHA-256 hash and runtime credentials are held in memory,
+  so reading the state does not let the agent call the daemon. A report that
+  shows a way to act as a daemon client from inside the task is in scope.
 - **Downstream API key handling.** Glue reads provider keys from env
   vars (`GEMINI_API_KEY`, etc.) and forwards them only to the
   configured provider. Misconfigured shells or leaked `.env` files are

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/jobs"
@@ -283,7 +284,7 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 			return job, fmt.Errorf("axbackend: reconcile task %s: %w", TaskName(id), err)
 		}
 	}
-	if _, err := b.conn.AX.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: WorkspaceName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.WorkspaceSpec{Git: []*v1alpha1.GitRepo{{Name: "repo", Repo: spec.Repo.URL, Branch: spec.Repo.BaseRef, Dir: ".", Depth: 1}}, Files: []*v1alpha1.File{{Path: ".glue/token", Content: b.taskToken(id) + "\n"}}}}}); err != nil {
+	if _, err := b.conn.AX.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: WorkspaceName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.WorkspaceSpec{Git: []*v1alpha1.GitRepo{{Name: "repo", Repo: spec.Repo.URL, Branch: spec.Repo.BaseRef, Dir: ".", Depth: 1}}, Files: []*v1alpha1.File{{Path: ".glue/token", Content: daemon.HashToken(b.taskToken(id)) + "\n"}}}}}); err != nil {
 		return job, fmt.Errorf("axbackend: update workspace %s: %w", WorkspaceName(id), err)
 	}
 	taskCfg := spec

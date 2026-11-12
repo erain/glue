@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -15,13 +16,45 @@ const (
 	csrfHeaderName    = "X-Glue-CSRF"
 )
 
+// TokenHashPrefix marks a token value that holds only the SHA-256 of the
+// bearer token. A daemon given such a value can verify the token without
+// ever holding it, so a token file on shared disk is useless to read.
+const TokenHashPrefix = "sha256:"
+
+// HashToken returns the TokenHashPrefix form of token.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return TokenHashPrefix + hex.EncodeToString(sum[:])
+}
+
+// tokenDigest returns the SHA-256 digest that a configured token value
+// stands for: the decoded hash for TokenHashPrefix values, else the hash
+// of the raw token.
+func tokenDigest(value string) ([]byte, error) {
+	if h, ok := strings.CutPrefix(value, TokenHashPrefix); ok {
+		d, err := hex.DecodeString(h)
+		if err != nil || len(d) != sha256.Size {
+			return nil, errors.New("daemon: token hash must be sha256: followed by 64 hex characters")
+		}
+		return d, nil
+	}
+	sum := sha256.Sum256([]byte(value))
+	return sum[:], nil
+}
+
+// tokenMatches reports whether presented is the bearer token.
+func (s *Server) tokenMatches(presented string) bool {
+	sum := sha256.Sum256([]byte(presented))
+	return subtle.ConstantTimeCompare(sum[:], s.tokenDigest) == 1
+}
+
 func (s *Server) sessionCookieValue() string {
-	sum := sha256.Sum256([]byte("glue-session-v1:" + s.token))
+	sum := sha256.Sum256(append([]byte("glue-session-v1:"), s.sessionKey...))
 	return hex.EncodeToString(sum[:])
 }
 
 func (s *Server) csrfToken() string {
-	sum := sha256.Sum256([]byte("glue-csrf-v1:" + s.token))
+	sum := sha256.Sum256(append([]byte("glue-csrf-v1:"), s.sessionKey...))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -35,7 +68,7 @@ func (s *Server) handleSessionLogin(w http.ResponseWriter, r *http.Request) {
 	if !jobBody(w, r, &body) {
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.token)) != 1 {
+	if !s.tokenMatches(body.Token) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid token", false)
 		return
 	}
@@ -59,7 +92,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
 	if got := r.Header.Get("Authorization"); got != "" {
-		if subtle.ConstantTimeCompare([]byte(got), []byte("Bearer "+s.token)) == 1 {
+		if tok, ok := strings.CutPrefix(got, "Bearer "); ok && s.tokenMatches(tok) {
 			return true
 		}
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token", false)

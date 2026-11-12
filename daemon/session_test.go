@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -151,3 +153,79 @@ func TestBearerStillWorks(t *testing.T) {
 }
 
 func TestUIBearerStillWorks(t *testing.T) { TestBearerStillWorks(t) }
+
+func TestHashedTokenAuthenticatesBearerOnly(t *testing.T) {
+	const raw = "per-job-bearer-token"
+	hashed := HashToken(raw)
+	if !strings.HasPrefix(hashed, TokenHashPrefix) || strings.Contains(hashed, raw) {
+		t.Fatalf("HashToken = %q", hashed)
+	}
+	s, err := New(Options{Host: sessionOnlyHost{}, Token: hashed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	for _, tc := range []struct {
+		bearer string
+		want   int
+	}{{raw, http.StatusOK}, {hashed, http.StatusUnauthorized}, {"wrong", http.StatusUnauthorized}} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+		req.Header.Set("Authorization", "Bearer "+tc.bearer)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("bearer %q: status %d, want %d", tc.bearer, w.Code, tc.want)
+		}
+	}
+	for body, want := range map[string]int{`{"token":"` + raw + `"}`: http.StatusOK, `{"token":"` + hashed + `"}`: http.StatusUnauthorized} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/session/login", strings.NewReader(body)))
+		if w.Code != want {
+			t.Fatalf("login %s: status %d, want %d", body, w.Code, want)
+		}
+	}
+	if _, err := New(Options{Host: sessionOnlyHost{}, Token: TokenHashPrefix + "nothex"}); err == nil {
+		t.Fatal("malformed token hash accepted")
+	}
+}
+
+func TestHashedTokenSessionCannotBeForged(t *testing.T) {
+	const raw = "per-job-bearer-token"
+	hashed := HashToken(raw)
+	s, err := New(Options{Host: sessionOnlyHost{}, Token: hashed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	// An agent that can read the hash file tries to derive the cookie and CSRF values.
+	hexDigest := strings.TrimPrefix(hashed, TokenHashPrefix)
+	for _, forged := range []string{sha256Hex("glue-session-v1:" + hexDigest), sha256Hex("glue-session-v1:" + hashed), hexDigest} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/jobs/x/messages", strings.NewReader(`{"text":"hi"}`))
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: forged})
+		req.Header.Set(csrfHeaderName, sha256Hex("glue-csrf-v1:"+hexDigest))
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("forged cookie %q: status %d, want 401", forged, w.Code)
+		}
+	}
+	// A real login still yields a working cookie.
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/session/login", strings.NewReader(`{"token":"`+raw+`"}`)))
+	cookies := w.Result().Cookies()
+	if w.Code != http.StatusOK || len(cookies) != 1 {
+		t.Fatalf("login = %d %v", w.Code, cookies)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+	req.AddCookie(cookies[0])
+	w = httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session with real cookie = %d", w.Code)
+	}
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
