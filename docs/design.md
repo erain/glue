@@ -299,7 +299,9 @@ durable checklist — a Ralph-style loop, so memory lives in the checklist, not 
 growing transcript) followed by a separate **checker** session that audits
 against real evidence via `Session.PromptJSON` and decides completion. Guardrails
 (max iterations, no-progress detection, token budget) bound it, and `GoalSpec.Emit`
-streams progress. The maker≠checker split keeps the writer from grading its own
+streams progress. The planner may use at most `PlannerMaxToolTurns` (6) tool
+turns; if it runs out, or a loop guardrail halts it, a fresh tool-free session
+receives a digest of what it observed and must return the plan. The checker gets the same treatment with `CheckerMaxToolTurns` (12): when it runs out of turns or a guardrail halts it, a fresh tool-free session decides the verdict from the evidence it gathered. A maker that runs out of turns or trips a guardrail ends its turn instead of failing the goal, so the checker still judges its edits. The maker≠checker split keeps the writer from grading its own
 homework. See [ADR-0016](adr/0016-goal-loop.md). A non-empty `GoalSpec.Checklist`
 seeds the loop and skips planning — that is how a paused goal resumes from its
 last verified state. When the agent has a `Store`, `PursueGoal` also
