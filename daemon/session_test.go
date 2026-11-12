@@ -151,3 +151,38 @@ func TestBearerStillWorks(t *testing.T) {
 }
 
 func TestUIBearerStillWorks(t *testing.T) { TestBearerStillWorks(t) }
+
+func TestHashedTokenAuthenticatesBearerOnly(t *testing.T) {
+	const raw = "per-job-bearer-token"
+	hashed := HashToken(raw)
+	if !strings.HasPrefix(hashed, TokenHashPrefix) || strings.Contains(hashed, raw) {
+		t.Fatalf("HashToken = %q", hashed)
+	}
+	s, err := New(Options{Host: sessionOnlyHost{}, Token: hashed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	for _, tc := range []struct {
+		bearer string
+		want   int
+	}{{raw, http.StatusOK}, {hashed, http.StatusUnauthorized}, {"wrong", http.StatusUnauthorized}} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+		req.Header.Set("Authorization", "Bearer "+tc.bearer)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, req)
+		if w.Code != tc.want {
+			t.Fatalf("bearer %q: status %d, want %d", tc.bearer, w.Code, tc.want)
+		}
+	}
+	for body, want := range map[string]int{`{"token":"` + raw + `"}`: http.StatusOK, `{"token":"` + hashed + `"}`: http.StatusUnauthorized} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/session/login", strings.NewReader(body)))
+		if w.Code != want {
+			t.Fatalf("login %s: status %d, want %d", body, w.Code, want)
+		}
+	}
+	if _, err := New(Options{Host: sessionOnlyHost{}, Token: TokenHashPrefix + "nothex"}); err == nil {
+		t.Fatal("malformed token hash accepted")
+	}
+}

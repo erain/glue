@@ -390,7 +390,9 @@ type Options struct {
 	// Host is required. A *glue.Agent satisfies this interface.
 	Host Host
 
-	// Token is required for every route except /v1/health.
+	// Token is required for every route except /v1/health. It is either the
+	// bearer token itself or its TokenHashPrefix form (see HashToken), in
+	// which case the server never holds the bearer token.
 	Token string
 
 	// PermissionPolicy, when non-nil, can allow, deny, or defer
@@ -495,7 +497,7 @@ type Server struct {
 	keepaliveInterval time.Duration
 
 	host              Host
-	token             string
+	tokenDigest       []byte
 	permissionPolicy  PermissionPolicy
 	permissionStore   PermissionStore
 	diagnostics       DiagnosticInfo
@@ -608,6 +610,10 @@ func New(opts Options) (*Server, error) {
 	if token == "" {
 		return nil, errors.New("daemon: Token is required")
 	}
+	digest, err := tokenDigest(token)
+	if err != nil {
+		return nil, err
+	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -649,7 +655,7 @@ func New(opts Options) (*Server, error) {
 		log:               log,
 		keepaliveInterval: interval,
 		host:              opts.Host,
-		token:             token,
+		tokenDigest:       digest,
 		permissionPolicy:  opts.PermissionPolicy,
 		permissionStore:   opts.PermissionStore,
 		diagnostics:       diagnostics,

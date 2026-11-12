@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
 	"github.com/google/ax/pkg/apis/v1alpha1"
@@ -383,4 +384,16 @@ func TestJobDiffUsesCache(t *testing.T) {
 	mustOK(t, b.DeleteTask(t.Context(), id))
 	_, err := os.Stat(b.patchPath(id, "bbb222"))
 	check(t, errors.Is(err, os.ErrNotExist), "patch cache not removed on delete: %v", err)
+}
+
+func TestWorkspaceSeedsOnlyTokenHash(t *testing.T) {
+	cp, _, _, b := newFakeBackendEnv(t, nil)
+	id := "job-tokenhash001"
+	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Hash", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
+	cp.mu.Lock()
+	files := cp.workspaces[WorkspaceName(id)].GetSpec().GetFiles()
+	cp.mu.Unlock()
+	check(t, len(files) == 1 && files[0].GetPath() == ".glue/token", "files = %v", files)
+	content := files[0].GetContent()
+	check(t, content == daemon.HashToken(b.taskToken(id))+"\n" && !strings.Contains(content, b.taskToken(id)), "workspace token file must hold only the hash, got %q", content)
 }

@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- The daemon token file seeded into AX tasks now holds only `sha256:<hex>` of
+  the per-job token, so an agent that reads `/workspace/.glue/token` can no
+  longer use it to call the daemon (for example to approve its own permission
+  requests). The daemon accepts a token of the form `sha256:<hex>`
+  (`daemon.HashToken`) and verifies bearers against the digest. Browser
+  session cookies derived from the token change once.
+
 - Jobs submitted directly to AX now default to a 1 hour wall clock and a
   2,000,000 token budget (`--no-budget` opts out); `glue job show` prints the
   effective budgets and `result.json` records which budget stopped a
