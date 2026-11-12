@@ -88,3 +88,40 @@ func TestPlannerMaxTurnsRespectsSpec(t *testing.T) {
 		t.Fatalf("plannerMaxTurns(3) = %d", got)
 	}
 }
+
+func TestCheckerTurnCapGivesVerdict(t *testing.T) {
+	t.Parallel()
+	turns := [][]ProviderEvent{
+		goalTurn(mustJSON(t, goalPlan{Items: []ChecklistItem{{Title: "hello.txt says hi"}}}), 0),
+		goalTurn("wrote hello.txt", 0),
+	}
+	for i := range CheckerMaxToolTurns + 1 {
+		turns = append(turns, plannerToolTurn(fmt.Sprintf("k%d", i), fmt.Sprintf(`{"check":%d}`, i)))
+	}
+	turns = append(turns, goalTurn(mustJSON(t, goalVerdict{Done: true, Items: []ChecklistItem{{Title: "hello.txt says hi", Done: true, Evidence: "cat shows hi"}}, Summary: "done"}), 0))
+	provider := &recordingProvider{turns: turns}
+	agent := plannerAgent(provider)
+	res, err := agent.PursueGoal(context.Background(), GoalSpec{Objective: "hello", MaxIterations: 1, CheckerTools: agent.tools})
+	if err != nil || res.Status != GoalAchieved {
+		t.Fatalf("result = %+v, %v; want achieved via the final verdict", res, err)
+	}
+	final := provider.requests[len(provider.requests)-1]
+	last := final.Messages[len(final.Messages)-1].Content[0].Text
+	if len(final.Tools) != 0 || !strings.Contains(last, `saw {"check":12}`) || !strings.Contains(last, "You have no tools now") {
+		t.Fatalf("final verdict request: tools=%d text=%q", len(final.Tools), last)
+	}
+}
+
+func TestMakerMaxTurnsReachesChecker(t *testing.T) {
+	t.Parallel()
+	provider := &recordingProvider{turns: [][]ProviderEvent{
+		goalTurn(mustJSON(t, goalPlan{Items: []ChecklistItem{{Title: "edit"}}}), 0),
+		plannerToolTurn("m1", `{"path":"a"}`),
+		plannerToolTurn("m2", `{"path":"b"}`),
+		goalTurn(mustJSON(t, goalVerdict{Done: true, Items: []ChecklistItem{{Title: "edit", Done: true, Evidence: "ok"}}, Summary: "done"}), 0),
+	}}
+	res, err := plannerAgent(provider).PursueGoal(context.Background(), GoalSpec{Objective: "edit", MaxIterations: 1, MaxTurns: 2})
+	if err != nil || res.Status != GoalAchieved {
+		t.Fatalf("result = %+v, %v; a maker that runs out of turns should still be checked", res, err)
+	}
+}
