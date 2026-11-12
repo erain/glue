@@ -5,6 +5,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -196,5 +197,21 @@ func TestValidNotifyURL(t *testing.T) {
 		if ValidNotifyURL(bad) == nil {
 			t.Fatalf("%q accepted", bad)
 		}
+	}
+}
+
+func TestNotifyNtfyPlainText(t *testing.T) {
+	var gotBody, gotTitle, gotType string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody, gotTitle, gotType = string(b), r.Header.Get("Title"), r.Header.Get("Content-Type")
+	}))
+	t.Cleanup(ts.Close)
+	if isNtfy(ts.URL) || !isNtfy("https://ntfy.sh/topic") || !isNtfy("https://ntfy.example.org/t") || isNtfy("https://hooks.slack.com/x") {
+		t.Fatal("isNtfy misclassifies URLs")
+	}
+	n := Notification{JobID: "job-1", Status: Achieved, Text: "Glue job job-1 achieved: done"}
+	if err := postNotification(context.Background(), ts.URL, n); err != nil || !strings.HasPrefix(gotType, "application/json") || !strings.Contains(gotBody, `"text":"Glue job job-1 achieved: done"`) || gotTitle != "" {
+		t.Fatalf("json post: %v type=%q body=%q title=%q", err, gotType, gotBody, gotTitle)
 	}
 }

@@ -19,7 +19,8 @@ import (
 var notifyBackoff = []time.Duration{0, 2 * time.Second, 5 * time.Second}
 
 // Notification is the JSON body posted to notify URLs. Text is a one-line
-// summary, so Slack-style incoming webhooks and ntfy render it as is.
+// summary that Slack-style incoming webhooks render as is; ntfy topic URLs
+// (hosts starting with "ntfy.") get Text as a plain-text body instead.
 type Notification struct {
 	JobID     string `json:"job_id"`
 	Event     string `json:"event"` // "waiting_for_input" or "done"
@@ -96,9 +97,8 @@ func (m *Manager) maybeNotify(id, typ string, payload any) {
 			}
 			n.Text = strings.TrimSpace(fmt.Sprintf("Glue job %s needs you: %s (%s)", id, cmp.Or(n.Question, "waiting for input"), oneLineObjective(n.Objective)))
 		}
-		body, _ := json.Marshal(n)
 		for _, u := range urls {
-			if err := postNotification(ctx, u, body); err != nil {
+			if err := postNotification(ctx, u, n); err != nil {
 				_ = m.record(id, "notify_failed", map[string]any{"event": event, "error": sanitizeToken(redactURL(err.Error(), u))}, "", nil, "")
 			}
 		}
@@ -116,7 +116,25 @@ func oneLineObjective(s string) string {
 // redactURL removes the notify URL, which is a secret, from an error message.
 func redactURL(msg, u string) string { return strings.ReplaceAll(msg, u, "[notify URL]") }
 
-func postNotification(ctx context.Context, u string, body []byte) error {
+// isNtfy reports whether u looks like an ntfy topic URL. ntfy shows the
+// request body as the message, so it gets plain text instead of JSON.
+func isNtfy(u string) bool {
+	p, err := url.Parse(u)
+	return err == nil && strings.HasPrefix(p.Hostname(), "ntfy.")
+}
+
+func postNotification(ctx context.Context, u string, n Notification) error {
+	body, contentType := []byte(nil), "application/json"
+	headers := map[string]string{}
+	if isNtfy(u) {
+		body, contentType = []byte(n.Text), "text/plain; charset=utf-8"
+		headers["Title"] = "Glue job " + string(n.Status)
+		if n.PRURL != "" {
+			headers["Click"] = n.PRURL
+		}
+	} else {
+		body, _ = json.Marshal(n)
+	}
 	var last error
 	for _, wait := range notifyBackoff {
 		select {
@@ -130,7 +148,10 @@ func postNotification(ctx context.Context, u string, body []byte) error {
 			cancel()
 			return err
 		}
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
 		resp, err := http.DefaultClient.Do(req)
 		cancel()
 		if err == nil {
