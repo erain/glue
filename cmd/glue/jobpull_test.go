@@ -159,3 +159,17 @@ func TestJobPullFallsBackToPatch(t *testing.T) {
 		t.Fatalf("temporary worktree left behind:\n%s", wt)
 	}
 }
+
+func TestJobPullRefusesCheckedOutBranch(t *testing.T) {
+	user, api := pullFixture(t, true)
+	var out bytes.Buffer
+	if err := pullJob(context.Background(), api, api.result.JobID, user, pullOptions{checkout: true}, &out); err != nil {
+		t.Fatal(err)
+	}
+	must(0, os.WriteFile(filepath.Join(user, "greet.txt"), []byte("my edit\n"), 0o600))
+	err := pullJob(context.Background(), api, api.result.JobID, user, pullOptions{force: true}, &out)
+	data, _ := os.ReadFile(filepath.Join(user, "greet.txt"))
+	if err == nil || !strings.Contains(err.Error(), "checked-out branch") || string(data) != "my edit\n" {
+		t.Fatalf("err=%v greet.txt=%q", err, data)
+	}
+}

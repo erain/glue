@@ -63,6 +63,9 @@ func pullJob(ctx context.Context, c jobAPI, id, dir string, o pullOptions, stdou
 		_, err = fmt.Fprintln(stdout, "next: review with git diff, then commit")
 		return err
 	}
+	if cur, _ := gitOutput(ctx, dir, "branch", "--show-current"); cur == branch {
+		return fmt.Errorf("%s is the checked-out branch; switch to another branch before pulling into it", branch)
+	}
 	if _, err := gitOutput(ctx, dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil && !o.force {
 		return fmt.Errorf("local branch %s already exists; delete it or pass --force to overwrite it", branch)
 	}
