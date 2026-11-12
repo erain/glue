@@ -286,6 +286,22 @@ After Wave 2 a developer can already hand off dirty work, watch a readable
 transcript, correct the job, and pull the result. That is the smallest version
 of the aha and a good point to re-run the hands-on test from section 2.
 
+### Re-run after Wave 2 (2026-11-12)
+
+The hands-on test from section 2 was repeated on a local build that merges every Wave 1 and Wave 2 branch (draft PRs #568–#583, pushed as `integration/phase3-wave1-2`). It started from the same situation: branch `my-feature` with an unpushed commit that adds `Greet`, an uncommitted `README.md` edit, and an objective that depends on `Greet`. Model `gemini-3-flash-preview`, thinking `low`.
+
+| Step | Before | After |
+|---|---|---|
+| Setup check | none | `glue job doctor`: 7/7 checks ok |
+| Submit from the dirty branch | silently cloned `origin/main` | refused, listing the branch, the unpushed commit and the dirty file |
+| `--snapshot` submit | n/a | `snapshot: 1 changed file(s) on top of my-feature@191b5f6`, stages printed, sandbox ready at 14.7 s |
+| Run | 17 min searching for `Greet`, canceled by hand | `achieved` in 1m14s, 59,829 tokens, `go test ./...` verified |
+| Transcript | raw tool records | phases, one line per tool with timing, summary block |
+| Finished task | stayed `Running` | `Suspended` |
+| Result | branch only inside the sandbox | `glue job diff --stat`, then `glue job pull --checkout`; local `go test ./...` passes on the pulled branch |
+
+Still open from this run (tracked): `glue job show` reports `iteration: 0, tokens: 0` for a job that finished while attached (#549); the first `go test` in a fresh sandbox took 14 s while it filled the module and build caches (#550, #560); the checker still uses its full 12-turn allowance (#580 bounds it).
+
 ## 7. Definition of done
 
 The definition of done in [#402](https://github.com/erain/glue/issues/402)
