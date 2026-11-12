@@ -1,11 +1,14 @@
 package glue
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/erain/glue/loop"
 )
 
 // GoalSpec configures an autonomous goal loop driven by [Agent.PursueGoal].
@@ -386,16 +389,22 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
 	}
-	if spec.MaxTurns > 0 {
-		opts = append(opts, WithMaxTurns(spec.MaxTurns))
-	}
 	if spec.Permission != nil {
 		opts = append(opts, WithPermission(spec.Permission))
 	}
+	opts = append(opts, WithMaxTurns(plannerMaxTurns(spec.MaxTurns)))
 	var plan goalPlan
 	res, err := sess.PromptJSON(ctx, planPrompt(spec.Objective), &plan, opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
+	if err != nil && ctx.Err() == nil && (errors.Is(err, loop.ErrMaxTurns) || errors.Is(err, loop.ErrRepeatedToolCalls) || errors.Is(err, loop.ErrTooManyMistakes)) {
+		// The planner explored without answering. Ask once more in a fresh
+		// session with no tools, handing over what it observed.
+		plan = goalPlan{}
+		var final PromptResult
+		final, err = a.finalPlan(ctx, spec, plannerObservations(res.NewMessages), &plan)
+		sumUsage(&usage, final.NewMessages)
+	}
 	if err != nil {
 		return nil, usage, err
 	}
@@ -408,6 +417,69 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 		out = append(out, ChecklistItem{Title: title}) // always start not-done
 	}
 	return out, usage, nil
+}
+
+// PlannerMaxToolTurns bounds how many tool-using turns the goal planner may
+// take before it must answer with a plan.
+const PlannerMaxToolTurns = 6
+
+// plannerMaxTurns returns the loop turn budget for the planner: the tool
+// turns plus one turn for the answer, and never more than the spec allows.
+func plannerMaxTurns(specMax int) int {
+	n := PlannerMaxToolTurns + 1
+	if specMax > 0 && specMax < n {
+		n = specMax
+	}
+	return n
+}
+
+// finalPlan asks for the plan in a fresh session without tools.
+func (a *Agent) finalPlan(ctx context.Context, spec GoalSpec, observations string, plan *goalPlan) (PromptResult, error) {
+	sess, err := a.Session(ctx, spec.SessionPrefix+":plan-final")
+	if err != nil {
+		return PromptResult{}, err
+	}
+	if spec.OnSession != nil {
+		spec.OnSession("planner", 0, sess)
+	}
+	opts := []PromptOption{WithJSONSchema(goalPlanSchema), WithTools(nil), WithMaxTurns(1)}
+	if spec.Model != "" {
+		opts = append(opts, WithModel(spec.Model))
+	}
+	text := planPrompt(spec.Objective) + "\n\nYou have no tools now. Plan from the objective and what was already observed in the workspace:\n" + observations
+	return sess.PromptJSON(ctx, text, plan, opts...)
+}
+
+// plannerObservations summarizes the tool results a planner run produced,
+// newest last, within a fixed size.
+func plannerObservations(msgs []Message) string {
+	const maxLen = 6000
+	var parts []string
+	for _, m := range msgs {
+		if m.Role != MessageRoleTool {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range m.Content {
+			if c.Type == ContentTypeText {
+				b.WriteString(c.Text)
+			}
+		}
+		text := strings.TrimSpace(b.String())
+		if len(text) > 800 {
+			text = text[:800] + " …"
+		}
+		parts = append(parts, fmt.Sprintf("- %s: %s", cmp.Or(m.ToolName, "tool"), text))
+	}
+	out := strings.Join(parts, "\n")
+	for len(out) > maxLen && len(parts) > 1 {
+		parts = parts[1:]
+		out = strings.Join(parts, "\n")
+	}
+	if out == "" {
+		return "(nothing)"
+	}
+	return out
 }
 
 func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, checklist []ChecklistItem, guidance string) (Usage, error) {
@@ -485,7 +557,7 @@ func planPrompt(objective string) string {
 
 Goal: %s
 
-Each item must be checkable against real evidence (a file exists, a test passes, a command succeeds). Prefer 2–8 items; avoid vague items like "make it good". Return the items with empty/false done — nothing has been built yet.`, objective)
+Each item must be checkable against real evidence (a file exists, a test passes, a command succeeds). Prefer 2–8 items; avoid vague items like "make it good". Return the items with empty/false done — nothing has been built yet. Look at the workspace only as much as you need to plan; the maker will explore in detail.`, objective)
 }
 
 func makerPrompt(objective string, iter int, checklist []ChecklistItem) string {
