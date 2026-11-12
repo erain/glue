@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- New `glue job pull <id> [--checkout|--apply] [--force]` brings a finished
+  job's changes into the local checkout, as the `glue/<id>` branch (built from
+  the job patch when the branch was never pushed) or as uncommitted changes.
+
 - Remote work is no longer stranded in the sandbox: jobs submitted directly
   to AX default to `--deliver branch`, canceled or errored jobs commit and push
   their unfinished work (`partial: true` in the result), and the new

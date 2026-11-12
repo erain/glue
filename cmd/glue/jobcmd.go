@@ -47,7 +47,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|diff|approve|deny|say|continue|cancel|delete> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|diff|pull|approve|deny|say|continue|cancel|delete> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -75,6 +75,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	snapshot := fs.Bool("snapshot", false, "remote jobs: start from a snapshot of the working tree, including uncommitted changes")
 	snapshotMax := fs.Int64("snapshot-max-size", defaultSnapshotMaxBytes, "remote jobs: largest new file content a snapshot may push, in bytes")
 	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
+	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull: switch to the job branch"), fs.Bool("apply", false, "pull: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull: overwrite an existing local branch or apply over local changes")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -200,6 +201,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "pending_permission: %s\t%s\t%s\t%s\n", p.ID, p.Request.Tool, p.Request.Action, p.Request.Target)
 		}
 		return nil
+	case "pull":
+		return pullJob(ctx, c, pos[0], ".", pullOptions{checkout: *pullCheckout, apply: *pullApply, force: *pullForce}, stdout)
 	case "diff":
 		if *stat {
 			res, err := c.Result(ctx, pos[0])

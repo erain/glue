@@ -27,6 +27,7 @@ id=$(glue --remote "Fix the race in pool_test.go" --verify "go test -race ./..."
 glue job list
 glue job attach "$id"   # replays missed events; Ctrl-C detaches without canceling
 glue job result "$id"   # branch, verification exit codes, and draft PR URL
+glue job pull "$id" --checkout   # the job's branch, in your checkout
 ```
 
 Remote jobs start from your current branch. If you have unpushed commits or
