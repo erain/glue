@@ -332,6 +332,29 @@ func pushBranch(ctx context.Context, dir, branch, token string) error {
 	return err
 }
 
+// prBase picks the branch a job's draft PR targets: the job's base ref, or
+// for a snapshot job the developer's branch when origin has it; otherwise
+// the default branch, never the snapshot branch itself.
+func prBase(ctx context.Context, job Job, token, defaultBranch string) string {
+	base := strings.TrimPrefix(strings.TrimSpace(job.Spec.Repo.BaseRef), "refs/heads/")
+	if branch, _, ok := strings.Cut(job.Spec.Repo.SnapshotOf, "@"); ok {
+		base = ""
+		if extra, cleanup, err := gitAuthEnv(token); err == nil {
+			if out, err := workspaceGit(ctx, job.Workspace, extra, "ls-remote", "--heads", "origin", branch); err == nil && strings.TrimSpace(out) != "" {
+				base = branch
+			}
+			cleanup()
+		}
+	}
+	if base == "" {
+		base = defaultBranch
+	}
+	if base == "" {
+		base = "main"
+	}
+	return base
+}
+
 func parseOriginRepo(raw string) (string, string, error) {
 	raw = strings.TrimSpace(raw)
 	var parts []string
@@ -386,13 +409,7 @@ func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal gl
 			defaultBranch = b
 		}
 	}
-	base := strings.TrimPrefix(strings.TrimSpace(job.Spec.Repo.BaseRef), "refs/heads/")
-	if base == "" {
-		base = defaultBranch
-	}
-	if base == "" {
-		base = "main"
-	}
+	base := prBase(ctx, job, token, defaultBranch)
 	title, _, _ := strings.Cut(strings.TrimSpace(goal.Summary), "\n")
 	if title == "" {
 		title, _, _ = strings.Cut(strings.TrimSpace(job.Spec.Objective), "\n")

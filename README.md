@@ -31,8 +31,8 @@ glue job result "$id"   # branch, verification exit codes, and draft PR URL
 
 Remote jobs start from your current branch. If you have unpushed commits or
 uncommitted changes, `glue --remote` stops and tells you instead of silently
-working on different code; push first, or pass `--base <ref>` or
-`--ignore-local`.
+working on different code; push first, pass `--snapshot` to send your working tree as it is, or pass
+`--base <ref>` or `--ignore-local`.
 
 ```go
 agent := glue.NewAgent(glue.AgentOptions{

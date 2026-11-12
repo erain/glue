@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue --remote --snapshot` sends the working tree, including uncommitted and
+  untracked changes and unpushed commits, to a remote job without touching the
+  local index, branch or stash. The snapshot is pushed to
+  `glue/snapshot-<job-id>`, recorded as `repo.snapshot_of`, and removed by
+  `glue job delete`; draft PRs target the developer's branch.
+
 - Remote jobs submitted from a local checkout now start from the current
   branch when `origin` has it, and refuse to submit when the remote clone
   would miss local work (unpushed branch or commits, uncommitted or untracked
