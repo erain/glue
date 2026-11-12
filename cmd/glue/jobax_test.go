@@ -568,3 +568,60 @@ func TestNoBudgetFlag(t *testing.T) {
 	checkAX(t, got == jobs.Budgets{MaxIterations: 2}, "--no-budget = %+v", got)
 	checkAX(t, budgetText("0s", true) == "unlimited" && budgetText("1h0m0s", false) == "1h0m0s", "budgetText")
 }
+
+type progressFakeAPI struct {
+	jobAPI
+	opts axbackend.Options
+}
+
+func (f *progressFakeAPI) Close() error { return nil }
+func (f *progressFakeAPI) Submit(_ context.Context, spec jobs.Spec, _ bool) (jobs.Job, error) {
+	for _, s := range []string{"workspace", "task", "egress", "sandbox ready", "credentials", "started"} {
+		if f.opts.Progress != nil {
+			f.opts.Progress(s)
+		}
+	}
+	return jobs.Job{ID: "job-0123456789ab", Spec: spec, Status: jobs.Running}, nil
+}
+
+func runFakeSubmit(t *testing.T, extra ...string) (string, string) {
+	t.Helper()
+	clearJobTestEnv(t)
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	newAXJobAPI = func(_ context.Context, opts axbackend.Options) (jobAPI, error) {
+		return &progressFakeAPI{opts: opts}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	args := append([]string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "--base", "main", "--verify", "go test ./...", "--deliver", "pr", "Add Shout"}, extra...)
+	if err := jobCommand(context.Background(), args, strings.NewReader(""), &stdout, &stderr, nil); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	return stdout.String(), stderr.String()
+}
+
+func TestSubmitProgress(t *testing.T) {
+	_, stderr := runFakeSubmit(t)
+	for _, want := range []string{"  workspace", "  sandbox ready", "  started", "job job-0123456789ab started on AX", "repo      https://github.com/erain/glue-sandbox @ main", "model     gemini/", "policy    auto · delivery draft_pr", "verify    go test ./...", "glue job attach job-0123456789ab", "glue job cancel job-0123456789ab"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "\x1b[") {
+		t.Fatalf("stderr contains terminal control codes: %q", stderr)
+	}
+}
+
+func TestSubmitStdoutIsOnlyJobID(t *testing.T) {
+	stdout, _ := runFakeSubmit(t)
+	if stdout != "job-0123456789ab\n" {
+		t.Fatalf("stdout = %q, want only the job ID", stdout)
+	}
+}
+
+func TestSubmitQuiet(t *testing.T) {
+	stdout, stderr := runFakeSubmit(t, "--quiet")
+	if stdout != "job-0123456789ab\n" || stderr != "" {
+		t.Fatalf("--quiet: stdout=%q stderr=%q", stdout, stderr)
+	}
+}

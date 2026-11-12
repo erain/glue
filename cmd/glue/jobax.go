@@ -132,6 +132,7 @@ type jobTargetOpts struct {
 	conn                                          jobclient.Config
 	metadataExplicit, ax, remote                  bool
 	backend, kubeconfig, kubectx, atespace, image string
+	progress                                      func(stage string)
 }
 
 func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (jobAPI, bool, error) {
@@ -143,7 +144,7 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 				AXServer:   cmp.Or(strings.TrimSpace(os.Getenv("GLUE_AX_SERVER")), strings.TrimSpace(os.Getenv("AX_SERVER_ADDR"))),
 				KubeConfig: kubeCfg, KubeContext: kubeCtx, Atespace: cmp.Or(strings.TrimSpace(t.atespace), "default"),
 			},
-			Image: strings.TrimSpace(t.image), Credentials: resolveAXCredentials(ctx),
+			Image: strings.TrimSpace(t.image), Credentials: resolveAXCredentials(ctx), Progress: t.progress,
 		})
 		return api, true, err
 	}

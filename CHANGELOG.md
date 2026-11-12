@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue --remote` and `glue job submit` now report each AX submit stage with
+  its elapsed time and end with a summary of the job's repo, model, policy,
+  delivery, budgets and follow-up commands, all on stderr; stdout is still
+  only the job ID. `--quiet` turns this off. `axbackend.Options.Progress`
+  exposes the stages.
+
 - Finished AX jobs no longer hold a worker in direct mode: `glue job attach`
   suspends the task after `job_done`, `glue job list`/`show` reconcile awake
   tasks whose job has finished, and `glue job cancel` suspends the task. New

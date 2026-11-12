@@ -71,7 +71,10 @@ type Options struct {
 	Credentials                          jobs.Credentials
 	PollInterval                         time.Duration
 	GetJob                               func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error)
-	SetStatus                            func(ctx context.Context, id string, spec jobs.Spec, status jobs.Status) error
+	// Progress, when set, is called as each submit stage completes:
+	// "workspace", "task", "egress", "sandbox ready", "credentials", "started".
+	Progress  func(stage string)
+	SetStatus func(ctx context.Context, id string, spec jobs.Spec, status jobs.Status) error
 }
 
 type cachedJob struct {
@@ -114,6 +117,12 @@ func NewBackend(ctx context.Context, opts Options) (*Backend, error) {
 }
 
 func (b *Backend) Close() error { return b.conn.Close() }
+
+func (b *Backend) progress(stage string) {
+	if b.opts.Progress != nil {
+		b.opts.Progress(stage)
+	}
+}
 
 func resolveTaskSecret(ctx context.Context, opts Options, conn *Connection) (string, error) {
 	if s := cmp.Or(strings.TrimSpace(opts.Secret), envOr("GLUE_AX_SECRET")); s != "" {
@@ -287,6 +296,7 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	if _, err := b.conn.AX.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: WorkspaceName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.WorkspaceSpec{Git: []*v1alpha1.GitRepo{{Name: "repo", Repo: spec.Repo.URL, Branch: spec.Repo.BaseRef, Dir: ".", Depth: 1}}, Files: []*v1alpha1.File{{Path: ".glue/token", Content: daemon.HashToken(b.taskToken(id)) + "\n"}}}}}); err != nil {
 		return job, fmt.Errorf("axbackend: update workspace %s: %w", WorkspaceName(id), err)
 	}
+	b.progress("workspace")
 	taskCfg := spec
 	taskCfg.ID, taskCfg.Repo = id, jobs.RepoSpec{Path: "/workspace", BaseRef: spec.Repo.BaseRef, SnapshotOf: spec.Repo.SnapshotOf}
 	rawCfg, _ := json.Marshal(taskCfg)
@@ -308,6 +318,7 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 		return job, fmt.Errorf("axbackend: create task %s: %w", TaskName(id), err)
 	}
 	b.recordState(ctx, id, spec, jobs.Created, now)
+	b.progress("task")
 	return job, nil
 }
 
@@ -324,6 +335,7 @@ func (b *Backend) Resume(ctx context.Context, id string) error {
 	}); err != nil && status.Code(err) != codes.AlreadyExists {
 		return fmt.Errorf("axbackend: create egress policy for %s: %w", TaskName(id), err)
 	}
+	b.progress("egress")
 	if _, err := b.conn.AX.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)}); err != nil {
 		return fmt.Errorf("axbackend: resume task %s: %w", TaskName(id), err)
 	}
@@ -333,7 +345,12 @@ func (b *Backend) Resume(ctx context.Context, id string) error {
 			return cmp.Or(err, fmt.Errorf("axbackend: task %s entered Failed phase", TaskName(id)))
 		}
 		if isWorkspaceReady(t) {
-			return b.PushCredentials(ctx, id)
+			b.progress("sandbox ready")
+			if err := b.PushCredentials(ctx, id); err != nil {
+				return err
+			}
+			b.progress("credentials")
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -378,6 +395,7 @@ func (b *Backend) Start(ctx context.Context, id string) (jobs.Job, error) {
 		started.Spec = spec
 	}
 	started.ID, started.Status = cmp.Or(started.ID, id), cmp.Or(started.Status, jobs.Running)
+	b.progress("started")
 	b.recordState(ctx, id, started.Spec, started.Status, time.Time{})
 	return started, nil
 }
