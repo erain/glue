@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- New `glue job doctor [--json]` checks the remote target, AX connection,
+  task image, repo, GitHub push access and provider key, and prints a fix for
+  each failure. Job commands that cannot reach their server now say which
+  server, where it came from, and point to `glue job doctor`; a missing AX
+  task image gets its own error naming `--image` / `GLUE_AX_IMAGE`.
+
 - `glue --remote` and `glue job submit` now report each AX submit stage with
   its elapsed time and end with a summary of the job's repo, model, policy,
   delivery, budgets and follow-up commands, all on stderr; stdout is still

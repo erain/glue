@@ -280,8 +280,11 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	img := cmp.Or(strings.TrimSpace(b.opts.Image), DefaultImage())
 	spec.ID, spec.Backend, spec.Objective = "", "", strings.TrimSpace(spec.Objective)
 	spec.Repo.URL, spec.Repo.Path, spec.Repo.BaseRef = strings.TrimSpace(spec.Repo.URL), strings.TrimSpace(spec.Repo.Path), cmp.Or(strings.TrimSpace(spec.Repo.BaseRef), "main")
-	if !strings.HasPrefix(id, "job-") || len(id) <= 4 || strings.ContainsAny(id, " \t\r\n/\\") || img == "" || spec.Objective == "" || spec.Repo.URL == "" || spec.Repo.Path != "" {
-		return jobs.Job{}, fmt.Errorf("%w: ax backend requires job-* id, image, objective, and repo.url (without repo.path)", jobs.ErrInvalid)
+	if img == "" {
+		return jobs.Job{}, fmt.Errorf("%w: no AX task image configured; pass --image <ref> or set GLUE_AX_IMAGE (run glue job doctor)", jobs.ErrInvalid)
+	}
+	if !strings.HasPrefix(id, "job-") || len(id) <= 4 || strings.ContainsAny(id, " \t\r\n/\\") || spec.Objective == "" || spec.Repo.URL == "" || spec.Repo.Path != "" {
+		return jobs.Job{}, fmt.Errorf("%w: ax backend requires a job-* id, an objective, and repo.url (without repo.path)", jobs.ErrInvalid)
 	}
 	now := time.Now().UTC()
 	job := jobs.Job{ID: id, Spec: spec, Status: jobs.Created, CreatedAt: now, UpdatedAt: now}

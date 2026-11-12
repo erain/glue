@@ -22,6 +22,8 @@ build your own tool-calling agents on the same provider-agnostic loop.
   [pi-mono](https://github.com/badlogic/pi-mono).
 
 ```sh
+# Check that remote jobs will work from here (cluster, image, repo, tokens):
+glue job doctor
 # Start an autonomous coding job on AX from any git checkout, then close your lid:
 id=$(glue --remote "Fix the race in pool_test.go" --verify "go test -race ./..." --deliver pr)
 glue job list

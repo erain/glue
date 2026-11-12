@@ -48,7 +48,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|diff|pull|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|result|diff|pull|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -105,7 +105,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		_, err := fmt.Fprintf(stdout, "saved token in %s\n", jobclient.ServersPath())
 		return err
 	}
-	if sub != "submit" && sub != "list" && sub != "prune" && len(pos) == 0 {
+	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && len(pos) == 0 {
 		return fmt.Errorf("usage: glue job %s <id>", sub)
 	}
 	if sub == "submit" && *selectFlag {
@@ -128,6 +128,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		target.progress = func(stage string) {
 			fmt.Fprintf(stderr, "  %-14s %5.1fs\n", stage, time.Since(submitStart).Seconds())
 		}
+	}
+	if sub == "doctor" {
+		return jobDoctor(ctx, target, *repo, *baseRef, *provider, *model, target.image, *asJSON, stdout, httpClient)
 	}
 	c, directAX, err := resolveJobAPI(ctx, target, httpClient)
 	if err != nil {
