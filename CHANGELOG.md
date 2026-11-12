@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Jobs submitted directly to AX now default to a 1 hour wall clock and a
+  2,000,000 token budget (`--no-budget` opts out); `glue job show` prints the
+  effective budgets and `result.json` records which budget stopped a
+  `budget_limited` job (`budget_exceeded`).
+
 - Secret redaction no longer corrupts ordinary words that contain a token
   prefix (for example `ax-task-runner` was shown as `ax-ta[REDACTED]`):
   token shapes must start at a word boundary and be at least 20 characters

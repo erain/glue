@@ -107,6 +107,27 @@ func (a *axJobAPI) Submit(ctx context.Context, spec jobs.Spec, start bool) (jobs
 	return a.Create(ctx, id, spec)
 }
 
+// Default budgets for jobs on the AX backend, so a stuck job stops by itself.
+const (
+	remoteDefaultWallClock   = time.Hour
+	remoteDefaultTokenBudget = 2_000_000
+)
+
+// remoteBudgets fills unset wall-clock and token budgets with the remote
+// defaults unless noBudget asks for an unlimited run.
+func remoteBudgets(b jobs.Budgets, noBudget bool) jobs.Budgets {
+	if noBudget {
+		return b
+	}
+	if b.WallClock == 0 {
+		b.WallClock = remoteDefaultWallClock
+	}
+	if b.TokenBudget == 0 {
+		b.TokenBudget = remoteDefaultTokenBudget
+	}
+	return b
+}
+
 type jobTargetOpts struct {
 	conn                                          jobclient.Config
 	metadataExplicit, ax, remote                  bool

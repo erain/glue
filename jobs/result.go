@@ -72,6 +72,10 @@ type Result struct {
 	Partial bool `json:"partial,omitempty"`
 }
 
+	// BudgetExceeded names the budget that stopped a budget_limited job: "wall_clock" or "token_budget".
+	BudgetExceeded string `json:"budget_exceeded,omitempty"`
+}
+
 // Result reads the durable completion record for a finished job.
 func (m *Manager) Result(ctx context.Context, id string) (Result, error) {
 	if err := ctx.Err(); err != nil {
@@ -144,6 +148,12 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 		JobID: job.ID, Status: status, Objective: job.Spec.Objective,
 		BaseRef: job.Spec.Repo.BaseRef, BaseSHA: job.BaseSHA, Branch: "glue/" + job.ID,
 		Verify: []VerifyResult{}, Iterations: goal.Iterations, Usage: goal.Usage, Summary: goal.Summary,
+	}
+	if status == BudgetLimited {
+		res.BudgetExceeded = "wall_clock"
+		if job.Spec.Budgets.TokenBudget > 0 && goal.Usage.TotalTokens >= job.Spec.Budgets.TokenBudget {
+			res.BudgetExceeded = "token_budget"
+		}
 	}
 	if info, err := os.Stat(job.Workspace); job.Workspace != "" && err == nil && info.IsDir() {
 		deliverable := status == Achieved || status == Blocked || status == MaxIterations || status == BudgetLimited
