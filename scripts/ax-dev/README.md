@@ -15,6 +15,7 @@ Reproducible standing [kind](https://kind.sigs.k8s.io/) cluster (`kind-glue-ax`)
 | `scripts/ax-dev/manual-job.sh` | `make ax-dev-manual-job ARGS="..."` | Run an end-to-end Glue coding job inside an AX `Task` (`Workspace`, `Task`, `EgressPolicy`, `ax resume`, `kubectl ate proxy`, golden boot check, `glue job start/attach/result`; see [`docs/runbooks/ax-manual-job.md`](../../docs/runbooks/ax-manual-job.md)) |
 | `scripts/ax-dev/e2e/submit.sh` | `make ax-dev-e2e-submit ARGS="..."` | Submit a coding job directly to AX via `glue --remote`, verify draft PR delivery + `go test ./...`, and close the test PR + delete the AX job (`KEEP_E2E_JOB=true` to retain) |
 | `scripts/ax-dev/e2e/suspend-resume.sh` | `make ax-dev-e2e-suspend ARGS="..."` | Run an out-of-cluster host `glue-gateway` process (`type: ax`) to verify AX task idle suspend on `waiting_for_input`, read-only inspection without wakeup, on-demand resume, suspend on finish, and cleanup |
+| `scripts/ax-dev/e2e/image-smoke.sh [image]` | — | Run the task image and print the version of every bundled tool (Go, Node.js, npm, Python, venv, uv, gcc, make, git, ripgrep, jq, curl, glue) and its size; fails if one is missing |
 | `scripts/ax-dev/down.sh` | `make ax-dev-down` | Explicitly tear down `glue-ax`, `kind-registry`, and any leftover port-forwards/tunnels |
 
 ## Standing Cluster Isolation

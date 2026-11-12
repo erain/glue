@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- The AX task image now includes Node.js 26 LTS with npm, uv, gcc/g++,
+  ripgrep and jq, and AX tasks may reach `registry.npmjs.org`, `pypi.org` and
+  `files.pythonhosted.org` by default, so JavaScript and Python repos work as
+  remote jobs. New `scripts/ax-dev/e2e/image-smoke.sh` checks the image.
+
 - `glue job say` now reaches a running maker at its next model turn instead of
   the next iteration, and the job logs `operator_message_delivered`. The loop
   gains `RunRequest.Steer` / `EventSteer`, and sessions gain `Session.Steer`

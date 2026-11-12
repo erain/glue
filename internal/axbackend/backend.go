@@ -38,7 +38,7 @@ import (
 const SubmitUnknown jobs.Status = "submit_unknown"
 
 // DefaultEgressHosts is the default TLS passthrough allowlist for AX coding tasks.
-var DefaultEgressHosts = []string{"github.com", "api.github.com", "codeload.github.com", "proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "generativelanguage.googleapis.com", "openrouter.ai"}
+var DefaultEgressHosts = []string{"github.com", "api.github.com", "codeload.github.com", "proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "generativelanguage.googleapis.com", "openrouter.ai", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"}
 
 func WorkspaceName(jobID string) string { return "glue-" + jobID + "-ws" }
 func TaskName(jobID string) string      { return "glue-" + jobID }
