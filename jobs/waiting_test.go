@@ -340,3 +340,37 @@ func TestJobRememberSessionSkipsSecondPrompt(t *testing.T) {
 		t.Fatalf("permissions = %+v, err = %v; want exactly 1 prompt", perms, err)
 	}
 }
+
+func TestWallClockLimitRecordsReason(t *testing.T) {
+	p := blockingJobProvider{make(chan struct{})}
+	timer := make(chan func(), 1)
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) { return p, nil }, AfterFunc: func(_ time.Duration, f func()) func() bool {
+		timer <- f
+		return func() bool { return true }
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	job, err := m.Create(context.Background(), Spec{Objective: "wait", Repo: RepoSpec{Path: repoFixture(t)}, Budgets: Budgets{WallClock: time.Hour, TokenBudget: 1_000_000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	<-p.started
+	select {
+	case fire := <-timer:
+		fire()
+	case <-time.After(time.Second):
+		t.Fatal("no timer registered")
+	}
+	if got := waitJob(t, m, job.ID); got.Status != BudgetLimited {
+		t.Fatal(got)
+	}
+	res, err := m.Result(context.Background(), job.ID)
+	if err != nil || res.Status != BudgetLimited || res.BudgetExceeded != "wall_clock" {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+}

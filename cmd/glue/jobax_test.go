@@ -356,6 +356,8 @@ func TestDirectAXCLIEndToEnd(t *testing.T) {
 	checkAX(t, opts.Connect.KubeConfig == "/tmp/kc" && opts.Connect.KubeContext == "kind-glue-ax" && opts.Image == "localhost:5001/glue-task:custom" && opts.Credentials.GitHubToken == "ghp_fromEnvFile123456" && opts.Credentials.ProviderKeys["gemini"] == "AIzaFromEnvFile123456" && opts.Credentials.ProviderKeys["openrouter"] == "sk-or-from-env-file", "unexpected AX options: kc=%q kctx=%q img=%q", opts.Connect.KubeConfig, opts.Connect.KubeContext, opts.Image)
 	checkAX(t, !strings.Contains(taskCfgStr, "ghp_") && !strings.Contains(taskCfgStr, "AIza") && strings.Contains(taskCfgStr, "https://github.com/erain/glue-sandbox.git"), "unexpected task config: %s", taskCfgStr)
 	checkAX(t, strings.Contains(taskCfgStr, "delivery:branch"), "AX jobs must default to branch delivery: %s", taskCfgStr)
+	checkAX(t, strings.Contains(taskCfgStr, "wall_clock:3.6e+12") && strings.Contains(taskCfgStr, "token_budget:2e+06"), "default budgets missing from task config: %s", taskCfgStr)
+	checkAX(t, strings.Contains(mustJobCLI(t, "show", jobID, "--ax"), "wall_clock: 1h0m0s"), "show must print the effective wall clock")
 
 	perm1 := waitJob(t, mgr, jobID, jobs.WaitingForInput)
 	showOut := mustJobCLI(t, "show", jobID, "--ax")
@@ -552,4 +554,17 @@ func TestRemoteIgnoreLocalProceeds(t *testing.T) {
 	checkAX(t, err != nil && rs.URL == "", "submit without --ignore-local should refuse, got %+v, %v", rs, err)
 	rs, err = resolveSubmitRepo(ctx, true, true, true, "", repo, "", "objective")
 	checkAX(t, err == nil && rs.BaseRef == "main", "submit with --ignore-local: %+v, %v", rs, err)
+}
+
+func TestAXDefaultBudgets(t *testing.T) {
+	got := remoteBudgets(jobs.Budgets{MaxIterations: 3}, false)
+	checkAX(t, got == jobs.Budgets{MaxIterations: 3, WallClock: time.Hour, TokenBudget: 2_000_000}, "defaults = %+v", got)
+	got = remoteBudgets(jobs.Budgets{WallClock: 5 * time.Minute, TokenBudget: 10}, false)
+	checkAX(t, got == jobs.Budgets{WallClock: 5 * time.Minute, TokenBudget: 10}, "explicit budgets must win: %+v", got)
+}
+
+func TestNoBudgetFlag(t *testing.T) {
+	got := remoteBudgets(jobs.Budgets{MaxIterations: 2}, true)
+	checkAX(t, got == jobs.Budgets{MaxIterations: 2}, "--no-budget = %+v", got)
+	checkAX(t, budgetText("0s", true) == "unlimited" && budgetText("1h0m0s", false) == "1h0m0s", "budgetText")
 }

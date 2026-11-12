@@ -11,7 +11,7 @@ with `--coding`).
 | `objective` | `string` | Required coding goal description. |
 | `repo` | `{path, url, base_ref}` | Exactly one of `path` (local git repo) or `url` (clone source), plus optional `base_ref`. |
 | `provider`, `model`, `thinking` | `string` | Coding provider/model selection (defaults to `gemini` / `gemini-3.8-flash`). |
-| `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. |
+| `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. Jobs submitted directly to AX default to `wall_clock: 1h` and `token_budget: 2000000` when unset; `--no-budget` removes those defaults. A job stopped by a budget ends `budget_limited`, still runs the finalize step, and records `budget_exceeded` (`wall_clock` or `token_budget`) in `result.json`. |
 | `policy` | `string` | Permission profile (`auto` default, `workspace-auto`, `ask-all`, `yolo`, or custom policy name). |
 | `verify` | `[][]string` | Post-goal verification commands (`argv` slices) executed in the job workspace. |
 | `delivery` | `string` | `none`, `branch`, or `draft_pr`. Defaults to `none` for local jobs and to `branch` for jobs submitted directly to AX, so work done in a sandbox always reaches `origin`. |
@@ -81,7 +81,8 @@ terminal `job_done` event:
   "summary": "Add created.txt greeting",
   "finished_at": "2026-11-10T00:00:00Z",
   "delivery_error": "",
-  "partial": false
+  "partial": false,
+  "budget_exceeded": ""
 }
 ```
 

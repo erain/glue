@@ -76,6 +76,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	snapshotMax := fs.Int64("snapshot-max-size", defaultSnapshotMaxBytes, "remote jobs: largest new file content a snapshot may push, in bytes")
 	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
 	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull: switch to the job branch"), fs.Bool("apply", false, "pull: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull: overwrite an existing local branch or apply over local changes")
+	noBudget := fs.Bool("no-budget", false, "remote jobs: do not apply the default wall-clock and token budgets")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -157,9 +158,13 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		if strings.TrimSpace(*deliver) == "pr" {
 			*deliver = "draft_pr"
 		}
+		budgets := jobs.Budgets{MaxIterations: *maxIter, TokenBudget: *budget, WallClock: *wallClock}
+		if directAX {
+			budgets = remoteBudgets(budgets, *noBudget)
+		}
 		job, err := c.Submit(ctx, jobs.Spec{
 			ID: jobID, Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
-			Budgets: jobs.Budgets{MaxIterations: *maxIter, TokenBudget: *budget, WallClock: *wallClock},
+			Budgets: budgets,
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 		}, *start)
 		if err != nil {
@@ -196,6 +201,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		if d.Spec.Repo.SnapshotOf != "" {
 			fmt.Fprintf(stdout, "snapshot_of: %s\n", d.Spec.Repo.SnapshotOf)
 		}
+		fmt.Fprintf(stdout, "wall_clock: %s\ntoken_budget: %s\n", budgetText(d.Spec.Budgets.WallClock.String(), d.Spec.Budgets.WallClock == 0), budgetText(fmt.Sprint(d.Spec.Budgets.TokenBudget), d.Spec.Budgets.TokenBudget == 0))
 		perms, _ := c.Permissions(ctx, d.ID, "pending")
 		for _, p := range perms {
 			fmt.Fprintf(stdout, "pending_permission: %s\t%s\t%s\t%s\n", p.ID, p.Request.Tool, p.Request.Action, p.Request.Target)
@@ -232,6 +238,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		if res.DeliveryError != "" {
 			fmt.Fprintf(stdout, "delivery_error: %s\n", res.DeliveryError)
 		}
+		if res.BudgetExceeded != "" {
+			fmt.Fprintf(stdout, "budget_exceeded: %s\n", res.BudgetExceeded)
+		}
 		for _, v := range res.Verify {
 			fmt.Fprintf(stdout, "verify: %s (exit %d, %dms)\n", strings.Join(v.Argv, " "), v.ExitCode, v.DurationMS)
 		}
@@ -262,6 +271,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	default:
 		return fmt.Errorf("unknown job subcommand %q", sub)
 	}
+}
+func budgetText(v string, unlimited bool) string {
+	if unlimited {
+		return "unlimited"
+	}
+	return v
 }
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var flags, pos []string
