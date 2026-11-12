@@ -341,3 +341,30 @@ func TestLiveAXJobLifecycle(t *testing.T) {
 	check(t, status.Code(getErr) == codes.NotFound, "expected NotFound after DeleteTask, got %v", getErr)
 	t.Logf("live AX job lifecycle timings (%s): create=%s list=%s resume+boot=%s show=%s delete=%s", created.ID, createDur, listDur, resumeDur, showDur, delDur)
 }
+
+func TestJobDiffUsesCache(t *testing.T) {
+	cp, _, _, b := newFakeBackendEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/credentials":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case strings.HasSuffix(r.URL.Path, "/patch"):
+			w.Header().Set("Content-Type", "text/x-diff")
+			_, _ = w.Write([]byte("diff --git a/x b/x\n+hello\n"))
+		default:
+			_, _ = w.Write([]byte(`{"status":"achieved","credentials":"present"}`))
+		}
+	})
+	id := "job-diffcache001"
+	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Diff", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
+	cp.mu.Lock()
+	cp.egress[TaskName(id)] = true
+	cp.mu.Unlock()
+	p1 := must(b.Patch(t.Context(), id))(t)
+	check(t, strings.Contains(string(p1), "+hello") && cp.tasks[TaskName(id)].GetStatus().GetPhase() == "Suspended", "first patch = %q phase %q", p1, cp.tasks[TaskName(id)].GetStatus().GetPhase())
+	hits, resumes := cp.taskHTTPHits.Load(), cp.resumeCalls
+	p2 := must(b.Patch(t.Context(), id))(t)
+	check(t, string(p2) == string(p1) && cp.taskHTTPHits.Load() == hits && cp.resumeCalls == resumes, "cached patch woke the task: hits %d->%d resumes %d->%d", hits, cp.taskHTTPHits.Load(), resumes, cp.resumeCalls)
+	mustOK(t, b.DeleteTask(t.Context(), id))
+	_, err := os.Stat(b.patchPath(id))
+	check(t, errors.Is(err, os.ErrNotExist), "patch cache not removed on delete: %v", err)
+}

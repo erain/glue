@@ -16,6 +16,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote work is no longer stranded in the sandbox: jobs submitted directly
+  to AX default to `--deliver branch`, canceled or errored jobs commit and push
+  their unfinished work (`partial: true` in the result), and the new
+  `GET /v1/jobs/{id}/patch` endpoint and `glue job diff <id> [--stat]` show a
+  job's changes. Direct AX mode caches the patch locally, so later `diff`
+  calls do not wake the task. `glue job result` prints `delivery_error`.
+
 - Record [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) (direct
   Laptop-to-AX execution via `internal/axbackend`, AX as sole external platform
   dependency with zero `glue-system` manifests, `auto` default job policy, and

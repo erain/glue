@@ -536,6 +536,29 @@ func (b *Backend) Result(ctx context.Context, id string) (res jobs.Result, err e
 	return res, err
 }
 
+func (b *Backend) patchPath(id string) string { return filepath.Join(b.opts.CacheDir, id+".patch") }
+
+// Patch returns the job's patch, from the local cache when a finished job's
+// patch was fetched before, so repeated calls do not wake the task.
+func (b *Backend) Patch(ctx context.Context, id string) ([]byte, error) {
+	b.cacheMu.Lock()
+	data, err := os.ReadFile(b.patchPath(id))
+	b.cacheMu.Unlock()
+	if err == nil {
+		return data, nil
+	}
+	err = b.withTempWake(ctx, id, func(c *jobclient.Client) (e error) { data, e = c.Patch(ctx, id); return e })
+	if err != nil {
+		return nil, err
+	}
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if mkErr := os.MkdirAll(b.opts.CacheDir, 0o700); mkErr == nil {
+		_ = os.WriteFile(b.patchPath(id), data, 0o600)
+	}
+	return data, nil
+}
+
 func (b *Backend) Stream(ctx context.Context, id string, after int64, h func(eventlog.Envelope) error) error {
 	return b.withRunning(ctx, id, func(cli *jobclient.Client) error {
 		return cli.StreamEvents(ctx, id, after, func(ev eventlog.Envelope) error {
@@ -593,6 +616,7 @@ func (b *Backend) DeleteTask(ctx context.Context, id string) error {
 	}
 	b.cacheMu.Lock()
 	_ = os.Remove(b.cachePath(id))
+	_ = os.Remove(b.patchPath(id))
 	b.cacheMu.Unlock()
 	_ = os.Remove(jobclient.SeqPath(b.jobClient(id).BaseURL, id))
 	return nil

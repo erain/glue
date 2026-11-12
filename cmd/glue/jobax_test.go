@@ -352,6 +352,7 @@ func TestDirectAXCLIEndToEnd(t *testing.T) {
 	rig.mu.Unlock()
 	checkAX(t, opts.Connect.KubeConfig == "/tmp/kc" && opts.Connect.KubeContext == "kind-glue-ax" && opts.Image == "localhost:5001/glue-task:custom" && opts.Credentials.GitHubToken == "ghp_fromEnvFile123456" && opts.Credentials.ProviderKeys["gemini"] == "AIzaFromEnvFile123456" && opts.Credentials.ProviderKeys["openrouter"] == "sk-or-from-env-file", "unexpected AX options: kc=%q kctx=%q img=%q", opts.Connect.KubeConfig, opts.Connect.KubeContext, opts.Image)
 	checkAX(t, !strings.Contains(taskCfgStr, "ghp_") && !strings.Contains(taskCfgStr, "AIza") && strings.Contains(taskCfgStr, "https://github.com/erain/glue-sandbox.git"), "unexpected task config: %s", taskCfgStr)
+	checkAX(t, strings.Contains(taskCfgStr, "delivery:branch"), "AX jobs must default to branch delivery: %s", taskCfgStr)
 
 	perm1 := waitJob(t, mgr, jobID, jobs.WaitingForInput)
 	showOut := mustJobCLI(t, "show", jobID, "--ax")

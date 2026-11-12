@@ -28,6 +28,7 @@ type jobAPI interface {
 	Show(ctx context.Context, id string) (jobs.Detail, error)
 	Permissions(ctx context.Context, id, state string) ([]jobs.PermissionInfo, error)
 	Result(ctx context.Context, id string) (jobs.Result, error)
+	Patch(ctx context.Context, id string) ([]byte, error)
 	Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error
 	Say(ctx context.Context, id, text string) error
 	Continue(ctx context.Context, id, text string, maxIterations int) error
@@ -46,7 +47,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|approve|deny|say|continue|cancel|delete> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|submit|start|list|show|attach|result|diff|approve|deny|say|continue|cancel|delete> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -70,6 +71,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
 	status, before, remember, reason := fs.String("status", "", "status"), fs.String("before", "", "before cursor"), fs.String("remember", "", "remember scope"), fs.String("reason", "", "reason")
+	stat := fs.Bool("stat", false, "diff: print only the diffstat")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -175,12 +177,35 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "pending_permission: %s\t%s\t%s\t%s\n", p.ID, p.Request.Tool, p.Request.Action, p.Request.Target)
 		}
 		return nil
+	case "diff":
+		if *stat {
+			res, err := c.Result(ctx, pos[0])
+			if err == nil {
+				_, err = fmt.Fprintln(stdout, cmp.Or(strings.TrimRight(res.Diffstat, "\n"), "(no changes)"))
+			}
+			return err
+		}
+		patch, err := c.Patch(ctx, pos[0])
+		if err == nil {
+			if len(patch) == 0 {
+				_, err = fmt.Fprintln(stderr, "(no changes)")
+			} else {
+				_, err = stdout.Write(patch)
+			}
+		}
+		return err
 	case "result":
 		res, err := c.Result(ctx, pos[0])
 		if err != nil || *asJSON {
 			return writeJSONOrErr(stdout, res, err)
 		}
 		fmt.Fprintf(stdout, "job_id: %s\nstatus: %s\nbranch: %s\nbase_sha: %s\nhead_sha: %s\npr_url: %s\nsummary: %s\n", res.JobID, res.Status, res.Branch, res.BaseSHA, res.HeadSHA, res.PRURL, res.Summary)
+		if res.Partial {
+			fmt.Fprintln(stdout, "partial: true (unfinished work is on the branch)")
+		}
+		if res.DeliveryError != "" {
+			fmt.Fprintf(stdout, "delivery_error: %s\n", res.DeliveryError)
+		}
 		for _, v := range res.Verify {
 			fmt.Fprintf(stdout, "verify: %s (exit %d, %dms)\n", strings.Join(v.Argv, " "), v.ExitCode, v.DurationMS)
 		}

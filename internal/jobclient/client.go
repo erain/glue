@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -139,6 +140,26 @@ func (c *Client) Say(ctx context.Context, id, text string) error {
 func (c *Client) Continue(ctx context.Context, id, text string, maxIterations int) error {
 	return c.doJSON(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/continue", map[string]any{"text": text, "max_iterations": maxIterations}, http.StatusAccepted, nil)
 }
+
+// Patch returns the job's binary git diff from its base to its final commit.
+func (c *Client) Patch(ctx context.Context, id string) ([]byte, error) {
+	path := "/v1/jobs/" + url.PathEscape(id) + "/patch"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeStatusErr(http.MethodGet, path, resp)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 6<<20))
+}
+
 func (c *Client) Cancel(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(id), nil, http.StatusAccepted, nil)
 }
