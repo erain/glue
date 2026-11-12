@@ -20,6 +20,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   branch when `origin` has it, and refuse to submit when the remote clone
   would miss local work (unpushed branch or commits, uncommitted or untracked
   files). Pass `--base <ref>` or `--ignore-local` to proceed anyway.
+
 - Add the remote mode Phase 3 design
   ([docs/remote-mode-phase3-design.md](docs/remote-mode-phase3-design.md)): a
   hands-on review of `glue --remote` on the standing AX cluster and a
@@ -337,11 +338,13 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   Fire a coding job, disconnect, and pick it up from any terminal or a
   browser, with jobs running locally or as AX tasks. The plan is a tracker
   (#402) with one verifiable issue per step; nothing is implemented yet.
+
 - **Gemini ids with a `models/` prefix get Gemini 3/4 handling
   (`providers/gemini`, `providers`).** Ids copied from ListModels, such as
   `models/gemini-3.1-pro-preview`, again receive thought-signature replay,
   includeThoughts, and `--thinking` validation. `gemini-3-pro-preview`,
   which the API no longer serves, is removed from the model catalog.
+
 - **Live tests run on OpenRouter's `openrouter/free`.** The glue-review
   smoke and fixture replay and the local-agent example now need only
   `OPENROUTER_API_KEY`, and CI's always-on live job is `live (openrouter)`.
@@ -349,6 +352,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   via `NVIDIA_LIVE_MODEL`. Retired defaults are replaced: glue-review's
   Gemini model is `gemini-3-flash-preview`, and the local-agent example
   uses the Gemini provider default. (#395, #390)
+
 - **Breaking:** Removed the retired `agents/peggy` personal-assistant product,
   including its CLI, Telegram adapter, dashboard, and scheduling. Shared Glue
   framework, daemon, stores, providers, and coding tools remain supported.
@@ -363,6 +367,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   text to the clipboard via an OSC 52 sequence — works locally and over
   SSH with no external binary. Defaults to the last reply; `/copy 2`
   targets reply #2; **Ctrl+Y** copies the last reply with no typing. (#362)
+
 - **Stale-file guard for `edit_file` (`tools/fs.ReadLedger`).** The
   roadmap's #1 cause of edit-match failures: the file changed on disk
   (user edit, formatter, git operation) after the model read it, and
@@ -583,6 +588,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   TUI, so a goal started in `glue run` can be resumed headlessly and vice
   versa. The worktree helper moved to a shared `cmd/glue/worktree` package.
   Closes #328.
+
 - **Goal worktree isolation — `/goal -w` (goal loop Phase 3b).**
   `/goal -w <objective>` (or `--worktree`) runs the goal's maker and checker
   in a dedicated git worktree at `.glue/worktrees/<goal-id>` on branch
@@ -595,6 +601,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   resume — in-process or across restarts — re-attach the same worktree and
   branch. Without `--coding` or outside a git repository, `-w` refuses with a
   clear message before any goal starts. Closes #326.
+
 - **Durable goal state + resume across restarts (goal loop Phase 3a).**
   When the agent has a `Store`, `Agent.PursueGoal` checkpoints a `GoalRecord`
   (objective, status, verified checklist, iterations, usage, summary) as
@@ -627,10 +634,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   permission prompt as chat turns — pending permission requests are now a FIFO
   queue, so a concurrent goal + chat request can no longer drop one (`--yolo`
   makes goals fully autonomous). Closes #322.
+
 - **`GoalSpec.Checklist`: seed `Agent.PursueGoal` with an existing plan.**
   When non-empty, the planning step is skipped and the loop continues from the
   given items (done flags and evidence respected) — the primitive behind
   `/goal resume`, and the hook Phase 3's durable resume will reuse.
+
 - **`GoalSpec.Permission` now applies to the planner and checker sessions too**
   (previously maker-only). Without this, a checker under an agent with no
   default permission policy — e.g. the interactive TUI — was denied every
@@ -710,6 +719,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   markdown renderer width inherits the cap so wrapping aligns. Header
   and status bar stay full-width — they read better edge-to-edge.
   Closes #307.
+
 - **`glue version` / `glue --version` / `glue -v`.** Prints the module
   version, git revision, build time, and Go toolchain from the linker-
   embedded build info (same data as `go version -m $(which glue)`),
@@ -754,6 +764,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   one-shot paths (`glue run --prompt ...`, `echo ... | glue run`) are
   preserved exactly. The new charmbracelet dependencies live under
   `cmd/glue/tui/`; the library import graph is unchanged.
+
 - **Session tree (`glue` + `cmd/glue/tui`).** New `Agent.ForkSession`
   and `Agent.CloneSession` write child sessions whose metadata records
   their place in the lineage; `SessionParent` reads it back. New typed
@@ -765,6 +776,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   nodes tagged `forked@N`). Designed in
   [ADR-0015](docs/adr/0015-session-tree.md). Additive only — no
   existing API or on-disk format changes.
+
 - **Daily-driver workflow polish (`cmd/glue` + TUI):**
   - **`--yolo` flag** on `glue run`: auto-allows every side-effecting
     tool call (`write_file` / `edit_file` / `shell_exec` / MCP) without
@@ -805,9 +817,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
     cancel) and replays the chosen session's transcript into the TUI.
     Needs a `Store` that implements `SessionLister`; the file store
     qualifies.
+
 - Added `glue.Agent.ListSessions` (mirrors `Agent.SearchSessions`):
   returns `[]SessionSummary` from a `SessionLister`-capable store, or
   the new `ErrSessionListingNotSupported` sentinel.
+
 - TUI input layer polish (`cmd/glue/tui`):
   - Dropped the textarea's internal `│ ` prompt — the box border was the
     only vertical line you should see.
@@ -825,6 +839,7 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
   - Bracketed paste was already on by default — pasting multi-line text
     no longer fires multiple submits.
   - Welcome card + status bar updated with the new key hints.
+
 - TUI polish (`cmd/glue/tui` v1.1):
   - **Markdown rendering** for assistant text via `charmbracelet/glamour`,
     applied after each turn completes (streaming stays plain to avoid
@@ -862,19 +877,23 @@ the public surface for `go get github.com/erain/glue@v0.1.0`.
   `list_dir`, `find_files`, `grep`, `shell_exec`, `git_diff_branch`,
   `git_log_branch`) over the existing `tools/fs`, `tools/git`,
   `tools/shell`, and `glue.Executor` primitives.
+
 - `cmd/glue` coding-agent mode: `glue run --coding` and
   `glue serve --coding` register the SDK coding bundle, with local
   terminal permission prompts for one-shot runs and daemon-brokered
   permissions for served runs.
+
 - `cmd/glue --provider`: `run` and `serve` select any registered
   provider (`codex`, `gemini`, `nvidia`, `openrouter`) through the
   `providers` registry instead of being hardwired to Gemini, so the
   binary can run as a coding agent on a ChatGPT subscription
   (`glue run --provider codex --coding`). `--model` defaults to the
   selected provider's registry default model.
+
 - `tools/fs.FileEdit` (`edit_file`), a permission-gated surgical
   exact-string replacement tool with a unique-match guard and optional
   `replace_all`.
+
 - Read-only navigation tools `tools/fs.ListDirTool` (`list_dir`),
   `FindTool` (`find_files`), and `GrepTool` (`grep`).
   Workspace-scoped and escape-safe; `grep` skips secret-shaped
@@ -900,6 +919,7 @@ and [`docs/design.md`](docs/design.md).
 - The Codex provider authenticates via `codex login` (subscription
   auth path OpenAI does not formally document). Intended for personal
   use; see [`SECURITY.md`](SECURITY.md) for the scope statement.
+
 - The local executor is permission-gated, not sandboxed. Implement
   `glue.Executor` against a container/VM if you need isolation
   ([ADR-0009](docs/adr/0009-executor-permission-hook.md)).
