@@ -267,7 +267,7 @@ func hasRemoteFlag(args []string) bool {
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  glue --remote "<objective>" [--attach] [--repo <url|dir>] [--base <ref>] [--deliver <none|branch|pr>] [--verify <cmd>] [--policy <name>] [--env <path>]
+  glue --remote "<objective>" [--attach] [--repo <url|dir>] [--base <ref>] [--ignore-local] [--deliver <none|branch|pr>] [--verify <cmd>] [--policy <name>] [--env <path>]
   glue run --prompt <text> [--provider <name>] [--id <id> | --continue] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
   glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
   glue goal --resume [<id>] | --list [--store <dir>]

@@ -70,6 +70,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
 	status, before, remember, reason := fs.String("status", "", "status"), fs.String("before", "", "before cursor"), fs.String("remember", "", "remember scope"), fs.String("reason", "", "reason")
+	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -121,7 +122,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	switch sub {
 	case "submit":
 		obj := cmp.Or(strings.TrimSpace(*objective), strings.TrimSpace(remote.objective), strings.TrimSpace(strings.Join(pos, " ")))
-		repoSpec, err := resolveSubmitRepo(ctx, directAX, remote.enabled, *backend, *repo, *baseRef, obj)
+		repoSpec, err := resolveSubmitRepo(ctx, directAX, remote.enabled, *ignoreLocal, *backend, *repo, *baseRef, obj)
 		if err != nil {
 			return err
 		}

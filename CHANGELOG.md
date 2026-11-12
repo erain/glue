@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote jobs submitted from a local checkout now start from the current
+  branch when `origin` has it, and refuse to submit when the remote clone
+  would miss local work (unpushed branch or commits, uncommitted or untracked
+  files). Pass `--base <ref>` or `--ignore-local` to proceed anyway.
+
 - Record [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) (direct
   Laptop-to-AX execution via `internal/axbackend`, AX as sole external platform
   dependency with zero `glue-system` manifests, `auto` default job policy, and
