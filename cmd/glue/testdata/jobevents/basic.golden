@@ -1,0 +1,37 @@
+[00:02] planning
+[00:02]   ✓ list_dir .  0.1s
+[00:09]   ✓ read_file greet.go  0.2s
+[00:14] plan (2 items):
+          [ ] Add Shout(name) returning Greet upper-cased
+          [ ] Table-driven TestShout passes
+[00:14] iteration 1 (4,210 tokens so far)
+[00:21]   ✓ write_file shout.go  0.0s
+[00:30]   ✓ write_file shout_test.go  0.0s
+[00:40]   ✗ shell_exec go test ./...  2.4s
+            exit_code: 1 timed_out: false truncated: false
+            stdout:
+            --- FAIL: TestShout (0.00s)
+                shout_test.go:12: case 12: got "hello", want "HELLO, BOB!"
+                shout_test.go:13: case 13: got "hello", want "HELLO, BOB!"
+                shout_test.go:14: case 14: got "hello", want "HELLO, BOB!"
+                shout_test.go:15: case 15: got "hello", want "HELLO, BOB!"
+                shout_test.go:16: case 16: got "hello", want "HELLO, BOB!"
+                shout_test.go:17: case 17: got "hello", want "HELLO, BOB!"
+                shout_test.go:18: case 18: got "hello", want "HELLO, BOB!"
+            … 10 more lines (--verbose shows all)
+I see: Shout must upper-case the whole greeting. Fixing shout.go.
+[00:47]   ✓ edit_file shout.go  0.0s
+[00:54]   ✓ shell_exec go test ./...  1.9s
+[01:00] checking
+[01:00]   ✓ shell_exec go test -run TestShout -v ./...  0.1s
+[01:06] verdict: 2/2 done — Shout added and TestShout passes
+[01:11] job achieved — Add Shout with a table-driven test
+────────────────────────────────────────
+  status       achieved
+  iterations   1
+  duration     1m11s
+  tokens       18,934
+  branch       glue/job-render0001
+  pull request https://github.com/erain/glue-sandbox/pull/9
+  verify       ✓ go test ./... (exit 0, 0.6s)
+  next         glue job result job-render0001 · glue job diff job-render0001 · glue job pull job-render0001

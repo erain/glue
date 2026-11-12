@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/erain/glue"
 	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
@@ -80,6 +79,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	noBudget := fs.Bool("no-budget", false, "remote jobs: do not apply the default wall-clock and token budgets")
 	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting")
 	quiet := fs.Bool("quiet", false, "submit: print only the job ID")
+	verbose := fs.Bool("verbose", false, "attach: show full tool output")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var verifyRaw repeatedStrings
@@ -195,11 +195,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			printSubmitSummary(stderr, job.ID, directAX, *start, summary)
 		}
 		if *attach {
-			return attachJob(ctx, c, job.ID, stdin, stdout, stderr)
+			return attachJob(ctx, c, job.ID, stdin, stdout, stderr, *verbose)
 		}
 		return nil
 	case "attach":
-		return attachJob(ctx, c, pos[0], stdin, stdout, stderr)
+		return attachJob(ctx, c, pos[0], stdin, stdout, stderr, *verbose)
 	case "start":
 		job, err := c.Start(ctx, pos[0])
 		if err == nil {
@@ -424,18 +424,18 @@ func writeJSONOrErr(w io.Writer, v any, err error) error {
 	}
 	return err
 }
-func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout, stderr io.Writer) error {
+func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout, stderr io.Writer, verbose bool) error {
 	if stdin == nil {
 		stdin = strings.NewReader("")
 	}
 	input, after := bufio.NewReader(stdin), c.LoadSeq(id)
-	var wroteDelta bool
+	r := newJobRenderer(stdout, verbose)
 	backoff := 20 * time.Millisecond
 	for {
 		var done bool
 		err := c.StreamEvents(ctx, id, after, func(ev eventlog.Envelope) error {
 			backoff = 20 * time.Millisecond
-			if err := renderJobEvent(ctx, c, id, ev, &wroteDelta, input, stdout, stderr); err != nil {
+			if err := renderJobEvent(ctx, c, id, ev, r, input, stderr); err != nil {
 				return err
 			}
 			after = ev.Seq
@@ -447,9 +447,7 @@ func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout
 			return nil
 		})
 		if ctx.Err() != nil || errors.Is(err, errJobDetached) {
-			if wroteDelta {
-				fmt.Fprintln(stdout)
-			}
+			r.flush()
 			return nil
 		}
 		if done {
@@ -466,86 +464,20 @@ func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout
 		}
 		select {
 		case <-ctx.Done():
-			if wroteDelta {
-				fmt.Fprintln(stdout)
-			}
+			r.flush()
 			return nil
 		case <-time.After(backoff):
 			backoff = min(backoff*2, 500*time.Millisecond)
 		}
 	}
 }
-func renderJobEvent(ctx context.Context, c jobAPI, id string, ev eventlog.Envelope, wroteDelta *bool, input *bufio.Reader, stdout, stderr io.Writer) error {
-	if ev.Type == string(glue.EventTextDelta) {
-		if delta := payloadString(ev.Payload, "delta"); delta != "" && (ev.Phase == "" || ev.Phase == "maker") {
-			fmt.Fprint(stdout, delta)
-			*wroteDelta = !strings.HasSuffix(delta, "\n")
-		}
-		return nil
-	}
-	if *wroteDelta {
-		fmt.Fprintln(stdout)
-		*wroteDelta = false
-	}
+
+// renderJobEvent renders ev and handles the interactive parts of attach:
+// pending permission prompts and the closing summary.
+func renderJobEvent(ctx context.Context, c jobAPI, id string, ev eventlog.Envelope, r *jobRenderer, input *bufio.Reader, stderr io.Writer) error {
 	switch ev.Type {
-	case string(glue.GoalEventPlan), string(glue.GoalEventIterationStart), string(glue.GoalEventVerdict):
-		ge, _ := decodePayload[glue.GoalEvent](ev.Payload)
-		switch ev.Type {
-		case string(glue.GoalEventPlan):
-			fmt.Fprintf(stdout, "plan (%d items):\n%s\n", len(ge.Checklist), plainChecklist(ge.Checklist))
-		case string(glue.GoalEventIterationStart):
-			fmt.Fprintf(stdout, "— iteration %d (%d tokens so far)\n", ge.Iteration, ge.Usage.TotalTokens)
-		case string(glue.GoalEventVerdict):
-			fmt.Fprintf(stdout, "verdict: %s ✓ — %s\n", plainFraction(ge.Checklist), ge.Message)
-		}
-	case string(glue.EventToolStart), string(glue.EventToolEnd):
-		le, _ := decodePayload[glue.Event](ev.Payload)
-		name := le.ToolName
-		if name == "" && le.ToolCall != nil {
-			name = le.ToolCall.Name
-		}
-		if ev.Type == string(glue.EventToolStart) {
-			if le.ToolCall != nil && len(le.ToolCall.Arguments) > 0 {
-				fmt.Fprintf(stdout, "[tool] %s %s\n", name, compactJSON(le.ToolCall.Arguments))
-			} else {
-				fmt.Fprintf(stdout, "[tool] %s\n", name)
-			}
-			return nil
-		}
-		state, text := "done", ""
-		if le.ToolResult != nil {
-			if le.ToolResult.IsError {
-				state = "error"
-			}
-			for _, p := range le.ToolResult.Content {
-				if p.Text != "" {
-					text = oneLine(p.Text)
-					break
-				}
-			}
-		}
-		if text != "" {
-			fmt.Fprintf(stdout, "[tool %s] %s: %s\n", state, name, text)
-		} else {
-			fmt.Fprintf(stdout, "[tool %s] %s\n", state, name)
-		}
-	case "operator_message":
-		if text := payloadString(ev.Payload, "text"); text != "" {
-			fmt.Fprintf(stdout, "operator: %s\n", text)
-		}
-	case "run_interrupted":
-		fmt.Fprintf(stdout, "interrupted: %s\n", cmp.Or(payloadString(ev.Payload, "reason"), payloadString(ev.Payload, "message"), "run interrupted"))
-	case "task_suspended":
-		fmt.Fprintf(stdout, "task suspended (%s)\n", cmp.Or(payloadString(ev.Payload, "reason"), "suspended"))
-	case "task_resumed":
-		fmt.Fprintln(stdout, "task resumed")
-	case "job_resumed":
-		p, _ := decodePayload[struct {
-			From   int    `json:"from_iteration"`
-			Reason string `json:"reason"`
-		}](ev.Payload)
-		fmt.Fprintf(stdout, "resumed: iteration %d (%s)\n", p.From, cmp.Or(p.Reason, "resumed"))
 	case "permission_request":
+		r.flush()
 		perm, err := decodePayload[connectPermissionPayload](ev.Payload)
 		if err != nil {
 			return err
@@ -563,16 +495,9 @@ func renderJobEvent(ctx context.Context, c jobAPI, id string, ev eventlog.Envelo
 		}
 		return c.Decide(ctx, id, perm.PermissionID, decision.Allow, decision.RememberFor, decision.Reason)
 	case "job_done":
-		p, _ := decodePayload[struct {
-			Status jobs.Status     `json:"status"`
-			Result glue.GoalResult `json:"result"`
-			Error  string          `json:"error"`
-		}](ev.Payload)
-		if summary := cmp.Or(strings.TrimSpace(p.Result.Summary), strings.TrimSpace(p.Error)); summary != "" {
-			fmt.Fprintf(stdout, "job %s — %s\n", p.Status, summary)
-		} else {
-			fmt.Fprintf(stdout, "job %s\n", p.Status)
-		}
+		r.summary(ctx, c, id, ev)
+	default:
+		r.render(ev)
 	}
 	return nil
 }

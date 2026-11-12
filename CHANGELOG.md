@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue job attach` prints a readable transcript: elapsed-time prefixes,
+  phase headers, one line per tool call with its key argument, outcome and
+  duration, the first 10 lines of failed output, and a closing summary with
+  status, duration, tokens, branch, PR and verify results. `--verbose` shows
+  full tool output.
+
 - New `glue job doctor [--json]` checks the remote target, AX connection,
   task image, repo, GitHub push access and provider key, and prints a fix for
   each failure. Job commands that cannot reach their server now say which
