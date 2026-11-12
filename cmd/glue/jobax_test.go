@@ -638,7 +638,10 @@ func TestNotifyHostInEgress(t *testing.T) {
 	orig := newAXJobAPI
 	t.Cleanup(func() { newAXJobAPI = orig })
 	var got axbackend.Options
-	newAXJobAPI = func(_ context.Context, opts axbackend.Options) (jobAPI, error) { got = opts; return notifyFakeAPI{}, nil }
+	newAXJobAPI = func(_ context.Context, opts axbackend.Options) (jobAPI, error) {
+		got = opts
+		return notifyFakeAPI{}, nil
+	}
 	var out bytes.Buffer
 	err := jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "--notify", "https://ntfy.sh/glue-secret-topic", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
 	checkAX(t, err == nil, "submit: %v", err)
