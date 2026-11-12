@@ -284,6 +284,11 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		// 2) Maker: a fresh session works the open items.
 		makerUsage, err := a.runGoalMaker(ctx, spec, i, checklist, guidance)
 		addUsage(&result.Usage, makerUsage)
+		if err != nil && ctx.Err() == nil && isLoopBudgetStop(err) {
+			// The maker ran out of turns or a guardrail stopped it. Its edits
+			// are on disk, so let the checker judge them instead of erroring.
+			err = nil
+		}
 		if err != nil {
 			result.Status = GoalErrored
 			result.Checklist = cloneChecklist(checklist)
@@ -397,7 +402,7 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	res, err := sess.PromptJSON(ctx, planPrompt(spec.Objective), &plan, opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
-	if err != nil && ctx.Err() == nil && (errors.Is(err, loop.ErrMaxTurns) || errors.Is(err, loop.ErrRepeatedToolCalls) || errors.Is(err, loop.ErrTooManyMistakes)) {
+	if err != nil && ctx.Err() == nil && isLoopBudgetStop(err) {
 		// The planner explored without answering. Ask once more in a fresh
 		// session with no tools, handing over what it observed.
 		plan = goalPlan{}
@@ -530,9 +535,7 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 	if len(spec.CheckerTools) > 0 {
 		opts = append(opts, WithTools(spec.CheckerTools))
 	}
-	if spec.MaxTurns > 0 {
-		opts = append(opts, WithMaxTurns(spec.MaxTurns))
-	}
+	opts = append(opts, WithMaxTurns(checkerMaxTurns(spec.MaxTurns)))
 	if spec.Permission != nil {
 		opts = append(opts, WithPermission(spec.Permission))
 	}
@@ -540,7 +543,50 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 	res, err := sess.PromptJSON(ctx, withGoalGuidance(checkerPrompt(spec.Objective, checklist), guidance), &verdict, opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
+	if err != nil && ctx.Err() == nil && isLoopBudgetStop(err) {
+		// The checker kept gathering evidence without answering. Ask once
+		// more in a fresh session with no tools, handing over what it saw.
+		verdict = goalVerdict{}
+		var final PromptResult
+		final, err = a.finalVerdict(ctx, spec, iter, checklist, guidance, plannerObservations(res.NewMessages), &verdict)
+		sumUsage(&usage, final.NewMessages)
+	}
 	return verdict, usage, err
+}
+
+// CheckerMaxToolTurns bounds how many tool-using turns a goal checker may take
+// before it must return a verdict.
+const CheckerMaxToolTurns = 12
+
+func checkerMaxTurns(specMax int) int {
+	n := CheckerMaxToolTurns + 1
+	if specMax > 0 && specMax < n {
+		n = specMax
+	}
+	return n
+}
+
+// isLoopBudgetStop reports whether err means a session stopped for running
+// out of turns or tripping a loop guardrail, rather than failing.
+func isLoopBudgetStop(err error) bool {
+	return errors.Is(err, loop.ErrMaxTurns) || errors.Is(err, loop.ErrRepeatedToolCalls) || errors.Is(err, loop.ErrTooManyMistakes)
+}
+
+// finalVerdict asks for the verdict in a fresh session without tools.
+func (a *Agent) finalVerdict(ctx context.Context, spec GoalSpec, iter int, checklist []ChecklistItem, guidance, observations string, verdict *goalVerdict) (PromptResult, error) {
+	sess, err := a.Session(ctx, fmt.Sprintf("%s:check-%d-final", spec.SessionPrefix, iter))
+	if err != nil {
+		return PromptResult{}, err
+	}
+	if spec.OnSession != nil {
+		spec.OnSession("checker", iter, sess)
+	}
+	opts := []PromptOption{WithJSONSchema(goalVerdictSchema), WithSystemPrompt(spec.CheckerSystemPrompt), WithTools(nil), WithMaxTurns(1)}
+	if spec.CheckerModel != "" {
+		opts = append(opts, WithModel(spec.CheckerModel))
+	}
+	text := withGoalGuidance(checkerPrompt(spec.Objective, checklist), guidance) + "\n\nYou have no tools now. Decide from the evidence already gathered in the workspace; mark an item done only if this evidence shows it:\n" + observations
+	return sess.PromptJSON(ctx, text, verdict, opts...)
 }
 
 func withGoalGuidance(prompt, guidance string) string {
@@ -579,7 +625,7 @@ Goal: %s
 Checklist to verify:
 %s
 
-For every item, independently gather evidence (read files, run the build and tests, inspect diffs) and decide whether it is genuinely complete. Do not trust prior claims. Return every item with its verified done flag and a short evidence note, set "done" true only if all items are complete, and give a one-line summary of what remains.`, objective, renderChecklist(checklist))
+For every item, independently gather evidence (read files, run the build and tests, inspect diffs) and decide whether it is genuinely complete. Do not trust prior claims. Check each item once with the most direct evidence, then answer; do not re-check facts you have already confirmed. Return every item with its verified done flag and a short evidence note, set "done" true only if all items are complete, and give a one-line summary of what remains.`, objective, renderChecklist(checklist))
 }
 
 func renderChecklist(items []ChecklistItem) string {

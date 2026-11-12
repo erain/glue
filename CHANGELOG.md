@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Goal checkers are limited to 12 tool turns and then return a verdict from
+  the evidence they gathered, and a maker that runs out of turns hands over to
+  the checker instead of failing. Jobs no longer end `errored` because the
+  checker kept re-checking finished work.
+
 - The goal planner is limited to 6 tool turns. When it runs out, or a loop
   guardrail stops it for repeating a call, Glue asks once more in a fresh
   session without tools, passing what the planner observed, instead of
