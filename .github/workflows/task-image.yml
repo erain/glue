@@ -1,0 +1,93 @@
+name: task image
+
+# Builds the AX task image (deploy/ax/task-image) on top of ax-task-runner,
+# rebuilt from the AX revision pinned in scripts/ax-dev/versions.env.
+# Pull requests build linux/amd64 only, to validate the Dockerfile. Pushes to
+# main and version tags build linux/amd64 and linux/arm64 and publish
+# ghcr.io/erain/glue-task:main (or :vX.Y.Z) plus :sha-<commit>.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["deploy/ax/task-image/**", "scripts/ax-dev/versions.env", ".github/workflows/task-image.yml"]
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: task-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build task image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned versions
+        id: pins
+        run: |
+          source scripts/ax-dev/versions.env
+          echo "ax_repo=${AX_REPO}" >> "$GITHUB_OUTPUT"
+          echo "ax_commit=${AX_COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "go=${GO_TOOLCHAIN#go}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+          cache: false
+
+      - name: Build ax-task-runner binaries
+        run: |
+          git clone --quiet "${{ steps.pins.outputs.ax_repo }}" ax
+          git -C ax checkout --quiet "${{ steps.pins.outputs.ax_commit }}"
+          for arch in amd64 arm64; do
+            (cd ax && mkdir -p "bin/linux_${arch}" && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o "bin/linux_${arch}/ax-task-runner" ./cmd/ax-task-runner)
+          done
+
+      - name: Validate on linux/amd64 (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker build -q -t ax-task-runner:ci --build-arg TARGETARCH=amd64 -f ax/Dockerfile.task-runner ax
+          docker build -t glue-task:ci --build-arg BASE_IMAGE=ax-task-runner:ci --build-arg TARGETARCH=amd64 \
+            --build-arg GO_VERSION=${{ steps.pins.outputs.go }} -f deploy/ax/task-image/Dockerfile .
+          scripts/ax-dev/e2e/image-smoke.sh glue-task:ci
+
+      - uses: docker/setup-qemu-action@v3
+        if: github.event_name != 'pull_request'
+      - uses: docker/setup-buildx-action@v3
+        if: github.event_name != 'pull_request'
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish ax-task-runner
+        if: github.event_name != 'pull_request'
+        run: |
+          short=$(echo "${{ steps.pins.outputs.ax_commit }}" | cut -c1-12)
+          echo "RUNNER=ghcr.io/erain/glue-ax-task-runner:ax-${short}" >> "$GITHUB_ENV"
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            -t "ghcr.io/erain/glue-ax-task-runner:ax-${short}" -f ax/Dockerfile.task-runner ax
+
+      - name: Publish glue-task
+        if: github.event_name != 'pull_request'
+        run: |
+          tags=(-t "ghcr.io/erain/glue-task:sha-${GITHUB_SHA::12}")
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then tags+=(-t "ghcr.io/erain/glue-task:${GITHUB_REF_NAME}"); else tags+=(-t ghcr.io/erain/glue-task:main); fi
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
+            --build-arg "BASE_IMAGE=${RUNNER}" --build-arg GO_VERSION=${{ steps.pins.outputs.go }} \
+            "${tags[@]}" -f deploy/ax/task-image/Dockerfile .
+          docker buildx imagetools inspect ghcr.io/erain/glue-task:sha-${GITHUB_SHA::12} | head -20

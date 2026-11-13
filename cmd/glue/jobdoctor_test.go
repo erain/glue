@@ -75,7 +75,7 @@ func TestJobDoctorFailures(t *testing.T) {
 	doctorEnv(t, false)
 	t.Setenv("GLUE_AX_IMAGE", "")
 	out, err := runDoctor(t, "--json")
-	if err == nil || !strings.Contains(err.Error(), "3 check(s) failed") {
+	if err == nil || !strings.Contains(err.Error(), "2 check(s) failed") {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
 	var got struct {
@@ -91,7 +91,7 @@ func TestJobDoctorFailures(t *testing.T) {
 			failed[c.Name] = c.Fix
 		}
 	}
-	if !strings.Contains(failed["provider key"], "GEMINI_API_KEY") || !strings.Contains(failed["github token"], "push access") || !strings.Contains(failed["task image"], "GLUE_AX_IMAGE") {
+	if !strings.Contains(failed["provider key"], "GEMINI_API_KEY") || !strings.Contains(failed["github token"], "push access") || failed["task image"] != "" {
 		t.Fatalf("failed checks = %v", failed)
 	}
 }

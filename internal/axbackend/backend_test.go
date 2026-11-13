@@ -180,23 +180,40 @@ func requireLiveAX(t *testing.T) {
 	}
 }
 
+func TestDefaultImageFallsBackToGHCR(t *testing.T) {
+	for in, want := range map[string]string{"v1.14.0": "v1.14.0", "v1.14.0-rc.1": "main", "v1.13.1-0.20261112192641-dfff7ecb5b01": "main", "(devel)": "main", "": "main", "v1.2": "main"} {
+		check(t, publishedTag(in) == want, "publishedTag(%q) = %q, want %q", in, publishedTag(in), want)
+	}
+}
+
+func TestDefaultImageEnvWins(t *testing.T) {
+	t.Setenv("GLUE_AX_IMAGE", "example.com/custom:1")
+	img, src := DefaultImageSource()
+	check(t, img == "example.com/custom:1" && src == "env GLUE_AX_IMAGE", "env image = %q (%s)", img, src)
+}
+
 func TestDefaultImageAndRandomInjectedSecret(t *testing.T) {
 	xdg := t.TempDir()
 	for k, v := range map[string]string{"GLUE_AX_IMAGE": "", "GLUE_TASK_IMAGE": "", "GLUE_AX_SECRET": "", "XDG_CACHE_HOME": xdg} {
 		t.Setenv(k, v)
 	}
-	check(t, DefaultImage() == "", "expected empty DefaultImage")
+	img, src := DefaultImageSource()
+	check(t, img == PublishedImage+":main" && src == "published image", "fallback image = %q (%s), want the published :main image", img, src)
 	imgPath := filepath.Join(xdg, "glue", "ax-dev", "images.env")
 	mustOK(t, errors.Join(os.MkdirAll(filepath.Dir(imgPath), 0o700), os.WriteFile(imgPath, []byte("export GLUE_TASK_IMAGE=\"localhost:5001/glue-task@sha256:1234\"\n"), 0o600)))
 	check(t, DefaultImage() == "localhost:5001/glue-task@sha256:1234", "DefaultImage = %q", DefaultImage())
-	_, _, opts, _ := newFakeBackendEnv(t, nil)
+	cp, _, opts, _ := newFakeBackendEnv(t, nil)
 	opts.Secret, opts.Image = "", ""
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	b1, b2 := must(NewBackend(t.Context(), opts))(t), must(NewBackend(t.Context(), opts))(t)
 	t.Cleanup(func() { _ = b1.Close(); _ = b2.Close() })
 	check(t, len(b1.secret) == 64 && b1.secret != b2.secret && b1.taskToken("job-123456") != b2.taskToken("job-123456"), "expected distinct random secrets")
 	_, err := b1.Create(t.Context(), "job-noimage001", jobs.Spec{Objective: "test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
-	check(t, errors.Is(err, jobs.ErrInvalid), "expected jobs.ErrInvalid without image, got %v", err)
+	mustOK(t, err)
+	cp.mu.Lock()
+	taskImg := cp.tasks[TaskName("job-noimage001")].GetSpec().GetImage()
+	cp.mu.Unlock()
+	check(t, taskImg == PublishedImage+":main", "task image without configuration = %q, want the published image", taskImg)
 }
 
 func TestAXSubmitReconcileCredentialsAndCleanup(t *testing.T) {
