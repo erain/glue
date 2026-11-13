@@ -104,6 +104,23 @@ Finished jobs stop holding an AX worker. In direct mode no component runs while 
 
 `glue job logs <id> [--tail N] [--json]` prints a job's history up to its current end and returns: it does not follow, does not prompt for permissions, and does not move the attach cursor, so it prints the same history every time. `--json` prints one event envelope per line. On AX, a suspended task woken to read it is suspended again. `glue job attach --from-start` replays from the first event, and `--tail N` starts N events before the end; attaching to a finished job with nothing new prints its summary. A job that was continued has several `job_done` events, and attach stops only at the last one.
 
+### Per-repo settings (`.glue/remote.yaml`)
+
+A repo can describe once how its remote jobs run. When you submit from a checkout, Glue reads `.glue/remote.yaml` from its top level; command-line flags win over the file, and the file wins over the defaults. Unknown keys and wrong types fail with the key and line.
+
+```yaml
+image: ghcr.io/example/node-task:1   # task image (--image)
+setup: [npm ci]                      # commands run before the job starts (see "Setup")
+verify: [npm ci, npm test]           # --verify, one entry per command
+deliver: pr                          # none | branch | pr | draft_pr (--deliver)
+policy: auto                         # --policy
+egress_hosts: [registry.npmjs.org]   # added to the default allowlist (--egress-host)
+resources: {cpu: "2", memory: 4Gi}   # AX task limits (--cpu, --memory)
+budgets: {wall_clock: 30m, token_budget: 500000, max_iterations: 4}
+```
+
+Extra egress hosts always add to the defaults and are printed in the submit summary (`egress    defaults + …`), together with the keys the file supplied (`config    .glue/remote.yaml: …`). The file is read only from a local checkout, not when you submit with `--repo <url>`.
+
 ### Latency
 
 `scripts/ax-dev/e2e/latency.sh [--model M] [--thinking T]` runs one small job on the standing cluster and reports the submit stages, the time from submit to the job ID and to the job's first event, and the median and p90 model-turn time (from `model_ms` on each `turn_end` event, which the loop records for every model request including retries). It exits non-zero when a budget is missed (`SUBMIT_BUDGET_S=5`, `FIRST_EVENT_BUDGET_S=15`, `TURN_MEDIAN_BUDGET_S=5`). Measured on 2026-11-12 (AX `56bd0fc`, `kind-glue-ax`):

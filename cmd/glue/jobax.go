@@ -135,6 +135,8 @@ type jobTargetOpts struct {
 	backend, kubeconfig, kubectx, atespace, image string
 	progress                                      func(stage string)
 	notify                                        []string
+	egress                                        []string // hosts allowed on top of the defaults
+	cpu, memory                                   string
 }
 
 func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (jobAPI, bool, error) {
@@ -143,6 +145,11 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 	openAX := func() (jobAPI, bool, error) {
 		creds := resolveAXCredentials(ctx)
 		egress := slices.Clone(axbackend.DefaultEgressHosts)
+		for _, h := range t.egress {
+			if h = strings.TrimSpace(h); h != "" && !slices.Contains(egress, h) {
+				egress = append(egress, h)
+			}
+		}
 		for _, u := range notifyURLs(t.notify) {
 			creds.NotifyURLs = append(creds.NotifyURLs, u)
 			if p, err := url.Parse(u); err == nil && !slices.Contains(egress, p.Hostname()) {
@@ -154,7 +161,7 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 				AXServer:   cmp.Or(strings.TrimSpace(os.Getenv("GLUE_AX_SERVER")), strings.TrimSpace(os.Getenv("AX_SERVER_ADDR"))),
 				KubeConfig: kubeCfg, KubeContext: kubeCtx, Atespace: cmp.Or(strings.TrimSpace(t.atespace), "default"),
 			},
-			Image: strings.TrimSpace(t.image), Credentials: creds, EgressHosts: egress, Progress: t.progress,
+			Image: strings.TrimSpace(t.image), CPU: t.cpu, Memory: t.memory, Credentials: creds, EgressHosts: egress, Progress: t.progress,
 		})
 		return api, true, err
 	}
