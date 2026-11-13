@@ -104,6 +104,18 @@ Finished jobs stop holding an AX worker. In direct mode no component runs while 
 
 `glue job logs <id> [--tail N] [--json]` prints a job's history up to its current end and returns: it does not follow, does not prompt for permissions, and does not move the attach cursor, so it prints the same history every time. `--json` prints one event envelope per line. On AX, a suspended task woken to read it is suspended again. `glue job attach --from-start` replays from the first event, and `--tail N` starts N events before the end; attaching to a finished job with nothing new prints its summary. A job that was continued has several `job_done` events, and attach stops only at the last one.
 
+### Latency
+
+`scripts/ax-dev/e2e/latency.sh [--model M] [--thinking T]` runs one small job on the standing cluster and reports the submit stages, the time from submit to the job ID and to the job's first event, and the median and p90 model-turn time (from `model_ms` on each `turn_end` event, which the loop records for every model request including retries). It exits non-zero when a budget is missed (`SUBMIT_BUDGET_S=5`, `FIRST_EVENT_BUDGET_S=15`, `TURN_MEDIAN_BUDGET_S=5`). Measured on 2026-11-12 (AX `56bd0fc`, `kind-glue-ax`):
+
+| Model / thinking | Submit → job ID | Median turn | p90 turn | One-line job |
+|---|---|---|---|---|
+| `gemini-3.8-flash` (default) | 13.2 s | 17.3 s | 30.5 s | 337 s |
+| `gemini-3.8-flash`, `low` | 13.2 s | 14.1 s | 22.7 s | 254 s |
+| `gemini-3-flash-preview`, `low` | 12.8 s | 1.0 s | 1.1 s | 22 s |
+
+About 10.5 s of the submit time is AX building a golden snapshot for the task's own template (#591), and the default coding model is about 15 times slower per turn than `gemini-3-flash-preview` (#590).
+
 `glue job list` prints an aligned table (ID, status, age, repo, objective) sized to the terminal; `--json` keeps the full records for scripts. `glue job show` adds an `activity` line: the current phase, the number of model turns so far, the last tool called, and how long ago the job last recorded anything. Usage in `show` updates after every model turn, not only at iteration boundaries (`jobs.Detail.Activity`). Every subcommand that takes a job ID also accepts a unique prefix, with or without `job-` (`glue job show 55f8`), or `latest` for the newest job.
 
 `glue job say <id> "<text>"` records an `operator_message` and, while a maker is running, also queues the text on that maker's session (`Session.Steer`). The loop adds it as a user message before the maker's next model request, so the agent acts on it within one step; the job logs `operator_message_delivered` when that happens. The message also stays durable guidance for later iterations and the checker. A message sent while the planner or checker runs reaches the next maker iteration as guidance.

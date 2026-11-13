@@ -67,3 +67,24 @@ func TestSteeringMessageReachesNextTurn(t *testing.T) {
 		t.Fatalf("steer events = %+v", steered)
 	}
 }
+
+func TestTurnEventDuration(t *testing.T) {
+	p := &requestLog{turns: [][]ProviderEvent{{{Type: ProviderEventStart}, {Type: ProviderEventTextDelta, Delta: "ok"}, {Type: ProviderEventDone}}}}
+	var meta map[string]any
+	_, err := Run(context.Background(), RunRequest{
+		Provider: p,
+		Messages: []Message{{Role: MessageRoleUser, Content: []ContentPart{{Type: ContentTypeText, Text: "hi"}}}},
+		Emit: func(e Event) {
+			if e.Type == EventTurnEnd {
+				meta = e.Metadata
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, ok := meta["model_ms"].(int64)
+	if !ok || ms < 0 {
+		t.Fatalf("turn_end metadata = %v", meta)
+	}
+}
