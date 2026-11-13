@@ -35,7 +35,7 @@ func TestGoalGuidanceAtNextMaker(t *testing.T) {
 	if err != nil || result.Status != GoalAchieved {
 		t.Fatalf("result %+v err %v", result, err)
 	}
-	if fmt.Sprint(iterations) != "[7 8]" || len(p.requests) != 4 {
+	if fmt.Sprint(iterations) != "[7 7 8 8]" || len(p.requests) != 4 { // before each maker and each checker
 		t.Fatalf("iterations %v requests %d", iterations, len(p.requests))
 	}
 	for i, req := range p.requests {
@@ -47,7 +47,7 @@ func TestGoalGuidanceAtNextMaker(t *testing.T) {
 				}
 			}
 		}
-		want := i >= 2
+		want := i >= 1 // the iteration-7 checker already sees guidance queued during its maker
 		if strings.Contains(prompt, "Please include examples.") != want {
 			t.Fatalf("request %d guidance: %q", i, prompt)
 		}

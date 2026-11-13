@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
 )
@@ -109,5 +110,34 @@ func TestJobLogsDoesNotFollow(t *testing.T) {
 	out.Reset()
 	if err := jobLogs(ctx, api, "job-0123456789ab", 1, false, false, &out); err != nil || strings.Contains(out.String(), "m2") || !strings.Contains(out.String(), "m3") {
 		t.Fatalf("--tail 1: %v %q", err, out.String())
+	}
+}
+
+type answerFakeAPI struct {
+	jobAPI
+	id, qid, text string
+}
+
+func (f *answerFakeAPI) Close() error { return nil }
+func (f *answerFakeAPI) Answer(_ context.Context, id, qid, text string) error {
+	f.id, f.qid, f.text = id, qid, text
+	return nil
+}
+
+func TestJobAnswer(t *testing.T) {
+	clearJobTestEnv(t)
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	api := &answerFakeAPI{}
+	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return api, nil }
+	var out bytes.Buffer
+	if err := jobCommand(context.Background(), []string{"answer", "--ax", "job-0123456789ab", "Yes,", "create", "Greet"}, strings.NewReader(""), &out, &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if api.id != "job-0123456789ab" || api.text != "Yes, create Greet" || api.qid != "" {
+		t.Fatalf("answer = %+v", api)
+	}
+	if err := jobCommand(context.Background(), []string{"answer", "--ax", "job-0123456789ab", "--question", "job-0123456789ab:question:7", "stop"}, strings.NewReader(""), &out, &out, nil); err != nil || api.qid != "job-0123456789ab:question:7" {
+		t.Fatalf("answer --question: %v %+v", err, api)
 	}
 }

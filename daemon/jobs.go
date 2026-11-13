@@ -205,6 +205,23 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, result)
 			return
+		case "answers":
+			if !jobMethod(w, r, http.MethodPost) {
+				return
+			}
+			var body struct {
+				QuestionID string `json:"question_id"`
+				Text       string `json:"text"`
+			}
+			if !jobBody(w, r, &body) {
+				return
+			}
+			if err := s.jobs.Answer(r.Context(), id, body.QuestionID, body.Text); err != nil {
+				jobError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
 		case "patch":
 			if !jobMethod(w, r, http.MethodGet) {
 				return

@@ -70,6 +70,8 @@ type Result struct {
 	// Partial marks a canceled or errored job whose unfinished work was
 	// committed (and pushed when delivery allows) so it is not lost.
 	Partial bool `json:"partial,omitempty"`
+	// Assumptions lists questions the job proceeded past without an answer.
+	Assumptions []string `json:"assumptions,omitempty"`
 	// Setup records the setup commands that ran before the agent started.
 	Setup []VerifyResult `json:"setup,omitempty"`
 	// BudgetExceeded names the budget that stopped a budget_limited job: "wall_clock" or "token_budget".
@@ -150,6 +152,7 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 		Verify: []VerifyResult{}, Iterations: goal.Iterations, Usage: goal.Usage, Summary: goal.Summary,
 	}
 	res.Setup = m.setupResults(id)
+	res.Assumptions = m.assumptions(id)
 	if status == BudgetLimited {
 		res.BudgetExceeded = "wall_clock"
 		if job.Spec.Budgets.TokenBudget > 0 && goal.Usage.TotalTokens >= job.Spec.Budgets.TokenBudget {

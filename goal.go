@@ -21,10 +21,12 @@ import (
 // from the durable checklist (a Ralph-style loop) rather than an ever-growing
 // transcript. See docs/adr/0016-goal-loop.md.
 type GoalSpec struct {
-	// Guidance is sampled once before each maker iteration, after guardrails.
-	// Its text is prepended to both that maker prompt and its checker prompt.
-	// Updates during an iteration wait until the next maker. An error stops the
-	// loop before the maker runs and is returned to the host. Nil adds no text.
+	// Guidance is sampled before each maker iteration, after guardrails, and
+	// again before that iteration's checker, so the checker sees guidance that
+	// arrived while the maker ran. Its text is prepended to the maker and
+	// checker prompts. An error before the maker stops the loop and is returned
+	// to the host; an error before the checker keeps the earlier text. Nil adds
+	// no text.
 	Guidance func(context.Context, int) (string, error)
 
 	// OnSession runs before a planner, maker, or checker session is prompted.
@@ -296,7 +298,13 @@ func (a *Agent) PursueGoal(ctx context.Context, spec GoalSpec) (GoalResult, erro
 		}
 		emit(GoalEvent{Type: GoalEventMakerDone, Iteration: i, Usage: result.Usage})
 
-		// 3) Checker: a separate session audits against real evidence.
+		// 3) Checker: a separate session audits against real evidence. Guidance
+		// is read again so the checker sees input that arrived during the maker.
+		if spec.Guidance != nil {
+			if g, err := spec.Guidance(ctx, i); err == nil {
+				guidance = g
+			}
+		}
 		verdict, checkUsage, err := a.runGoalChecker(ctx, spec, i, checklist, guidance)
 		addUsage(&result.Usage, checkUsage)
 		if err != nil {

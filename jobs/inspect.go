@@ -35,6 +35,8 @@ type Detail struct {
 	PendingPermissionCount int                  `json:"pending_permission_count"`
 	Credentials            string               `json:"credentials,omitempty"`
 	Activity               Activity             `json:"activity"`
+	// Question is the open question the job is waiting on, if any.
+	Question *QuestionInfo `json:"question,omitempty"`
 }
 
 // Activity describes what a job is doing right now, from its event log.
@@ -142,6 +144,19 @@ func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionI
 			detail.Activity.Phase = event.Phase
 		}
 		switch event.Type {
+		case "question", "answer", "question_timeout":
+			var q struct {
+				ID       string   `json:"question_id"`
+				Question string   `json:"question"`
+				Options  []string `json:"options"`
+			}
+			if decode(event.Payload, &q) == nil {
+				if event.Type == "question" {
+					detail.Question = &QuestionInfo{ID: q.ID, Question: q.Question, Options: q.Options, AskedAt: event.Time}
+				} else if detail.Question != nil && detail.Question.ID == q.ID {
+					detail.Question = nil
+				}
+			}
 		case "tool_start":
 			var e glue.Event
 			if decode(event.Payload, &e) == nil {

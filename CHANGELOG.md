@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote jobs can ask the developer a question (`ask_user`) instead of
+  guessing; answer with `glue job answer` or inline in `attach`. Answers become
+  durable guidance for later sessions, and `--on-question assume` /
+  `--question-timeout` let unattended jobs proceed on a recorded assumption.
+  **Library:** `GoalSpec.Guidance` is now also read before each checker.
+
 - The AX task image is published to `ghcr.io/erain/glue-task` (`:main`, release
   tags, `:sha-<commit>`; amd64 and arm64) by a new workflow, and `glue` uses it
   when no image is configured, so a first remote job needs no image build.

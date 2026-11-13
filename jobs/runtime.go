@@ -31,6 +31,8 @@ type execution struct {
 	writeErr                error
 	// maker is the running maker session; operator messages steer it.
 	maker *glue.Session
+	// questions are ask_user calls waiting for an answer, by question ID.
+	questions map[string]*pendingQuestion
 }
 
 // Start detaches execution from the caller after durably recording its start.
@@ -242,12 +244,14 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 	if err != nil {
 		return empty, err
 	}
+	checkerTools := tools // the checker audits; it does not ask the developer
+	tools = append(slices.Clone(tools), m.askUserTool(id, run))
 	options, err := providers.ThinkingOptions(job.Spec.Provider, job.Spec.Model, job.Spec.Thinking)
 	if err != nil {
 		return empty, err
 	}
 	caps := providers.CapabilitiesFor(job.Spec.Provider)
-	agent := glue.NewAgent(glue.AgentOptions{Provider: provider, Model: job.Spec.Model, Options: options, Tools: tools, WorkDir: workspace.Path, Store: filestore.New(filepath.Join(m.options.StateDir, "sessions")), Permission: jobPermission{manager: m, id: id, run: run}, SystemPrompt: coding.SystemPrompt(tools, caps.PromptVariant), AutoContinue: caps.AutoContinue})
+	agent := glue.NewAgent(glue.AgentOptions{Provider: provider, Model: job.Spec.Model, Options: options, Tools: tools, WorkDir: workspace.Path, Store: filestore.New(filepath.Join(m.options.StateDir, "sessions")), Permission: jobPermission{manager: m, id: id, run: run}, SystemPrompt: coding.SystemPrompt(tools, caps.PromptVariant) + askUserPrompt, AutoContinue: caps.AutoContinue})
 	emit := func(typ string, payload any, phase string, iteration *int) {
 		run.mu.Lock()
 		defer run.mu.Unlock()
@@ -285,6 +289,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			run.mu.Unlock()
 		},
 	}
+	spec.CheckerTools = checkerTools
 	if run.resume != nil {
 		spec.Checklist = run.resume.Checklist
 		spec.StartIteration = run.resume.Iterations + 1
