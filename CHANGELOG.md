@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- TUI `/jobs` lists remote jobs, shows a live transcript on Enter, and pulls a
+  result with `p`; the status bar counts running and waiting jobs.
+  `glue job pull --repo <dir>` pulls into another checkout.
+
 - Goal planners and checkers no longer change the workspace: they get no
   file-writing tools (and the planner no command execution), the checker is told
   it only audits, and operator guidance now overrides the goal and checklist

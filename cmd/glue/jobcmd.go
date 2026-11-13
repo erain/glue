@@ -363,7 +363,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		return nil
 	case "pull":
-		return pullJob(ctx, c, pos[0], ".", pullOptions{checkout: *pullCheckout, apply: *pullApply, force: *pullForce}, stdout)
+		dir := "."
+		if r := strings.TrimSpace(*repo); r != "" && !isRemoteRepoRef(r) {
+			dir = r // the checkout to pull into
+		}
+		return pullJob(ctx, c, pos[0], dir, pullOptions{checkout: *pullCheckout, apply: *pullApply, force: *pullForce}, stdout)
 	case "diff":
 		if *stat {
 			res, err := c.Result(ctx, pos[0])

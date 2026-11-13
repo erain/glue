@@ -62,6 +62,9 @@ type Config struct {
 	// its ID; progress receives the submit stages. Nil disables /remote.
 	SubmitRemote func(ctx context.Context, req RemoteRequest, progress func(string)) (string, error)
 
+	// Jobs lists remote jobs for /jobs and the status bar. Nil disables both.
+	Jobs JobsBridge
+
 	// Pricing enables dollar estimates in /usage and the status bar.
 	// The zero value keeps the display token-only.
 	Pricing Pricing
@@ -181,6 +184,12 @@ type Model struct {
 
 	// picker is the /resume modal state. Nil means "no picker open."
 	picker *sessionPicker
+
+	// /jobs panel and the status-bar remote job counts.
+	jobs                     *jobsPanel
+	jobsGen                  int
+	jobsRunning, jobsWaiting int
+	tick                     func(time.Duration, func(time.Time) tea.Msg) tea.Cmd // tea.Tick; tests stub it
 	// tree is the /tree modal state. Nil means closed.
 	tree *treeModal
 	// atPicker is the inline `@file` autocomplete popup. Nil means
@@ -255,7 +264,7 @@ func newModel(ctx context.Context, cfg Config) *Model {
 
 func (m *Model) Init() tea.Cmd {
 	m.appendWelcome()
-	return tea.Batch(textarea.Blink)
+	return tea.Batch(textarea.Blink, m.jobsCountTick(time.Second))
 }
 
 // appendWelcome seeds the transcript with the welcome card. It is used
@@ -287,6 +296,9 @@ func (m *Model) appendWelcome() {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if cmd, ok := m.updateJobs(msg); ok {
+		return m, cmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -318,6 +330,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.picker != nil {
 			return m.handlePickerKey(msg)
+		}
+		if m.jobs != nil && m.pending == nil {
+			return m.handleJobsKey(msg)
 		}
 		if m.pending != nil {
 			return m.handlePermissionKey(msg)
@@ -587,6 +602,9 @@ func (m *Model) bottomView() string {
 	if m.picker != nil {
 		return renderPicker(m.picker, m.width)
 	}
+	if m.jobs != nil && m.pending == nil {
+		return renderJobsPanel(m.jobs, m.width, time.Now())
+	}
 	// @-autocomplete popup sits ABOVE the input box rather than
 	// replacing it. The textarea keeps the cursor; the popup just
 	// suggests files.
@@ -648,6 +666,9 @@ func (m *Model) statusView() string {
 	}
 	if m.goal != nil {
 		parts = append(parts, m.goal.statusSegment())
+	}
+	if seg := m.jobsStatusSegment(); seg != "" {
+		parts = append(parts, seg)
 	}
 	if m.pending != nil {
 		parts = append(parts, toolWarning.Render("permission needed"))
@@ -1049,6 +1070,8 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		return m.runSlashTree()
 	case "remote":
 		return m.runSlashRemote(cmd.Arg)
+	case "jobs":
+		return m.runSlashJobs()
 	default:
 		m.appendSystem("unknown command: /" + cmd.Name + " (try /help)")
 		m.rerender()

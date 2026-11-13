@@ -311,6 +311,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			ProviderImpl: providerImpl,
 			AlwaysAllow:  *yolo,
 			BuildTools:   buildToolsAt,
+			Jobs:         tuiJobs{workDir: *workDir},
 			SubmitRemote: func(ctx context.Context, req tui.RemoteRequest, progress func(string)) (string, error) {
 				return submitRemoteFromTUI(ctx, *workDir, req, progress)
 			},
