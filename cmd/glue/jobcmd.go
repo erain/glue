@@ -47,7 +47,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|result|diff|pull|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -80,6 +80,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting")
 	quiet := fs.Bool("quiet", false, "submit: print only the job ID")
 	verbose := fs.Bool("verbose", false, "attach: show full tool output")
+	fromStart, tail := fs.Bool("from-start", false, "attach: replay the job from its first event"), fs.Int("tail", 0, "attach, logs: start this many events before the end")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
 	var notify repeatedStrings
@@ -207,11 +208,13 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			printSubmitSummary(stderr, job.ID, directAX, *start, summary)
 		}
 		if *attach {
-			return attachJob(ctx, c, job.ID, stdin, stdout, stderr, *verbose)
+			return attachJob(ctx, c, job.ID, stdin, stdout, stderr, attachOptions{verbose: *verbose})
 		}
 		return nil
 	case "attach":
-		return attachJob(ctx, c, pos[0], stdin, stdout, stderr, *verbose)
+		return attachJob(ctx, c, pos[0], stdin, stdout, stderr, attachOptions{verbose: *verbose, fromStart: *fromStart, tail: *tail})
+	case "logs":
+		return jobLogs(ctx, c, pos[0], *tail, *asJSON, *verbose, stdout)
 	case "start":
 		job, err := c.Start(ctx, pos[0])
 		if err == nil {
@@ -441,12 +444,89 @@ func writeJSONOrErr(w io.Writer, v any, err error) error {
 	}
 	return err
 }
-func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout, stderr io.Writer, verbose bool) error {
+
+// attachOptions selects where attach starts and how much it shows.
+type attachOptions struct {
+	verbose   bool
+	fromStart bool // ignore the saved cursor and replay everything
+	tail      int  // start this many events before the end
+}
+
+func isActive(st jobs.Status) bool {
+	return st == "" || st == jobs.Created || st == jobs.Running || st == jobs.WaitingForInput || st == jobs.WaitingForCredentials || st == jobs.Suspended
+}
+
+// jobSuspender is implemented by backends whose tasks can be suspended.
+type jobSuspender interface {
+	IsSuspended(ctx context.Context, id string) (bool, error)
+	Suspend(ctx context.Context, id string) error
+}
+
+// jobLogs prints a job's history up to its current end and returns: it never
+// follows, prompts, or moves the attach cursor. A suspended AX task woken to
+// read it is suspended again.
+func jobLogs(ctx context.Context, c jobAPI, id string, tail int, asJSON, verbose bool, stdout io.Writer) error {
+	d, err := c.Show(ctx, id)
+	if err != nil {
+		return err
+	}
+	end := d.LastSeq
+	if end == 0 {
+		return nil
+	}
+	if s, ok := c.(jobSuspender); ok {
+		if was, err := s.IsSuspended(ctx, id); err == nil && was {
+			defer func() { _ = s.Suspend(context.WithoutCancel(ctx), id) }()
+		}
+	}
+	after := int64(0)
+	if tail > 0 {
+		after = max(end-int64(tail), 0)
+	}
+	r := newJobRenderer(stdout, verbose)
+	enc := json.NewEncoder(stdout)
+	err = c.StreamEvents(ctx, id, after, func(ev eventlog.Envelope) error {
+		if asJSON {
+			if err := enc.Encode(ev); err != nil {
+				return err
+			}
+		} else if ev.Type == "job_done" {
+			r.summary(ctx, c, id, ev)
+		} else {
+			r.render(ev)
+		}
+		if ev.Seq >= end {
+			return jobclient.ErrDone
+		}
+		return nil
+	})
+	r.flush()
+	if errors.Is(err, jobclient.ErrDone) {
+		return nil
+	}
+	return err
+}
+
+func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout, stderr io.Writer, o attachOptions) error {
 	if stdin == nil {
 		stdin = strings.NewReader("")
 	}
 	input, after := bufio.NewReader(stdin), c.LoadSeq(id)
-	r := newJobRenderer(stdout, verbose)
+	r := newJobRenderer(stdout, o.verbose)
+	if o.fromStart {
+		after = 0
+	}
+	if o.tail > 0 || after > 0 {
+		if d, err := c.Show(ctx, id); err == nil && d.LastSeq > 0 {
+			if o.tail > 0 {
+				after = max(d.LastSeq-int64(o.tail), 0)
+			}
+			// A finished job with nothing new still gets its summary.
+			if !isActive(d.Status) && after >= d.LastSeq {
+				after, r.start = d.LastSeq-1, d.CreatedAt
+			}
+		}
+	}
 	backoff := 20 * time.Millisecond
 	for {
 		var done bool
@@ -458,8 +538,12 @@ func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout
 			after = ev.Seq
 			_ = c.SaveSeq(id, after)
 			if ev.Type == "job_done" {
-				done = true
-				return jobclient.ErrDone
+				// A continued job has several job_done events; stop only at
+				// the last one.
+				if d, err := c.Show(ctx, id); err != nil || (!isActive(d.Status) && ev.Seq >= d.LastSeq) {
+					done = true
+					return jobclient.ErrDone
+				}
 			}
 			return nil
 		})
@@ -475,7 +559,7 @@ func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout
 			return err
 		}
 		if err == nil && after > 0 {
-			if d, showErr := c.Show(ctx, id); showErr == nil && d.Status != "" && d.Status != jobs.Created && d.Status != jobs.Running && d.Status != jobs.WaitingForInput && d.Status != jobs.WaitingForCredentials && d.Status != jobs.Suspended && after >= d.LastSeq {
+			if d, showErr := c.Show(ctx, id); showErr == nil && !isActive(d.Status) && after >= d.LastSeq {
 				return nil
 			}
 		}

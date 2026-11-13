@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
 )
 
@@ -68,5 +70,44 @@ func TestJobListTable(t *testing.T) {
 	}
 	if strings.Index(lines[1], "running") != strings.Index(lines[2], "achieved") {
 		t.Fatalf("status column not aligned:\n%s", out.String())
+	}
+}
+
+type logsFakeAPI struct {
+	jobAPI
+	saved bool
+}
+
+func (f *logsFakeAPI) Show(context.Context, string) (jobs.Detail, error) {
+	return jobs.Detail{Job: jobs.Job{ID: "job-0123456789ab", Status: jobs.Running, LastSeq: 3}}, nil
+}
+func (f *logsFakeAPI) SaveSeq(string, int64) error { f.saved = true; return nil }
+func (f *logsFakeAPI) StreamEvents(ctx context.Context, _ string, after int64, h func(eventlog.Envelope) error) error {
+	for seq := after + 1; seq <= 3; seq++ {
+		if err := h(eventlog.Envelope{Seq: seq, Type: "operator_message", Payload: map[string]any{"text": fmt.Sprintf("m%d", seq)}}); err != nil {
+			return err
+		}
+	}
+	<-ctx.Done() // a live job's stream stays open
+	return ctx.Err()
+}
+
+func TestJobLogsDoesNotFollow(t *testing.T) {
+	api := &logsFakeAPI{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	if err := jobLogs(ctx, api, "job-0123456789ab", 0, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("logs followed the live stream instead of stopping at the current end")
+	}
+	if !strings.Contains(out.String(), "operator: m1") || !strings.Contains(out.String(), "operator: m3") || api.saved {
+		t.Fatalf("out=%q saved=%v", out.String(), api.saved)
+	}
+	out.Reset()
+	if err := jobLogs(ctx, api, "job-0123456789ab", 1, false, false, &out); err != nil || strings.Contains(out.String(), "m2") || !strings.Contains(out.String(), "m3") {
+		t.Fatalf("--tail 1: %v %q", err, out.String())
 	}
 }

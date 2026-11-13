@@ -325,6 +325,15 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	return job, nil
 }
 
+// IsSuspended reports whether the job's AX task is suspended, without waking it.
+func (b *Backend) IsSuspended(ctx context.Context, id string) (bool, error) {
+	t, err := b.getTask(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return t.GetStatus().GetPhase() == "Suspended", nil
+}
+
 func (b *Backend) Suspend(ctx context.Context, id string) error {
 	_, err := b.conn.AX.SuspendTask(ctx, &v1alpha1.SuspendTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)})
 	return err
