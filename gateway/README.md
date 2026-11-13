@@ -60,7 +60,7 @@ backends:
     type: ax
     # AX atespace where Workspaces and Tasks are created (defaults to "default").
     atespace: default
-    # Digest-pinned AX task image reference (defaults to GLUE_AX_IMAGE / GLUE_TASK_IMAGE / ~/.cache/glue/ax-dev/images.env; required non-empty after default lookup).
+    # Digest-pinned AX task image reference (defaults to GLUE_AX_IMAGE / GLUE_TASK_IMAGE / ~/.cache/glue/ax-dev/images.env, then the published ghcr.io/erain/glue-task image).
     image: localhost:5001/glue-task@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     # Per-task resource limits (defaults to cpu: "4", memory: "8Gi").
     resources:

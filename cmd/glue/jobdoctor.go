@@ -86,8 +86,12 @@ func jobDoctor(ctx context.Context, t jobTargetOpts, repo, base, provider, model
 		return writeDoctor(stdout, checks, asJSON)
 	}
 
-	if img := cmp.Or(strings.TrimSpace(image), axbackend.DefaultImage()); img != "" {
-		add(doctorCheck{Name: "task image", OK: true, Detail: img})
+	img, src := strings.TrimSpace(image), "--image"
+	if img == "" {
+		img, src = axbackend.DefaultImageSource()
+	}
+	if img != "" {
+		add(doctorCheck{Name: "task image", OK: true, Detail: img + " (" + src + ")"})
 	} else {
 		add(doctorCheck{Name: "task image", Detail: "no task image configured", Fix: "pass --image <ref>, set GLUE_AX_IMAGE, or build one with scripts/ax-dev/build-task-image.sh"})
 	}

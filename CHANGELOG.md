@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- The AX task image is published to `ghcr.io/erain/glue-task` (`:main`, release
+  tags, `:sha-<commit>`; amd64 and arm64) by a new workflow, and `glue` uses it
+  when no image is configured, so a first remote job needs no image build.
+  `glue job doctor` shows where the task image comes from.
+
 - Remote jobs can run setup commands before the agent starts (`--setup`,
   `--setup-timeout`, or `setup:` in `.glue/remote.yaml`). A failing setup
   blocks the job with its output and zero model calls; setup runs once per

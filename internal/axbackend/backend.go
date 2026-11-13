@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -43,22 +44,63 @@ var DefaultEgressHosts = []string{"github.com", "api.github.com", "codeload.gith
 func WorkspaceName(jobID string) string { return "glue-" + jobID + "-ws" }
 func TaskName(jobID string) string      { return "glue-" + jobID }
 
-// DefaultImage resolves the AX task image from GLUE_AX_IMAGE, GLUE_TASK_IMAGE, or ax-dev images.env.
+// PublishedImage is the task image CI publishes; see .github/workflows/task-image.yml.
+const PublishedImage = "ghcr.io/erain/glue-task"
+
+// DefaultImage resolves the AX task image; see DefaultImageSource.
 func DefaultImage() string {
-	if v := envOr("GLUE_AX_IMAGE", "GLUE_TASK_IMAGE"); v != "" {
-		return v
+	img, _ := DefaultImageSource()
+	return img
+}
+
+// DefaultImageSource resolves the AX task image and says where it came from:
+// GLUE_AX_IMAGE or GLUE_TASK_IMAGE, then the ax-dev images.env written by
+// scripts/ax-dev/build-task-image.sh, then the published image for this
+// build: the release tag for a tagged release, otherwise :main.
+func DefaultImageSource() (image, source string) {
+	for _, k := range []string{"GLUE_AX_IMAGE", "GLUE_TASK_IMAGE"} {
+		if v := envOr(k); v != "" {
+			return v, "env " + k
+		}
 	}
 	base := envOr("XDG_CACHE_HOME")
 	if home, _ := os.UserHomeDir(); base == "" && home != "" {
 		base = filepath.Join(home, ".cache")
 	}
 	if base != "" {
-		data, _ := os.ReadFile(filepath.Join(base, "glue", "ax-dev", "images.env"))
+		path := filepath.Join(base, "glue", "ax-dev", "images.env")
+		data, _ := os.ReadFile(path)
 		for line := range strings.SplitSeq(string(data), "\n") {
 			if k, v, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export ")), "="); ok && strings.TrimSpace(k) == "GLUE_TASK_IMAGE" {
-				return strings.Trim(strings.TrimSpace(v), `"'`)
+				return strings.Trim(strings.TrimSpace(v), `"'`), path
 			}
 		}
+	}
+	return PublishedImage + ":" + publishedTag(buildVersion()), "published image"
+}
+
+// publishedTag maps a module version to a published image tag: a plain
+// release version such as v1.14.0 maps to itself; anything else to "main".
+func publishedTag(version string) string {
+	v, ok := strings.CutPrefix(version, "v")
+	if !ok || strings.ContainsAny(v, "-+") {
+		return "main"
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return "main"
+	}
+	for _, p := range parts {
+		if p == "" || strings.Trim(p, "0123456789") != "" {
+			return "main"
+		}
+	}
+	return version
+}
+
+func buildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return info.Main.Version
 	}
 	return ""
 }

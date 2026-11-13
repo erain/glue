@@ -73,7 +73,6 @@ func TestConfigParseAndValidate(t *testing.T) {
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\n", "backends=0"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}, {name: l, type: local, url: http://y, token: t}]\n", "duplicate=true"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: ax, url: http://x, token: t}]\n", "type=\"ax\""},
-		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax}]\n", "type=\"ax\""},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: ax, type: ax, image: img, egress_hosts: [\"\"]}]\n", "type=\"ax\""},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\ndefault_backend: other\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "default_backend"},
 	} {
