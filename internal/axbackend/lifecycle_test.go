@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erain/glue"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
 	"github.com/google/ax/pkg/apis/v1alpha1"
@@ -131,4 +132,18 @@ func TestPruneKeepsCachedResult(t *testing.T) {
 	check(t, !taskLeft && !wsLeft, "prune left task=%v workspace=%v", taskLeft, wsLeft)
 	res := must(b.Result(t.Context(), id))(t)
 	check(t, res.Status == jobs.Achieved && res.Summary == "done", "result after prune = %+v", res)
+}
+
+func TestShowSuspendedUsesCachedResult(t *testing.T) {
+	var st atomic.Value
+	st.Store(jobs.Achieved)
+	cp, _, _, b := newFakeBackendEnv(t, finishedJobHandler(&st))
+	id := "job-showresult01"
+	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Show", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
+	b.updateCache(id, func(c *cachedJob) {
+		c.Status, c.Result = jobs.Achieved, &jobs.Result{JobID: id, Status: jobs.Achieved, Iterations: 2, Usage: glue.Usage{TotalTokens: 71357}}
+	})
+	_ = cp
+	d := must(b.Show(t.Context(), id))(t)
+	check(t, d.Iteration == 2 && d.Usage.TotalTokens == 71357, "show of a suspended finished job = iteration %d tokens %d", d.Iteration, d.Usage.TotalTokens)
 }

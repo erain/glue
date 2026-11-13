@@ -34,6 +34,19 @@ type Detail struct {
 	Usage                  glue.Usage           `json:"usage"`
 	PendingPermissionCount int                  `json:"pending_permission_count"`
 	Credentials            string               `json:"credentials,omitempty"`
+	Activity               Activity             `json:"activity"`
+}
+
+// Activity describes what a job is doing right now, from its event log.
+type Activity struct {
+	// Phase is the goal phase of the latest event: planner, maker, or checker.
+	Phase string `json:"phase,omitempty"`
+	// LastTool is the name of the most recent tool call.
+	LastTool string `json:"last_tool,omitempty"`
+	// ModelTurns counts completed model turns across all phases.
+	ModelTurns int `json:"model_turns"`
+	// LastEventAt is when the job last recorded anything.
+	LastEventAt time.Time `json:"last_event_at"`
 }
 
 // PermissionInfo is a request and its latest durable outcome.
@@ -118,8 +131,32 @@ func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionI
 	detail := Detail{Job: job, Checklist: []glue.ChecklistItem{}}
 	permissions := []PermissionInfo{}
 	index := map[string]int{}
+	// Goal events carry cumulative usage; turns since the latest one add to it,
+	// so usage stays current within an iteration.
+	var turnUsage glue.Usage
 	for _, event := range events {
+		if !event.Time.IsZero() {
+			detail.Activity.LastEventAt = event.Time
+		}
+		if event.Phase != "" {
+			detail.Activity.Phase = event.Phase
+		}
 		switch event.Type {
+		case "tool_start":
+			var e glue.Event
+			if decode(event.Payload, &e) == nil {
+				if e.ToolName != "" {
+					detail.Activity.LastTool = e.ToolName
+				} else if e.ToolCall != nil {
+					detail.Activity.LastTool = e.ToolCall.Name
+				}
+			}
+		case "turn_end":
+			detail.Activity.ModelTurns++
+			var e glue.Event
+			if decode(event.Payload, &e) == nil && e.Message != nil && e.Message.Usage != nil {
+				turnUsage = addUsage(turnUsage, *e.Message.Usage)
+			}
 		case "plan", "iteration_start", "maker_done", "verdict", "done", "blocked", "budget_limited", "max_iterations":
 			var progress glue.GoalEvent
 			if err := decode(event.Payload, &progress); err != nil {
@@ -131,8 +168,9 @@ func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionI
 			if progress.Checklist != nil {
 				detail.Checklist = progress.Checklist
 			}
-			if event.Type != "iteration_start" {
+			if progress.Usage.TotalTokens > 0 || event.Type != "iteration_start" {
 				detail.Usage = progress.Usage
+				turnUsage = glue.Usage{}
 			}
 		case "permission_request":
 			var p struct {
@@ -197,6 +235,7 @@ func SummarizeEvents(job Job, events []eventlog.Envelope) (Detail, []PermissionI
 			detail.PendingPermissionCount++
 		}
 	}
+	detail.Usage = addUsage(detail.Usage, turnUsage)
 	return detail, permissions, nil
 }
 func decode(value, target any) error {
@@ -240,4 +279,13 @@ func (m *Manager) Permissions(ctx context.Context, id, state string) ([]Permissi
 		}
 	}
 	return filtered, nil
+}
+
+func addUsage(a, b glue.Usage) glue.Usage {
+	a.InputTokens += b.InputTokens
+	a.OutputTokens += b.OutputTokens
+	a.CacheReadTokens += b.CacheReadTokens
+	a.CacheWriteTokens += b.CacheWriteTokens
+	a.TotalTokens += b.TotalTokens
+	return a
 }

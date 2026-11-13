@@ -568,15 +568,24 @@ func (b *Backend) Show(ctx context.Context, id string) (jobs.Detail, error) {
 		}
 		return d, nil
 	}
-	if c := b.loadCache(id); c != nil && c.Detail != nil {
-		d := *c.Detail
+	c := b.loadCache(id)
+	d := jobs.Detail{Job: job}
+	if c != nil && c.Detail != nil {
+		d = *c.Detail
 		d.Job.Status = job.Status
 		if job.Spec.Objective != "" {
 			d.Spec = job.Spec
 		}
-		return d, nil
 	}
-	return jobs.Detail{Job: job}, nil
+	// A job that finished while attached has a cached result but may have
+	// no cached detail; take its final iteration and usage from the result.
+	if c != nil && c.Result != nil {
+		d.Iteration = max(d.Iteration, c.Result.Iterations)
+		if c.Result.Usage.TotalTokens > d.Usage.TotalTokens {
+			d.Usage = c.Result.Usage
+		}
+	}
+	return d, nil
 }
 
 func (b *Backend) Status(ctx context.Context, id string) (jobs.Status, error) {

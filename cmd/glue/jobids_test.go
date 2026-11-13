@@ -1,0 +1,72 @@
+// Copyright (c) 2026 Yu YI. Licensed under the MIT License.
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/erain/glue/jobs"
+)
+
+type listFakeAPI struct {
+	jobAPI
+	list []jobs.Job
+	err  error
+	n    int
+}
+
+func (f *listFakeAPI) List(context.Context, jobs.Filter) ([]jobs.Job, error) {
+	f.n++
+	return f.list, f.err
+}
+
+func TestResolveJobIDPrefix(t *testing.T) {
+	api := &listFakeAPI{list: []jobs.Job{{ID: "job-55f83167728b"}, {ID: "job-55aa00000000"}, {ID: "job-0123456789ab"}}}
+	ctx := context.Background()
+	for in, want := range map[string]string{"latest": "job-55f83167728b", "55f8": "job-55f83167728b", "job-0123": "job-0123456789ab", "nomatch": "nomatch"} {
+		if got, err := resolveJobID(ctx, api, in); err != nil || got != want {
+			t.Fatalf("resolveJobID(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if _, err := resolveJobID(ctx, api, "55"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous prefix: %v", err)
+	}
+	api.n = 0
+	if got, _ := resolveJobID(ctx, api, "job-55f83167728b"); got != "job-55f83167728b" || api.n != 0 {
+		t.Fatalf("a full ID must not list jobs (lists: %d)", api.n)
+	}
+	failing := &listFakeAPI{err: errors.New("list not allowed")}
+	if got, err := resolveJobID(ctx, failing, "abc"); err != nil || got != "abc" {
+		t.Fatalf("list failure should fall back to the argument: %q %v", got, err)
+	}
+	if _, err := resolveJobID(ctx, &listFakeAPI{}, "latest"); err == nil {
+		t.Fatal("latest with no jobs should fail")
+	}
+}
+
+func TestJobListTable(t *testing.T) {
+	now := time.Date(2026, 11, 12, 15, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	printJobTable(&out, []jobs.Job{
+		{ID: "job-55f83167728b", Status: jobs.Running, CreatedAt: now.Add(-12 * time.Minute), Spec: jobs.Spec{Objective: "Add Shout\nwith a test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox.git"}}},
+		{ID: "job-0123456789ab", Status: jobs.Achieved, CreatedAt: now.Add(-50 * time.Hour), Spec: jobs.Spec{Objective: strings.Repeat("x", 200), Repo: jobs.RepoSpec{Path: "/home/me/src/app"}}},
+	}, now, 120)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[0], "OBJECTIVE") {
+		t.Fatalf("table:\n%s", out.String())
+	}
+	if !strings.Contains(lines[1], "running") || !strings.Contains(lines[1], "12m") || !strings.Contains(lines[1], "erain/glue-sandbox") || !strings.Contains(lines[1], "Add Shout with a test") {
+		t.Fatalf("row 1: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "2d") || !strings.Contains(lines[2], "app") || len([]rune(lines[2])) > 130 {
+		t.Fatalf("row 2 (%d runes): %q", len([]rune(lines[2])), lines[2])
+	}
+	if strings.Index(lines[1], "running") != strings.Index(lines[2], "achieved") {
+		t.Fatalf("status column not aligned:\n%s", out.String())
+	}
+}

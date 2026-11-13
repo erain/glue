@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -192,7 +193,7 @@ func TestJobAttachReplayPermissionsAndDetach(t *testing.T) {
 		t.Fatalf("first attach failed (%d): %s", code, err1.String())
 	}
 	jobID := strings.TrimSpace(strings.Split(out1.String(), "\n")[0])
-	if !strings.Contains(mustJobCLI(t, "list"), jobID+"\twaiting_for_input") {
+	if !regexp.MustCompile(regexp.QuoteMeta(jobID) + `\s+waiting_for_input`).MatchString(mustJobCLI(t, "list")) {
 		t.Fatalf("expected job still waiting_for_input after detach, got: %s", mustJobCLI(t, "list"))
 	}
 	if info := must(os.Stat(jobclient.SeqPath(ts.URL, jobID))); info.Mode().Perm() != 0o600 {
