@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -210,6 +211,7 @@ func TestDefaultImageAndRandomInjectedSecret(t *testing.T) {
 	imgPath := filepath.Join(xdg, "glue", "ax-dev", "images.env")
 	mustOK(t, errors.Join(os.MkdirAll(filepath.Dir(imgPath), 0o700), os.WriteFile(imgPath, []byte("export GLUE_TASK_IMAGE=\"localhost:5001/glue-task@sha256:1234\"\n"), 0o600)))
 	check(t, DefaultImage() == "localhost:5001/glue-task@sha256:1234", "DefaultImage = %q", DefaultImage())
+	fakeGHCR(t, false)
 	cp, _, opts, _ := newFakeBackendEnv(t, nil)
 	opts.Secret, opts.Image = "", ""
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
@@ -221,7 +223,66 @@ func TestDefaultImageAndRandomInjectedSecret(t *testing.T) {
 	cp.mu.Lock()
 	taskImg := cp.tasks[TaskName("job-noimage001")].GetSpec().GetImage()
 	cp.mu.Unlock()
-	check(t, taskImg == PublishedImage+":main", "task image without configuration = %q, want the published image", taskImg)
+	check(t, taskImg == PublishedImage+"@sha256:"+strings.Repeat("ab", 32), "task image without configuration = %q, want the published image pinned by digest", taskImg)
+}
+
+// fakeGHCR serves the anonymous token and manifest endpoints for the
+// published image, answering with a fixed digest, or failing when down is set.
+func fakeGHCR(t *testing.T, down bool) *int {
+	t.Helper()
+	heads := new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case down:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		case r.URL.Path == "/token" && r.URL.Query().Get("scope") == "repository:erain/glue-task:pull":
+			_, _ = w.Write([]byte(`{"token":"anon"}`))
+		case r.Method == http.MethodHead && r.URL.Path == "/v2/erain/glue-task/manifests/main" && r.Header.Get("Authorization") == "Bearer anon" && strings.Contains(r.Header.Get("Accept"), "image.index"):
+			*heads++
+			w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("ab", 32))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	orig := ghcrBase
+	ghcrBase = srv.URL
+	pinMu.Lock()
+	pinCache = map[string]string{}
+	pinMu.Unlock()
+	t.Cleanup(func() { ghcrBase = orig })
+	return heads
+}
+
+func TestPinPublishedImage(t *testing.T) {
+	heads := fakeGHCR(t, false)
+	for range 2 {
+		got, err := PinPublished(t.Context(), PublishedImage+":main")
+		check(t, err == nil && got == PublishedImage+"@sha256:"+strings.Repeat("ab", 32), "pinned = %q, %v", got, err)
+	}
+	check(t, *heads == 1, "manifest HEADs = %d, want 1 (cached)", *heads)
+	_, err := PinPublished(t.Context(), "localhost:5001/glue-task:main")
+	check(t, err != nil, "a non-ghcr reference was pinned")
+}
+
+func TestUnpinnedImageWhenRegistryDown(t *testing.T) {
+	fakeGHCR(t, true)
+	xdg := t.TempDir()
+	for k, v := range map[string]string{"GLUE_AX_IMAGE": "", "GLUE_TASK_IMAGE": "", "XDG_CACHE_HOME": xdg} {
+		t.Setenv(k, v)
+	}
+	cp, _, opts, _ := newFakeBackendEnv(t, nil)
+	var stages []string
+	opts.Image, opts.Progress = "", func(s string) { stages = append(stages, s) }
+	b := must(NewBackend(t.Context(), opts))(t)
+	t.Cleanup(func() { _ = b.Close() })
+	_, err := b.Create(t.Context(), "job-noimage002", jobs.Spec{Objective: "test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
+	mustOK(t, err)
+	cp.mu.Lock()
+	taskImg := cp.tasks[TaskName("job-noimage002")].GetSpec().GetImage()
+	cp.mu.Unlock()
+	check(t, taskImg == PublishedImage+":main", "fallback task image = %q", taskImg)
+	check(t, len(stages) > 0 && strings.Contains(strings.Join(stages, "\n"), "could not resolve"), "no warning: %v", stages)
 }
 
 func TestAXSubmitReconcileCredentialsAndCleanup(t *testing.T) {

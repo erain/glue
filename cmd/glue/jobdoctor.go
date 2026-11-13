@@ -90,9 +90,16 @@ func jobDoctor(ctx context.Context, t jobTargetOpts, repo, base, provider, model
 	if img == "" {
 		img, src = axbackend.DefaultImageSource()
 	}
-	if img != "" {
+	switch {
+	case img != "" && src == "published image":
+		if pinned, err := axbackend.PinPublished(ctx, img); err == nil {
+			add(doctorCheck{Name: "task image", OK: true, Detail: pinned + " (" + img + ", published image)"})
+		} else {
+			add(doctorCheck{Name: "task image", Detail: img + ": " + oneLine(err.Error()), Fix: "check that ghcr.io is reachable, or pass --image <ref@sha256:...>; a tag AX already pulled may run an older build"})
+		}
+	case img != "":
 		add(doctorCheck{Name: "task image", OK: true, Detail: img + " (" + src + ")"})
-	} else {
+	default:
 		add(doctorCheck{Name: "task image", Detail: "no task image configured", Fix: "pass --image <ref>, set GLUE_AX_IMAGE, or build one with scripts/ax-dev/build-task-image.sh"})
 	}
 
