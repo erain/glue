@@ -194,7 +194,7 @@ until the provider stops or the context is canceled.
    (the Gemini narrate-then-stop stall).
 5. If the assistant requested tools, execute the requested tools.
 6. Append tool result messages in deterministic order.
-7. `RunRequest.Steer` (wired to `Session.Steer`) is drained before every model request; each returned text becomes a user message and an `EventSteer` event, so input that arrives mid-run reaches the next turn.
+7. `RunRequest.Steer` (wired to `Session.Steer`) is drained before every model request; each returned text becomes a user message and an `EventSteer` event, so input that arrives mid-run reaches the next turn. `RunRequest.Interrupt` (wired to `Session.Interrupt`) cancels only the current turn: a canceled model request is dropped, canceled tool calls get a `canceled by operator` result, `EventTurnInterrupted` is emitted, and the next turn starts after Steer. An interrupt that arrives between turns is dropped once Steer has run.
 8. Guardrails inspect the round: repeated identical calls or
    consecutive all-error rounds first draw a corrective injected
    message, then halt the run with a typed error

@@ -156,7 +156,11 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			if !jobBody(w, r, &body) {
 				return
 			}
-			if err := s.jobs.Message(r.Context(), id, body.Text); err != nil {
+			send := s.jobs.Message
+			if r.URL.Query().Get("interrupt") == "true" {
+				send = s.jobs.Interrupt
+			}
+			if err := send(r.Context(), id, body.Text); err != nil {
 				jobError(w, err)
 				return
 			}

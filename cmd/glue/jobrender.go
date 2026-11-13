@@ -131,6 +131,18 @@ func (r *jobRenderer) render(ev eventlog.Envelope) {
 		if text := payloadString(ev.Payload, "text"); text != "" {
 			r.line(ev.Time, "operator: %s", oneLine(text))
 		}
+	case "turn_interrupted":
+		p, _ := decodePayload[struct {
+			Metadata struct {
+				Canceled string   `json:"canceled"`
+				Tools    []string `json:"tools"`
+			} `json:"metadata"`
+		}](ev.Payload)
+		what := "the model request"
+		if p.Metadata.Canceled == "tools" {
+			what = "tool call " + strings.Join(p.Metadata.Tools, ", ")
+		}
+		r.line(ev.Time, "interrupted %s; the next turn starts with your message", what)
 	case "question":
 		q, _ := decodePayload[struct {
 			Question string `json:"question"`

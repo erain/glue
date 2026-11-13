@@ -72,17 +72,18 @@ const (
 
 // EventType constants re-exported from package loop.
 const (
-	EventLoopStart    = loop.EventLoopStart
-	EventLoopEnd      = loop.EventLoopEnd
-	EventTurnStart    = loop.EventTurnStart
-	EventTurnEnd      = loop.EventTurnEnd
-	EventMessageStart = loop.EventMessageStart
-	EventMessageEnd   = loop.EventMessageEnd
-	EventTextDelta    = loop.EventTextDelta
-	EventToolStart    = loop.EventToolStart
-	EventToolEnd      = loop.EventToolEnd
-	EventError        = loop.EventError
-	EventSteer        = loop.EventSteer
+	EventLoopStart       = loop.EventLoopStart
+	EventLoopEnd         = loop.EventLoopEnd
+	EventTurnStart       = loop.EventTurnStart
+	EventTurnEnd         = loop.EventTurnEnd
+	EventMessageStart    = loop.EventMessageStart
+	EventMessageEnd      = loop.EventMessageEnd
+	EventTextDelta       = loop.EventTextDelta
+	EventToolStart       = loop.EventToolStart
+	EventToolEnd         = loop.EventToolEnd
+	EventError           = loop.EventError
+	EventSteer           = loop.EventSteer
+	EventTurnInterrupted = loop.EventTurnInterrupted
 )
 
 // ProviderEventType constants re-exported from package loop.

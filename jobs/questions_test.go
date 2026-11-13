@@ -4,6 +4,7 @@ package jobs
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -225,4 +226,47 @@ func (p *requestRecorder) Stream(ctx context.Context, req glue.ProviderRequest) 
 	p.texts = append(p.texts, text)
 	p.mu.Unlock()
 	return p.scriptProvider.Stream(ctx, req)
+}
+
+func TestManagerInterruptCancelsShellCommand(t *testing.T) {
+	p := &requestRecorder{scriptProvider: scriptProvider{turns: [][]glue.ProviderEvent{
+		turn(`{"items":[{"title":"wait"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "s1", Name: "shell_exec", Arguments: []byte(`{"argv":["sleep","60"]}`)}}, {Type: glue.ProviderEventDone}},
+		turn("switched to the cache"),
+		turn(`{"done":true,"items":[{"title":"wait","done":true,"evidence":"ok"}],"summary":"done"}`),
+	}}}
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) { return p, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	job, err := m.Create(context.Background(), Spec{Objective: "wait", Policy: "yolo", AllowedBinaries: []string{"sleep"}, Repo: RepoSpec{Path: repoFixture(t)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if slices.Contains(eventTypes(t, m, job.ID), "tool_start") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("shell_exec never started")
+		}
+	}
+	t0 := time.Now()
+	if err := m.Interrupt(context.Background(), job.ID, "stop waiting, use the cache"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitJob(t, m, job.ID); got.Status != Achieved {
+		t.Fatalf("status = %s", got.Status)
+	}
+	if d := time.Since(t0); d > 5*time.Second {
+		t.Fatalf("interrupt took %s", d)
+	}
+	types := eventTypes(t, m, job.ID)
+	if !slices.Contains(types, "turn_interrupted") || !slices.Contains(types, "operator_message_delivered") {
+		t.Fatalf("events = %v", types)
+	}
 }

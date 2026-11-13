@@ -7,11 +7,20 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Turn-end events carry Metadata["model_ms"]: how long the model request of
 // that turn took, including retries, in milliseconds.
+
+// EventTurnInterrupted is emitted when RunRequest.Interrupt cancels a turn's
+// model request or tool calls. Metadata "canceled" is "model" or "tools";
+// for tools, "tools" lists the canceled call names.
+const EventTurnInterrupted EventType = "turn_interrupted"
+
+// canceledByOperator is the tool result for a call an interrupt cut off.
+const canceledByOperator = "canceled by operator: the developer interrupted this tool call. Read their message and continue from there."
 
 // EventSteer is emitted when RunRequest.Steer input is added to the
 // conversation. Event.Message carries the user message.
@@ -52,6 +61,13 @@ type RunRequest struct {
 	// text is appended to the conversation as a user message, so input that
 	// arrives while the run is working reaches the model at its next turn.
 	Steer func() []string
+	// Interrupt, when set, cancels the current turn's model request or tool
+	// calls each time it receives, without ending the run. A canceled model
+	// request is discarded; canceled tool calls get a "canceled by operator"
+	// result. The next turn then starts, after Steer. A receive that arrives
+	// between turns is dropped once Steer has run, since that turn already
+	// carries the new input.
+	Interrupt <-chan struct{}
 
 	// Retry bounds loop-level provider retries (transient failures,
 	// dropped streams). The zero value enables retries with defaults;
@@ -143,10 +159,18 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 				emit(Event{Type: EventSteer, Message: messagePtr(msg)})
 			}
 		}
+		drainInterrupt(req.Interrupt)
+		turnCtx, interrupted, endTurn := interruptibleTurn(ctx, req.Interrupt)
 		modelStart := time.Now()
-		assistant, err := runAssistantTurnWithRetry(ctx, req, messages, emit)
+		assistant, err := runAssistantTurnWithRetry(turnCtx, req, messages, emit)
 		turnMeta := map[string]any{"model_ms": time.Since(modelStart).Milliseconds()}
+		if err != nil && interrupted() && ctx.Err() == nil {
+			endTurn()
+			emit(Event{Type: EventTurnInterrupted, Metadata: map[string]any{"canceled": "model"}})
+			continue
+		}
 		if err != nil {
+			endTurn()
 			return fail(err)
 		}
 
@@ -157,6 +181,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 		toolCalls := collectToolCalls(assistant)
 		if len(toolCalls) == 0 {
+			endTurn()
 			if req.AutoContinue && len(req.Tools) > 0 && autoContinues < maxAutoContinues && stallIntent(assistant) {
 				autoContinues++
 				nudge := autoContinueUserMessage()
@@ -171,15 +196,22 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 
 		if err := ctx.Err(); err != nil {
+			endTurn()
 			return fail(err)
 		}
 
-		toolMessages, err := executeToolCalls(ctx, req, toolCalls, emit)
+		toolMessages, canceled, err := executeToolCalls(turnCtx, req, toolCalls, emit, func() bool { return interrupted() && ctx.Err() == nil })
+		endTurn()
 		if err != nil {
 			return fail(err)
 		}
 		messages = append(messages, toolMessages...)
 		newMessages = append(newMessages, toolMessages...)
+		if interrupted() && ctx.Err() == nil {
+			emit(Event{Type: EventTurnInterrupted, Metadata: map[string]any{"canceled": "tools", "tools": canceled}})
+			emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant), Metadata: turnMeta})
+			continue
+		}
 
 		switch verdict := guard.observe(toolCalls, toolMessages); verdict.action {
 		case guardNudge:
@@ -216,12 +248,23 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 // is the same in sequential and parallel modes: source-ordered tool_start
 // events, source-ordered tool_end events, source-ordered append. Parallel
 // mode only changes when the executors run.
-func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emit func(Event)) ([]Message, error) {
+//
+// When interrupted reports true, calls cut off by the canceled ctx get a
+// "canceled by operator" result instead of failing the run, so every call
+// is still answered.
+func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emit func(Event), interrupted func() bool) ([]Message, []string, error) {
 	type result struct {
 		call    ToolCall
 		out     ToolResult
 		message Message
 		err     error
+	}
+
+	cutOff := func(call ToolCall) bool { return ctx.Err() != nil && interrupted != nil && interrupted() }
+	canceled := func(call ToolCall) result {
+		out := errorToolResult(canceledByOperator)
+		out.Metadata = map[string]any{"canceled_by_operator": true}
+		return result{call: call, out: out, message: toolResultMessage(call, out)}
 	}
 
 	results := make([]result, len(calls))
@@ -238,6 +281,10 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 			go func(i int, call ToolCall) {
 				defer wg.Done()
 				normalizedCall, toolResult, err := executeToolCall(ctx, req, call)
+				if cutOff(call) {
+					results[i] = canceled(normalizedCall)
+					return
+				}
 				results[i] = result{
 					call:    normalizedCall,
 					out:     toolResult,
@@ -249,8 +296,13 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 		wg.Wait()
 	} else {
 		for i, call := range calls {
+			if cutOff(call) {
+				emit(Event{Type: EventToolStart, ToolCall: toolCallPtr(call), ToolCallID: call.ID, ToolName: call.Name})
+				results[i] = canceled(call)
+				continue
+			}
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			emit(Event{
 				Type:       EventToolStart,
@@ -259,8 +311,12 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 				ToolName:   call.Name,
 			})
 			normalizedCall, toolResult, err := executeToolCall(ctx, req, call)
+			if cutOff(call) {
+				results[i] = canceled(normalizedCall)
+				continue
+			}
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			results[i] = result{
 				call:    normalizedCall,
@@ -270,14 +326,18 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if err := ctx.Err(); err != nil && (interrupted == nil || !interrupted()) {
+		return nil, nil, err
 	}
 
 	messages := make([]Message, len(results))
+	var canceledNames []string
 	for i, r := range results {
 		if r.err != nil {
-			return nil, r.err
+			return nil, nil, r.err
+		}
+		if r.out.Metadata["canceled_by_operator"] == true {
+			canceledNames = append(canceledNames, r.call.Name)
 		}
 		messages[i] = r.message
 		emit(Event{
@@ -289,7 +349,7 @@ func executeToolCalls(ctx context.Context, req RunRequest, calls []ToolCall, emi
 			Message:    messagePtr(r.message),
 		})
 	}
-	return messages, nil
+	return messages, canceledNames, nil
 }
 
 // executeToolCall normalizes a single tool call's arguments and invokes its
@@ -673,4 +733,42 @@ func cloneMetadata(metadata map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// drainInterrupt drops an interrupt that arrived while no turn was running.
+func drainInterrupt(ch <-chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+	}
+}
+
+// interruptibleTurn returns a context for one turn that ch cancels, whether
+// that happened, and a func that ends the turn's watch.
+func interruptibleTurn(ctx context.Context, ch <-chan struct{}) (context.Context, func() bool, func()) {
+	if ch == nil {
+		return ctx, func() bool { return false }, func() {}
+	}
+	turnCtx, cancel := context.WithCancel(ctx)
+	var hit atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ch:
+			hit.Store(true)
+			cancel()
+		case <-done:
+		case <-turnCtx.Done():
+		}
+	}()
+	var once sync.Once
+	return turnCtx, hit.Load, func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
+	}
 }

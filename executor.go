@@ -126,6 +126,9 @@ func (LocalExecutor) Run(ctx context.Context, cmd ExecCommand) (ExecResult, erro
 	defer cancel()
 
 	c := exec.CommandContext(runCtx, cmd.Argv[0], cmd.Argv[1:]...)
+	killProcessGroupOnCancel(c)
+	// Stop waiting for output a leftover process still holds open.
+	c.WaitDelay = 2 * time.Second
 	if cmd.Dir != "" {
 		c.Dir = cmd.Dir
 	}
