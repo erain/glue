@@ -17,6 +17,7 @@ import (
 	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
+	"github.com/erain/glue/internal/modelselection"
 	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/providers"
 )
@@ -86,6 +87,7 @@ func (a *axJobAPI) Submit(ctx context.Context, spec jobs.Spec, start bool) (jobs
 	}
 	prov, mod, err := resolveSelection(true, spec.Provider, spec.Model)
 	if err == nil {
+		spec.Thinking = modelselection.DefaultThinking(prov, mod, spec.Thinking)
 		_, err = providers.ThinkingOptions(prov, mod, spec.Thinking)
 	}
 	id := strings.TrimSpace(spec.ID)

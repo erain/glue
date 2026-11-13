@@ -148,7 +148,7 @@ func TestJobSubmitSelect(t *testing.T) {
 		return modelSelection{Provider: "deepseek", Model: "deepseek-flash", Thinking: "high"}, nil
 	}
 	out := mustJobCLI(t, "submit", "--repo", repo, "--objective", "test select", "--select", "--start=false")
-	if job := must(mgr.Get(context.Background(), strings.TrimSpace(out))); gotInitial.Provider != "gemini" || gotInitial.Model != "gemini-3.8-flash" || job.Spec.Provider != "deepseek" || job.Spec.Model != "deepseek-flash" || job.Spec.Thinking != "high" {
+	if job := must(mgr.Get(context.Background(), strings.TrimSpace(out))); gotInitial.Provider != "gemini" || gotInitial.Model != "gemini-3-flash-preview" || job.Spec.Provider != "deepseek" || job.Spec.Model != "deepseek-flash" || job.Spec.Thinking != "high" {
 		t.Fatalf("initial=%+v job=%+v", gotInitial, job)
 	}
 }

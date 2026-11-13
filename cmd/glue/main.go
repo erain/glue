@@ -301,7 +301,7 @@ Commands:
   version  Print the binary's version, git revision, and Go toolchain (also: --version, -v).
 
 Defaults: chat uses provider openrouter, model openrouter/free.
-  --coding and goal use provider gemini, model gemini-3.8-flash.
+  --coding and goal use provider gemini, model gemini-3-flash-preview, thinking low.
 Explicit --provider and --model override defaults.
 
 Flags:

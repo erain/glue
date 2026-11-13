@@ -10,7 +10,7 @@ with `--coding`).
 |---|---|---|
 | `objective` | `string` | Required coding goal description. |
 | `repo` | `{path, url, base_ref}` | Exactly one of `path` (local git repo) or `url` (clone source), plus optional `base_ref`. |
-| `provider`, `model`, `thinking` | `string` | Coding provider/model selection (defaults to `gemini` / `gemini-3.8-flash`). |
+| `provider`, `model`, `thinking` | `string` | Coding provider/model selection (defaults to `gemini` / `gemini-3-flash-preview` with thinking `low`; an unset `thinking` on that model means `low`). |
 | `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. Jobs submitted directly to AX default to `wall_clock: 1h` and `token_budget: 2000000` when unset; `--no-budget` removes those defaults. A job stopped by a budget ends `budget_limited`, still runs the finalize step, and records `budget_exceeded` (`wall_clock` or `token_budget`) in `result.json`. |
 | `policy` | `string` | Permission profile (`auto` default, `workspace-auto`, `ask-all`, `yolo`, or custom policy name). |
 | `verify` | `[][]string` | Post-goal verification commands (`argv` slices) executed in the job workspace. |
@@ -110,11 +110,11 @@ Finished jobs stop holding an AX worker. In direct mode no component runs while 
 
 | Model / thinking | Submit → job ID | Median turn | p90 turn | One-line job |
 |---|---|---|---|---|
-| `gemini-3.8-flash` (default) | 13.2 s | 17.3 s | 30.5 s | 337 s |
+| `gemini-3.8-flash` (former default) | 13.2 s | 17.3 s | 30.5 s | 337 s |
 | `gemini-3.8-flash`, `low` | 13.2 s | 14.1 s | 22.7 s | 254 s |
-| `gemini-3-flash-preview`, `low` | 12.8 s | 1.0 s | 1.1 s | 22 s |
+| `gemini-3-flash-preview`, `low` (default since #590) | 12.8 s | 1.0 s | 1.1 s | 22 s |
 
-About 10.5 s of the submit time is AX building a golden snapshot for the task's own template (#591), and the default coding model is about 15 times slower per turn than `gemini-3-flash-preview` (#590).
+About 10.5 s of the submit time is AX building a golden snapshot for the task's own template (#591), and the former default coding model was about 15 times slower per turn, so #590 made `gemini-3-flash-preview` at `low` the default.
 
 `glue job list` prints an aligned table (ID, status, age, repo, objective) sized to the terminal; `--json` keeps the full records for scripts. `glue job show` adds an `activity` line: the current phase, the number of model turns so far, the last tool called, and how long ago the job last recorded anything. Usage in `show` updates after every model turn, not only at iteration boundaries (`jobs.Detail.Activity`). Every subcommand that takes a job ID also accepts a unique prefix, with or without `job-` (`glue job show 55f8`), or `latest` for the newest job.
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/internal/modelselection"
 	"github.com/erain/glue/internal/worktree"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
@@ -87,6 +88,7 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if err != nil {
 		return goalExitErrored, err
 	}
+	*thinking = modelselection.DefaultThinking(resolvedProvider, normalizeModel(effectiveModel), *thinking)
 	providerOptions, err := providers.ThinkingOptions(resolvedProvider, normalizeModel(effectiveModel), *thinking)
 	if err != nil {
 		return goalExitErrored, err
