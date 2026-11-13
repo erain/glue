@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue job list` prints an aligned table, `glue job show` shows live activity
+  (phase, model turns, last tool, time since the last event) with usage
+  updated every model turn, and job ID arguments accept unique prefixes and
+  `latest`. `show` for a finished, suspended AX job now reports its final
+  iterations and tokens instead of zeros.
+
 - `--notify <url>` (or `GLUE_NOTIFY_URL`) makes remote jobs POST a short
   notification when they wait for input or finish: JSON with a `text` line for
   Slack-style webhooks, plain text with a title for ntfy topics. URLs are kept

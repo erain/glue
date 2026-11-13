@@ -144,6 +144,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return err
 	}
 	defer c.Close()
+	if len(pos) > 0 && sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" {
+		if pos[0], err = resolveJobID(ctx, c, pos[0]); err != nil {
+			return err
+		}
+	}
 	switch sub {
 	case "submit":
 		obj := cmp.Or(strings.TrimSpace(*objective), strings.TrimSpace(remote.objective), strings.TrimSpace(strings.Join(pos, " ")))
@@ -218,9 +223,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		if err != nil || *asJSON {
 			return writeJSONOrErr(stdout, map[string]any{"jobs": list}, err)
 		}
-		for _, j := range list {
-			fmt.Fprintf(stdout, "%s\t%s\t%s\n", j.ID, j.Status, j.Spec.Objective)
+		if len(list) == 0 {
+			_, err := fmt.Fprintln(stdout, "no jobs")
+			return err
 		}
+		printJobTable(stdout, list, time.Now(), terminalWidth(stdout))
 		return nil
 	case "show":
 		d, err := c.Show(ctx, pos[0])
@@ -232,6 +239,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "snapshot_of: %s\n", d.Spec.Repo.SnapshotOf)
 		}
 		fmt.Fprintf(stdout, "wall_clock: %s\ntoken_budget: %s\n", budgetText(d.Spec.Budgets.WallClock.String(), d.Spec.Budgets.WallClock == 0), budgetText(fmt.Sprint(d.Spec.Budgets.TokenBudget), d.Spec.Budgets.TokenBudget == 0))
+		if a := d.Activity; !a.LastEventAt.IsZero() {
+			fmt.Fprintf(stdout, "activity: %s, %d model turns, last tool %s, last event %s ago\n", cmp.Or(a.Phase, "-"), a.ModelTurns, cmp.Or(a.LastTool, "-"), shortAge(time.Since(a.LastEventAt)))
+		}
 		perms, _ := c.Permissions(ctx, d.ID, "pending")
 		for _, p := range perms {
 			fmt.Fprintf(stdout, "pending_permission: %s\t%s\t%s\t%s\n", p.ID, p.Request.Tool, p.Request.Action, p.Request.Target)
