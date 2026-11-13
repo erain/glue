@@ -456,11 +456,56 @@ func parseOriginRepo(raw string) (string, string, error) {
 	return owner, repo, nil
 }
 
-func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal glue.GoalResult, res Result, token string) (string, error) {
-	apiBase := strings.TrimRight(strings.TrimSpace(os.Getenv("GLUE_GITHUB_API_URL")), "/")
-	if apiBase == "" {
-		apiBase = defaultGitHubAPIURL
+func githubAPIBase() string {
+	if b := strings.TrimRight(strings.TrimSpace(os.Getenv("GLUE_GITHUB_API_URL")), "/"); b != "" {
+		return b
 	}
+	return defaultGitHubAPIURL
+}
+
+// OpenDraftPR opens a draft pull request for the branch a finished job pushed,
+// or returns the job's PR or an open PR from that branch if one exists.
+func OpenDraftPR(ctx context.Context, job Job, res Result, token string) (string, error) {
+	if res.PRURL != "" {
+		return res.PRURL, nil
+	}
+	if res.Branch == "" {
+		return "", fmt.Errorf("%w: job %s pushed no branch", ErrConflict, job.ID)
+	}
+	owner, repo, err := parseOriginRepo(job.Spec.Repo.URL)
+	if err != nil {
+		return "", err
+	}
+	var open []struct {
+		HTMLURL string `json:"html_url"`
+	}
+	q := url.Values{"state": {"open"}, "head": {owner + ":" + res.Branch}}
+	if err := githubJSON(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/pulls?%s", githubAPIBase(), owner, repo, q.Encode()), token, nil, &open); err == nil && len(open) > 0 && open[0].HTMLURL != "" {
+		return open[0].HTMLURL, nil
+	}
+	return openGitHubDraftPR(ctx, owner, repo, job, glue.GoalResult{Summary: res.Summary}, res, token)
+}
+
+// DeleteBranch deletes a branch on the job repository's GitHub origin. A
+// branch that is already gone is not an error.
+func DeleteBranch(ctx context.Context, repoURL, branch, token string) error {
+	owner, repo, err := parseOriginRepo(repoURL)
+	if err != nil {
+		return err
+	}
+	segs := strings.Split(branch, "/")
+	for i := range segs {
+		segs[i] = url.PathEscape(segs[i])
+	}
+	err = githubJSON(ctx, http.MethodDelete, fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", githubAPIBase(), owner, repo, strings.Join(segs, "/")), token, nil, nil)
+	if err != nil && (strings.Contains(err.Error(), "status 404") || strings.Contains(err.Error(), "status 422")) {
+		return nil
+	}
+	return err
+}
+
+func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal glue.GoalResult, res Result, token string) (string, error) {
+	apiBase := githubAPIBase()
 	token = strings.TrimSpace(token)
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`

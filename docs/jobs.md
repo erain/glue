@@ -105,6 +105,22 @@ Finished jobs stop holding an AX worker. In direct mode no component runs while 
 
 `glue job logs <id> [--tail N] [--json]` prints a job's history up to its current end and returns: it does not follow, does not prompt for permissions, and does not move the attach cursor, so it prints the same history every time. `--json` prints one event envelope per line. On AX, a suspended task woken to read it is suspended again. `glue job attach --from-start` replays from the first event, and `--tail N` starts N events before the end; attaching to a finished job with nothing new prints its summary. A job that was continued has several `job_done` events, and attach stops only at the last one.
 
+### Several attempts at once
+
+`--attempts N` (at most 8) submits N jobs with the same spec and a shared group ID, which is printed to stderr with the next commands. Repeat `--model` to spread the attempts across models in order (`--attempts 3 --model a --model b` runs a, b, a). Attempts deliver to branches even with `--deliver pr`, so you get one PR, not N:
+
+```sh
+glue --remote "Speed up the parser" --verify "go test ./..." --attempts 3
+glue job compare grp-1a2b3c4d5e6f      # or any attempt's job ID
+#   JOB               MODEL    STATUS    VERIFY    CHANGED         TIME   TOKENS
+#   job-55f042bb3ee4  default  achieved  pass      1 file +12 -3   1m54s  30940
+#   ...
+glue job pick job-55f042bb3ee4         # opens its draft PR, deletes the other attempts' branches
+glue job list --group grp-1a2b3c4d5e6f
+```
+
+`pick` uses your GitHub token from the laptop (`GLUE_GITHUB_TOKEN`, `GITHUB_TOKEN` or `gh auth token`). It leaves unfinished attempts and attempts that already have a PR alone, and picking an attempt that already has a PR prints its URL. Choosing a winner automatically and merging attempts are not supported.
+
 ### When the cluster is full
 
 If no AX worker has room for a new task, submit does not hang: the job is created with status `queued`, its ID is printed, the error says so, and `glue` exits with status 75 (`EX_TEMPFAIL`) so scripts can retry. A task that does not become ready within `--start-timeout` (default 2m) is reported the same way. Start a queued job later with `glue job start <id>`; it is not started automatically.

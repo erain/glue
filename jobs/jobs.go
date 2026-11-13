@@ -67,7 +67,9 @@ type Spec struct {
 	OnQuestion      string        `json:"on_question,omitempty"`
 	QuestionTimeout time.Duration `json:"question_timeout,omitempty"`
 	Delivery        string        `json:"delivery"`
-	Backend         string        `json:"backend,omitempty"`
+	// Group ties attempts of one objective submitted together (glue --attempts).
+	Group   string `json:"group,omitempty"`
+	Backend string `json:"backend,omitempty"`
 
 	AllowedBinaries     []string      `json:"allowed_binaries,omitempty"`
 	ShellEnvPass        []string      `json:"shell_env_pass,omitempty"`

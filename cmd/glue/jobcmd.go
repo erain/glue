@@ -48,7 +48,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -68,7 +68,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.StringVar(&target.image, "image", "", "AX task image")
 	fs.Var(&envs, "env", "env file path; repeatable")
 	repo, objective, baseRef, backend := fs.String("repo", "", "repo"), fs.String("objective", "", "objective"), fs.String("base", "", "base ref"), fs.String("backend", "", "backend")
-	provider, model, thinking := fs.String("provider", "", "provider"), fs.String("model", "", "model"), fs.String("thinking", "", "thinking")
+	provider, model, thinking := fs.String("provider", "", "provider"), new(string), fs.String("thinking", "", "thinking")
+	var models repeatedStrings
+	fs.Var(&models, "model", "model; repeat it with --attempts to spread the attempts across models")
+	attempts := fs.Int("attempts", 1, "submit this many attempts of the objective in parallel (max 8)")
+	group := fs.String("group", "", "list: only the attempts in this group")
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
 	status, before, remember, reason := fs.String("status", "", "status"), fs.String("before", "", "before cursor"), fs.String("remember", "", "remember scope"), fs.String("reason", "", "reason")
@@ -110,6 +114,15 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 	}
 	sub, pos := pos[0], pos[1:]
+	if len(models) > 0 {
+		*model = models[0]
+	}
+	if *attempts < 1 || *attempts > maxAttempts {
+		return fmt.Errorf("--attempts must be between 1 and %d", maxAttempts)
+	}
+	if *attempts > 1 && *attach {
+		return errors.New("--attach watches one job; drop it with --attempts and use glue job compare")
+	}
 	if sub == "login" {
 		if strings.TrimSpace(conn.Token) == "" && stdin != nil {
 			conn.Token, _ = bufio.NewReader(stdin).ReadString('\n')
@@ -179,7 +192,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return err
 	}
 	defer c.Close()
-	if len(pos) > 0 && sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" {
+	if len(pos) > 0 && sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && !strings.HasPrefix(pos[0], "grp-") {
 		if pos[0], err = resolveJobID(ctx, c, pos[0]); err != nil {
 			return err
 		}
@@ -231,12 +244,16 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		if directAX {
 			budgets = remoteBudgets(budgets, *noBudget)
 		}
-		job, err := c.Submit(ctx, jobs.Spec{
+		spec := jobs.Spec{
 			ID: jobID, Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
 			Budgets: budgets,
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 			Setup: setup, SetupTimeout: *setupTimeout, OnQuestion: strings.TrimSpace(*onQuestion), QuestionTimeout: *questionTimeout,
-		}, *start)
+		}
+		if *attempts > 1 {
+			return submitAttempts(ctx, c, spec, *attempts, models, *start, stdout, stderr)
+		}
+		job, err := c.Submit(ctx, spec, *start)
 		if queued := queuedError(err, job.ID); queued != nil {
 			fmt.Fprintln(stdout, job.ID)
 			return queued
@@ -280,7 +297,16 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		return err
 	case "list":
-		list, err := c.List(ctx, jobs.Filter{Status: jobs.Status(strings.TrimSpace(*status)), Limit: *limit, Before: strings.TrimSpace(*before)})
+		f := jobs.Filter{Status: jobs.Status(strings.TrimSpace(*status)), Limit: *limit, Before: strings.TrimSpace(*before)}
+		if *group != "" {
+			f.Limit = 10000
+		}
+		list, err := c.List(ctx, f)
+		if g := strings.TrimSpace(*group); g != "" && err == nil {
+			if list = filterGroup(list, g); *limit > 0 && len(list) > *limit {
+				list = list[:*limit]
+			}
+		}
 		if err != nil || *asJSON {
 			return writeJSONOrErr(stdout, map[string]any{"jobs": list}, err)
 		}
@@ -353,6 +379,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "verify: %s (exit %d, %dms)\n", strings.Join(v.Argv, " "), v.ExitCode, v.DurationMS)
 		}
 		return nil
+	case "compare":
+		return jobCompare(ctx, c, pos[0], time.Now(), stdout)
+	case "pick":
+		tok, _ := githubToken(ctx)
+		return jobPick(ctx, c, pos[0], tok, stdout, stderr)
 	case "answer":
 		if len(pos) < 2 {
 			return fmt.Errorf("usage: glue job answer <id> <text>")
