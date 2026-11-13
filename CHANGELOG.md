@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- New `glue job logs <id> [--tail N] [--json]` re-reads a job's history
+  without following it or moving the attach cursor; `glue job attach` gains
+  `--from-start` and `--tail N`, prints the summary for a finished job with
+  nothing new, and no longer stops at the first `job_done` of a continued job.
+
 - `glue job list` prints an aligned table, `glue job show` shows live activity
   (phase, model turns, last tool, time since the last event) with usage
   updated every model turn, and job ID arguments accept unique prefixes and

@@ -228,8 +228,29 @@ func TestJobAttachReplayPermissionsAndDetach(t *testing.T) {
 	if !strings.Contains(out3.String(), "resumed: iteration 2 (continue)") || !strings.Contains(out3.String(), "confirmed Makefile") || !strings.Contains(out3.String(), "job achieved — Add Makefile test target") || strings.Contains(out3.String(), "] iteration 1 ") || strings.Contains(out3.String(), "wrote Makefile") {
 		t.Fatalf("out3=%q", out3.String())
 	}
-	if out4 := mustJobCLI(t, "attach", jobID); out4 != "" {
-		t.Fatalf("attach after terminal seq should be empty, got %q", out4)
+	if out4 := mustJobCLI(t, "attach", jobID); !strings.Contains(out4, "job achieved — Add Makefile test target") || strings.Contains(out4, "resumed: iteration") {
+		t.Fatalf("attach after terminal seq should print only the summary, got %q", out4)
+	}
+	logs := mustJobCLI(t, "logs", jobID)
+	if !strings.Contains(logs, "plan (1 items):") || !strings.Contains(logs, "resumed: iteration 2 (continue)") || !strings.Contains(logs, "job achieved") {
+		t.Fatalf("logs should replay the whole history, got %q", logs)
+	}
+	if again := mustJobCLI(t, "logs", jobID); again != logs {
+		t.Fatalf("logs must print the same history every time:\nfirst:\n%s\nsecond:\n%s", logs, again)
+	}
+	if tail := mustJobCLI(t, "logs", jobID, "--tail", "1"); strings.Contains(tail, "plan (1 items):") || !strings.Contains(tail, "job achieved") {
+		t.Fatalf("logs --tail 1 = %q", tail)
+	}
+	var lines int
+	for _, l := range strings.Split(strings.TrimSpace(mustJobCLI(t, "logs", jobID, "--json")), "\n") {
+		var ev eventlog.Envelope
+		if err := json.Unmarshal([]byte(l), &ev); err != nil || ev.Seq == 0 {
+			t.Fatalf("logs --json line %q: %v", l, err)
+		}
+		lines++
+	}
+	if fromStart := mustJobCLI(t, "attach", jobID, "--from-start"); !strings.Contains(fromStart, "plan (1 items):") || !strings.Contains(fromStart, "job achieved") || lines < 5 {
+		t.Fatalf("attach --from-start = %q (json lines %d)", fromStart, lines)
 	}
 	_ = mgr
 }
