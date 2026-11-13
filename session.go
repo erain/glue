@@ -67,8 +67,9 @@ type Session struct {
 	nextSubscriberID int
 	subscribers      map[int]func(Event)
 
-	steerMu sync.Mutex
-	steer   []string
+	steerMu   sync.Mutex
+	steer     []string
+	interrupt chan struct{}
 }
 
 // Steer queues text for the model. It is added to the conversation as a
@@ -81,6 +82,28 @@ func (s *Session) Steer(text string) {
 	s.steerMu.Lock()
 	s.steer = append(s.steer, text)
 	s.steerMu.Unlock()
+}
+
+// Interrupt cancels the running prompt's current model request or tool calls
+// and starts its next turn, which carries any text queued with Steer. With no
+// prompt running it has no effect. It is safe to call from any goroutine.
+func (s *Session) Interrupt() {
+	if s == nil {
+		return
+	}
+	select {
+	case s.interruptCh() <- struct{}{}:
+	default: // one pending interrupt is enough
+	}
+}
+
+func (s *Session) interruptCh() chan struct{} {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if s.interrupt == nil {
+		s.interrupt = make(chan struct{}, 1)
+	}
+	return s.interrupt
 }
 
 // requeueSteer puts texts back at the front of the steer queue.
@@ -322,6 +345,7 @@ func (s *Session) Prompt(ctx context.Context, text string, options ...PromptOpti
 			Permission:   permission,
 			Hooks:        cloneHooks(s.agent.hooks),
 			Steer:        steer,
+			Interrupt:    s.interruptCh(),
 			AutoContinue: s.agent.autoContinue,
 			Emit: func(event Event) {
 				if config.emit != nil {

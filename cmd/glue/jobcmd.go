@@ -31,6 +31,7 @@ type jobAPI interface {
 	Patch(ctx context.Context, id string) ([]byte, error)
 	Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error
 	Say(ctx context.Context, id, text string) error
+	Interrupt(ctx context.Context, id, text string) error
 	Answer(ctx context.Context, id, questionID, text string) error
 	Continue(ctx context.Context, id, text string, maxIterations int) error
 	Cancel(ctx context.Context, id string) error
@@ -73,6 +74,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&models, "model", "model; repeat it with --attempts to spread the attempts across models")
 	attempts := fs.Int("attempts", 1, "submit this many attempts of the objective in parallel (max 8)")
 	group := fs.String("group", "", "list: only the attempts in this group")
+	interrupt := fs.Bool("interrupt", false, "say: also cancel the agent's current model request or tool call")
 	fromPR := fs.Bool("from-pr", false, "continue: address the job's PR review threads, new comments and failed checks")
 	var issueRefs repeatedStrings
 	fs.Var(&issueRefs, "issue", "start the job from a GitHub issue (number, owner/repo#N, or URL); repeat for one job per issue")
@@ -413,6 +415,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			return fmt.Errorf("usage: glue job %s <id> <arg>", sub)
 		}
 		if sub == "say" {
+			if *interrupt {
+				return c.Interrupt(ctx, pos[0], strings.TrimSpace(strings.Join(pos[1:], " ")))
+			}
 			return c.Say(ctx, pos[0], strings.TrimSpace(strings.Join(pos[1:], " ")))
 		}
 		return c.Decide(ctx, pos[0], pos[1], sub == "approve", *remember, *reason)

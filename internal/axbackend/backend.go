@@ -826,6 +826,9 @@ func (b *Backend) Decide(ctx context.Context, id, permID string, allow bool, rem
 func (b *Backend) Answer(ctx context.Context, id, questionID, text string) error {
 	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Answer(ctx, id, questionID, text) })
 }
+func (b *Backend) Interrupt(ctx context.Context, id, text string) error {
+	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Interrupt(ctx, id, text) })
+}
 func (b *Backend) Say(ctx context.Context, id, text string) error {
 	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Say(ctx, id, text) })
 }

@@ -114,3 +114,22 @@ func (m *Manager) guidance(ctx context.Context, id string, iteration int) (strin
 	// Keep guidance in subsequent fresh sessions, including after a restart.
 	return strings.Join(texts, "\n\n"), nil
 }
+
+// Interrupt queues text like Message and also cancels the running maker's
+// current model request or tool call, so its next turn starts with the text
+// instead of waiting for the current step to finish.
+func (m *Manager) Interrupt(ctx context.Context, id, text string) error {
+	if err := m.Message(ctx, id, text); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	run := m.active[id]
+	m.mu.Unlock()
+	if run != nil {
+		run.mu.Lock()
+		maker := run.maker
+		run.mu.Unlock()
+		maker.Interrupt()
+	}
+	return nil
+}

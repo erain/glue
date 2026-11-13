@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue job say --interrupt` stops the agent's current model request or tool call
+  and starts its next turn with your message. **Library:** `Session.Interrupt`,
+  `loop.RunRequest.Interrupt` and `EventTurnInterrupted`; `LocalExecutor` now kills a
+  canceled command's whole process group.
+
 - `glue job continue <id> --from-pr [--dry-run]` turns a job's PR review threads,
   new comments and failed checks into continue instructions. Achieved jobs can
   be continued with new instructions, and a continued job's delivery reuses its

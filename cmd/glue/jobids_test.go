@@ -160,3 +160,33 @@ func TestSubmitQueuedExitCode(t *testing.T) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
+
+type interruptFakeAPI struct {
+	jobAPI
+	said, interrupted string
+}
+
+func (f *interruptFakeAPI) Close() error                                { return nil }
+func (f *interruptFakeAPI) Say(_ context.Context, _, text string) error { f.said = text; return nil }
+func (f *interruptFakeAPI) Interrupt(_ context.Context, _, text string) error {
+	f.interrupted = text
+	return nil
+}
+
+func TestJobSayInterrupt(t *testing.T) {
+	clearJobTestEnv(t)
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	api := &interruptFakeAPI{}
+	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return api, nil }
+	var out bytes.Buffer
+	if err := jobCommand(context.Background(), []string{"say", "--ax", "--interrupt", "job-0123456789ab", "stop", "now"}, strings.NewReader(""), &out, &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobCommand(context.Background(), []string{"say", "--ax", "job-0123456789ab", "later"}, strings.NewReader(""), &out, &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if api.interrupted != "stop now" || api.said != "later" {
+		t.Fatalf("interrupt=%q say=%q", api.interrupted, api.said)
+	}
+}

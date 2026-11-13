@@ -137,6 +137,12 @@ func (c *Client) Decide(ctx context.Context, id, permID string, allow bool, reme
 func (c *Client) Say(ctx context.Context, id, text string) error {
 	return c.doJSON(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/messages", map[string]any{"text": text}, http.StatusAccepted, nil)
 }
+
+// Interrupt sends text like Say and also cancels the maker's current model
+// request or tool call.
+func (c *Client) Interrupt(ctx context.Context, id, text string) error {
+	return c.doJSON(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/messages?interrupt=true", map[string]any{"text": text}, http.StatusAccepted, nil)
+}
 func (c *Client) Continue(ctx context.Context, id, text string, maxIterations int) error {
 	return c.doJSON(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/continue", map[string]any{"text": text, "max_iterations": maxIterations}, http.StatusAccepted, nil)
 }
