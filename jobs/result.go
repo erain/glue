@@ -524,6 +524,19 @@ func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal gl
 			defaultBranch = b
 		}
 	}
+	// A continued job pushes to the same branch: reuse its open PR and say what changed.
+	var existing []struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+	}
+	q := url.Values{"state": {"open"}, "head": {owner + ":" + res.Branch}}
+	if err := githubJSON(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/pulls?%s", apiBase, targetRepo, q.Encode()), token, nil, &existing); err == nil && len(existing) > 0 && existing[0].HTMLURL != "" {
+		comment := map[string]any{"body": prUpdateComment(job, goal, res)}
+		if err := githubJSON(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/issues/%d/comments", apiBase, targetRepo, existing[0].Number), token, comment, nil); err != nil {
+			return existing[0].HTMLURL, fmt.Errorf("jobs: comment on %s: %w", existing[0].HTMLURL, err)
+		}
+		return existing[0].HTMLURL, nil
+	}
 	base := prBase(ctx, job, token, defaultBranch)
 	title, _, _ := strings.Cut(strings.TrimSpace(goal.Summary), "\n")
 	if job.Spec.Issue != "" || title == "" { // an issue job's objective is the issue title
@@ -587,6 +600,26 @@ func githubJSON(ctx context.Context, method, endpoint, token string, reqBody, re
 		return nil
 	}
 	return json.Unmarshal(body, respBody)
+}
+
+// prUpdateComment is posted on a job's existing PR when the job delivers again.
+func prUpdateComment(job Job, goal glue.GoalResult, res Result) string {
+	var b strings.Builder
+	head := res.HeadSHA
+	if len(head) > 12 {
+		head = head[:12]
+	}
+	fmt.Fprintf(&b, "%s\nGlue job `%s` continued and pushed `%s`.\n\n%s", glueCommentMarker, job.ID, head, cmpOr(strings.TrimSpace(goal.Summary), strings.TrimSpace(res.Summary)))
+	var done []string
+	for _, item := range goal.Checklist {
+		if item.Done {
+			done = append(done, "- "+item.Title)
+		}
+	}
+	if len(done) > 0 {
+		b.WriteString("\n\nAddressed:\n" + strings.Join(done, "\n"))
+	}
+	return b.String()
 }
 
 func formatPRBody(job Job, goal glue.GoalResult, res Result) string {

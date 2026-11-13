@@ -73,6 +73,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&models, "model", "model; repeat it with --attempts to spread the attempts across models")
 	attempts := fs.Int("attempts", 1, "submit this many attempts of the objective in parallel (max 8)")
 	group := fs.String("group", "", "list: only the attempts in this group")
+	fromPR := fs.Bool("from-pr", false, "continue: address the job's PR review threads, new comments and failed checks")
 	var issueRefs repeatedStrings
 	fs.Var(&issueRefs, "issue", "start the job from a GitHub issue (number, owner/repo#N, or URL); repeat for one job per issue")
 	jobContext := fs.String("notes", "", "background notes for the agent, such as findings from a session; planner and maker see them")
@@ -85,7 +86,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
 	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull: switch to the job branch"), fs.Bool("apply", false, "pull: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull: overwrite an existing local branch or apply over local changes")
 	noBudget := fs.Bool("no-budget", false, "remote jobs: do not apply the default wall-clock and token budgets")
-	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting")
+	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting; continue --from-pr: print the instructions without sending")
 	quiet := fs.Bool("quiet", false, "submit: print only the job ID")
 	verbose := fs.Bool("verbose", false, "attach: show full tool output")
 	fromStart, tail := fs.Bool("from-start", false, "attach: replay the job from its first event"), fs.Int("tail", 0, "attach, logs: start this many events before the end")
@@ -416,7 +417,23 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		return c.Decide(ctx, pos[0], pos[1], sub == "approve", *remember, *reason)
 	case "continue":
-		return c.Continue(ctx, pos[0], strings.TrimSpace(strings.Join(pos[1:], " ")), *maxIter)
+		text := strings.TrimSpace(strings.Join(pos[1:], " "))
+		if *fromPR {
+			tok, _ := githubToken(ctx)
+			fb, err := continueFromPR(ctx, c, pos[0], tok)
+			if err != nil {
+				return err
+			}
+			if text = strings.TrimSpace(text + "\n\n" + fb); text == "" {
+				_, err := fmt.Fprintln(stdout, "nothing to address: no unresolved review threads, new comments, or failed checks")
+				return err
+			}
+			fmt.Fprintln(stdout, text)
+			if *dryRun {
+				return nil
+			}
+		}
+		return c.Continue(ctx, pos[0], text, *maxIter)
 	case "cancel":
 		return c.Cancel(ctx, pos[0])
 	case "delete":

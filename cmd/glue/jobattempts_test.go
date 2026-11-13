@@ -322,3 +322,56 @@ func TestSubmitRemoteFromTUI(t *testing.T) {
 		t.Fatal("no submit stages reported")
 	}
 }
+
+type continueFakeAPI struct {
+	attemptsFakeAPI
+	continued []string
+}
+
+func (f *continueFakeAPI) Continue(_ context.Context, id, text string, _ int) error {
+	f.continued = append(f.continued, id+": "+text)
+	return nil
+}
+
+func TestContinueFromPRDryRun(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/graphql":
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"path":"a.go","line":3,"comments":{"nodes":[{"body":"Use a constant.","createdAt":"2026-11-12T10:00:00Z","author":{"login":"rev"}}]}}]}}}}}`))
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			_, _ = w.Write([]byte(`{"check_runs":[{"id":5,"name":"build","conclusion":"failure","completed_at":"2026-11-12T10:05:00Z","output":{"title":"compile error"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(gh.Close)
+	api := &continueFakeAPI{attemptsFakeAPI: attemptsFakeAPI{results: map[string]jobs.Result{
+		"job-0123456789ab": {PRURL: "https://github.com/erain/glue-sandbox/pull/7", HeadSHA: "abc", FinishedAt: time.Unix(1000, 0)},
+		"job-0123456789ac": {Branch: "glue/x"},
+	}}}
+	clearJobTestEnv(t)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	t.Setenv("GLUE_GITHUB_TOKEN", "tok")
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return api, nil }
+	var out bytes.Buffer
+	if err := jobCommand(context.Background(), []string{"continue", "--ax", "--from-pr", "--dry-run", "job-0123456789ab"}, strings.NewReader(""), &out, &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Use a constant.") || !strings.Contains(out.String(), `Failed check "build"`) || len(api.continued) != 0 {
+		t.Fatalf("dry run printed %q, continued %v", out.String(), api.continued)
+	}
+	out.Reset()
+	if err := jobCommand(context.Background(), []string{"continue", "--ax", "--from-pr", "job-0123456789ab", "Keep", "the", "API"}, strings.NewReader(""), &out, &out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.continued) != 1 || !strings.HasPrefix(api.continued[0], "job-0123456789ab: Keep the API\n\nAddress this feedback") || !strings.Contains(api.continued[0], "Use a constant.") {
+		t.Fatalf("continued = %q", api.continued)
+	}
+	if err := jobCommand(context.Background(), []string{"continue", "--ax", "--from-pr", "job-0123456789ac"}, strings.NewReader(""), &out, &out, nil); err == nil || !strings.Contains(err.Error(), "has no pull request") {
+		t.Fatalf("job without PR: %v", err)
+	}
+}
