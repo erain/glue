@@ -37,7 +37,8 @@ type pendingQuestion struct {
 }
 
 // askUserPrompt is added to a job's system prompt.
-const askUserPrompt = "\n\nYou are running unattended for a developer who can answer questions. If the objective depends on something only they know (a value, a name, a decision), or the repository contradicts what the objective assumes, call ask_user before you write code that guesses. Do not invent such values."
+const askUserPrompt = "\n\nYou are running unattended for a developer who can answer questions. If the objective depends on something only they know (a value, a name, a decision), or the repository contradicts what the objective assumes, call ask_user before you write code that guesses. Do not invent such values." +
+	" Everything you leave in the repository becomes part of the delivered change: do not write planning notes, checklists, or other scratch files into it, and remove any temporary file you created before you finish."
 
 const assumeText = "No one answered. Proceed with your best assumption, and state that assumption in your summary."
 

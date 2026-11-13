@@ -16,6 +16,9 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote job agents are told that everything left in the repository is delivered,
+  and not to leave planning notes or scratch files in it.
+
 - Answer a remote job's questions from the browser: the web UI job page shows
   the question with option buttons and an answer box, the jobs list marks jobs
   waiting on one, and `glue-gateway` forwards `POST /v1/jobs/{id}/answers`
