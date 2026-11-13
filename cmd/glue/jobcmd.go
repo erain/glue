@@ -83,6 +83,10 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fromStart, tail := fs.Bool("from-start", false, "attach: replay the job from its first event"), fs.Int("tail", 0, "attach, logs: start this many events before the end")
 	selectFlag, start, attach, asJSON := fs.Bool("select", false, "select model"), fs.Bool("start", true, "start job"), fs.Bool("attach", false, "attach to submitted job"), fs.Bool("json", false, "output JSON")
 	maxIter, limit, budget, wallClock := fs.Int("max-iterations", 0, "max iterations"), fs.Int("limit", 50, "limit"), fs.Int64("budget", 0, "token budget"), fs.Duration("wall-clock", 0, "wall-clock")
+	var egressHosts repeatedStrings
+	fs.Var(&egressHosts, "egress-host", "remote jobs: extra host the task may reach over TLS (port 443); repeatable")
+	fs.StringVar(&target.cpu, "cpu", "", "remote jobs: AX task CPU limit (default 4)")
+	fs.StringVar(&target.memory, "memory", "", "remote jobs: AX task memory limit (default 8Gi)")
 	var notify repeatedStrings
 	fs.Var(&notify, "notify", "remote jobs: URL to POST to when the job waits for input or finishes; repeatable (default GLUE_NOTIFY_URL)")
 	var verifyRaw repeatedStrings
@@ -125,6 +129,25 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		*provider, *model, *thinking = sel.Provider, sel.Model, sel.Thinking
 	}
+	var cfgNote string
+	if sub == "submit" {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		cfgDir := cmp.Or(strings.TrimSpace(*repo), ".")
+		if isRemoteRepoRef(cfgDir) {
+			cfgDir = ""
+		}
+		if cfgDir != "" {
+			cfg, _, err := loadRemoteConfig(cfgDir)
+			if err != nil {
+				return err
+			}
+			if cfg != nil {
+				cfgNote = applyRemoteConfig(cfg, set, &target, &verifyRaw, deliver, policy, wallClock, budget, maxIter)
+			}
+		}
+	}
+	target.egress = append(target.egress, egressHosts...)
 	target.conn, target.remote, target.backend, target.notify = conn, remote.enabled, *backend, notify
 	for _, u := range notify {
 		if err := jobs.ValidNotifyURL(u); err != nil {
@@ -206,6 +229,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 				}
 			}
 			printSubmitSummary(stderr, job.ID, directAX, *start, summary)
+			if directAX && len(target.egress) > 0 {
+				fmt.Fprintf(stderr, "  %-9s defaults + %s\n", "egress", strings.Join(target.egress, ", "))
+			}
+			if cfgNote != "" {
+				fmt.Fprintf(stderr, "  %-9s %s\n", "config", cfgNote)
+			}
 		}
 		if *attach {
 			return attachJob(ctx, c, job.ID, stdin, stdout, stderr, attachOptions{verbose: *verbose})

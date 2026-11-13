@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Repos can describe their remote jobs in `.glue/remote.yaml` (image, setup,
+  verify, delivery, policy, extra egress hosts, CPU/memory, budgets); flags win
+  over the file. New `--egress-host`, `--cpu` and `--memory` flags.
+
 - **The default coding model is now `gemini-3-flash-preview` with thinking
   `low`** (was `gemini-3.8-flash`). Measured on remote jobs, it answers in about
   1 s per model turn against 14–17 s, so a one-line job takes 22 s instead of
