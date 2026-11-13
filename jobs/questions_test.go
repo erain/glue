@@ -200,6 +200,18 @@ func TestSpecContextInPrompts(t *testing.T) {
 			t.Fatalf("request %d has context = %v:\n%s", i, has, p.texts[i])
 		}
 	}
+	// The checker (request 3) audits: no file-writing tools, no ask_user.
+	if !slices.Contains(p.tools[1], "write_file") || !slices.Contains(p.tools[1], "ask_user") {
+		t.Fatalf("maker tools = %v", p.tools[1])
+	}
+	for _, name := range []string{"write_file", "edit_file", "ask_user"} {
+		if slices.Contains(p.tools[2], name) {
+			t.Fatalf("checker has %s: %v", name, p.tools[2])
+		}
+	}
+	if slices.Contains(p.tools[0], "write_file") || slices.Contains(p.tools[0], "edit_file") || slices.Contains(p.tools[0], "shell_exec") {
+		t.Fatalf("planner can write files or run commands: %v", p.tools[0])
+	}
 	if _, err := m.Create(context.Background(), Spec{Objective: "x", Context: strings.Repeat("x", MaxContextBytes+1), Repo: RepoSpec{Path: repoFixture(t)}}); err == nil {
 		t.Fatal("oversized context accepted")
 	}
@@ -210,6 +222,7 @@ type requestRecorder struct {
 	scriptProvider
 	mu    sync.Mutex
 	texts []string
+	tools [][]string
 }
 
 func (p *requestRecorder) Stream(ctx context.Context, req glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
@@ -222,8 +235,13 @@ func (p *requestRecorder) Stream(ctx context.Context, req glue.ProviderRequest) 
 			break
 		}
 	}
+	var names []string
+	for _, s := range req.Tools {
+		names = append(names, s.Name)
+	}
 	p.mu.Lock()
 	p.texts = append(p.texts, text)
+	p.tools = append(p.tools, names)
 	p.mu.Unlock()
 	return p.scriptProvider.Stream(ctx, req)
 }

@@ -51,7 +51,7 @@ func TestGoalGuidanceAtNextMaker(t *testing.T) {
 		if strings.Contains(prompt, "Please include examples.") != want {
 			t.Fatalf("request %d guidance: %q", i, prompt)
 		}
-		if want && !strings.HasPrefix(prompt, "Operator guidance\nPlease include examples.\n\n") {
+		if want && !strings.HasPrefix(prompt, goalGuidanceHeader+"\nPlease include examples.\n\n") {
 			t.Fatalf("request %d block: %q", i, prompt)
 		}
 		if !strings.Contains(prompt, "finish A") || !strings.Contains(prompt, "A") {
@@ -100,11 +100,54 @@ func TestGoalGuidanceEmptyLeavesPromptUnchanged(t *testing.T) {
 			const prompt = "original prompt"
 			want := prompt
 			if strings.TrimSpace(text) != "" {
-				want = "Operator guidance\nPlease verify examples.\n\n" + prompt
+				want = goalGuidanceHeader + "\nPlease verify examples.\n\n" + prompt
 			}
 			if got := withGoalGuidance(prompt, text); got != want {
 				t.Fatalf("prompt %q want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestGoalPlannerAndCheckerHaveNoWriteTools(t *testing.T) {
+	p := &recordingProvider{turns: [][]ProviderEvent{
+		goalTurn(`{"items":[{"title":"A"}]}`, 0),
+		goalTurn("did it", 0), goalTurn(`{"done":true,"items":[{"title":"A","done":true}]}`, 0),
+	}}
+	tool := func(name, action string) Tool {
+		return Tool{ToolSpec: ToolSpec{Name: name, PermissionAction: action}, Execute: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil }}
+	}
+	agent := newGoalAgent(p)
+	_, err := agent.PursueGoal(context.Background(), GoalSpec{
+		Objective: "finish A", MaxIterations: 1,
+		Tools: []Tool{tool("read_file", ""), tool("write_file", "write_file"), tool("edit_file", "edit_file"), tool("shell_exec", "exec")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := func(req ProviderRequest) string {
+		var out []string
+		for _, s := range req.Tools {
+			out = append(out, s.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := names(p.requests[0]); got != "read_file" {
+		t.Fatalf("planner tools = %s", got)
+	}
+	if got := names(p.requests[1]); got != "read_file,write_file,edit_file,shell_exec" {
+		t.Fatalf("maker tools = %s", got)
+	}
+	if got := names(p.requests[2]); got != "read_file,shell_exec" {
+		t.Fatalf("checker tools = %s", got)
+	}
+	var prompt string
+	for _, m := range p.requests[2].Messages {
+		for _, c := range m.Content {
+			prompt += c.Text
+		}
+	}
+	if !strings.Contains(prompt, "never create, edit, or delete files") {
+		t.Fatal("checker prompt lacks the audit-only rule")
 	}
 }

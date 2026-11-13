@@ -289,7 +289,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			run.mu.Unlock()
 		},
 	}
-	spec.CheckerTools = checkerTools
+	spec.CheckerTools = glue.AuditTools(checkerTools)
 	if run.resume != nil {
 		spec.Checklist = run.resume.Checklist
 		spec.StartIteration = run.resume.Iterations + 1

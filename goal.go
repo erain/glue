@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -86,8 +87,11 @@ type GoalSpec struct {
 
 	// Tools overrides the maker tool set. Empty uses the agent's tools.
 	Tools []Tool
-	// CheckerTools overrides the verifier tool set. Empty uses the agent's
-	// tools; the checker is instructed to verify, not modify.
+	// CheckerTools overrides the verifier tool set. Empty uses the maker's
+	// tools (Tools, else the agent's) without file-writing tools
+	// (PermissionAction "write_file" or "edit_file"): the checker audits and
+	// must not change what it is auditing. The planner always gets that
+	// set without command execution (PermissionAction "exec") as well.
 	CheckerTools []Tool
 
 	// SystemPrompt overrides the maker system prompt. Empty uses the agent's.
@@ -402,7 +406,8 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	if spec.OnSession != nil {
 		spec.OnSession("planner", 0, sess)
 	}
-	opts := []PromptOption{WithJSONSchema(goalPlanSchema)}
+	// The planner looks; the maker does the work.
+	opts := []PromptOption{WithJSONSchema(goalPlanSchema), WithTools(plannerTools(cmpTools(spec.Tools, a.tools)))}
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
 	}
@@ -544,9 +549,11 @@ func (a *Agent) runGoalChecker(ctx context.Context, spec GoalSpec, iter int, che
 	if spec.CheckerModel != "" {
 		opts = append(opts, WithModel(spec.CheckerModel))
 	}
-	if len(spec.CheckerTools) > 0 {
-		opts = append(opts, WithTools(spec.CheckerTools))
+	checkerTools := spec.CheckerTools
+	if len(checkerTools) == 0 {
+		checkerTools = AuditTools(cmpTools(spec.Tools, a.tools))
 	}
+	opts = append(opts, WithTools(checkerTools))
 	opts = append(opts, WithMaxTurns(checkerMaxTurns(spec.MaxTurns)))
 	if spec.Permission != nil {
 		opts = append(opts, WithPermission(spec.Permission))
@@ -605,7 +612,39 @@ func withGoalGuidance(prompt, guidance string) string {
 	if guidance = strings.TrimSpace(guidance); guidance == "" {
 		return prompt
 	}
-	return "Operator guidance\n" + guidance + "\n\n" + prompt
+	return goalGuidanceHeader + "\n" + guidance + "\n\n" + prompt
+}
+
+// goalGuidanceHeader introduces developer guidance in maker and checker prompts.
+const goalGuidanceHeader = "Operator guidance (from the developer; where it conflicts with the goal or checklist below, the guidance wins: an item it cancels or changes is judged by the guidance)"
+
+func cmpTools(a, b []Tool) []Tool {
+	if len(a) > 0 {
+		return a
+	}
+	return b
+}
+
+// plannerTools are the audit tools without command execution: planning
+// needs reading and searching, and a planner that runs commands starts doing
+// the work (or a slow command) before anyone can steer it.
+func plannerTools(tools []Tool) []Tool {
+	out := AuditTools(tools)
+	return slices.DeleteFunc(out, func(t Tool) bool { return t.PermissionAction == "exec" })
+}
+
+// AuditTools returns tools without the ones that write files
+// (PermissionAction "write_file" or "edit_file"), for sessions that only
+// audit, such as a goal checker.
+func AuditTools(tools []Tool) []Tool {
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if t.PermissionAction == "write_file" || t.PermissionAction == "edit_file" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // withGoalContext appends the developer's background context to a prompt.
@@ -623,7 +662,7 @@ func planPrompt(objective string) string {
 
 Goal: %s
 
-Each item must be checkable against real evidence (a file exists, a test passes, a command succeeds). Prefer 2–8 items; avoid vague items like "make it good". Return the items with empty/false done — nothing has been built yet. Look at the workspace only as much as you need to plan; the maker will explore in detail.`, objective)
+Each item must be checkable against real evidence (a file exists, a test passes, a command succeeds). Prefer 2–8 items; avoid vague items like "make it good". Return the items with empty/false done — nothing has been built yet. Look at the workspace only as much as you need to plan; the maker will explore in detail. Do not carry out the goal yourself: do not change files or run the goal's commands.`, objective)
 }
 
 func makerPrompt(objective string, iter int, checklist []ChecklistItem) string {
@@ -645,7 +684,7 @@ Goal: %s
 Checklist to verify:
 %s
 
-For every item, independently gather evidence (read files, run the build and tests, inspect diffs) and decide whether it is genuinely complete. Do not trust prior claims. Check each item once with the most direct evidence, then answer; do not re-check facts you have already confirmed. Return every item with its verified done flag and a short evidence note, set "done" true only if all items are complete, and give a one-line summary of what remains.`, objective, renderChecklist(checklist))
+For every item, independently gather evidence (read files, run the build and tests, inspect diffs) and decide whether it is genuinely complete. You only audit: never create, edit, or delete files, and never redo the work yourself. Do not trust prior claims. Check each item once with the most direct evidence, then answer; do not re-check facts you have already confirmed. Return every item with its verified done flag and a short evidence note, set "done" true only if all items are complete, and give a one-line summary of what remains.`, objective, renderChecklist(checklist))
 }
 
 func renderChecklist(items []ChecklistItem) string {

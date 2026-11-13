@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Goal planners and checkers no longer change the workspace: they get no
+  file-writing tools (and the planner no command execution), the checker is told
+  it only audits, and operator guidance now overrides the goal and checklist
+  where they conflict. Fixes a checker that redid the work and overwrote the
+  maker's files. **Library:** `glue.AuditTools`; `GoalSpec.CheckerTools` default changed.
+
 - `glue job say --interrupt` stops the agent's current model request or tool call
   and starts its next turn with your message. **Library:** `Session.Interrupt`,
   `loop.RunRequest.Interrupt` and `EventTurnInterrupted`; `LocalExecutor` now kills a
