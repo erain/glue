@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- New remote tasks on the default image run `ghcr.io/erain/glue-task@sha256:…`:
+  the published tag is resolved to its digest at task creation, so a task runs
+  (and records) one exact build even if a node cached an older image under the
+  tag. `glue job doctor` shows the digest.
+
 - TUI `/jobs` lists remote jobs, shows a live transcript on Enter, and pulls a
   result with `p`; the status bar counts running and waiting jobs.
   `glue job pull --repo <dir>` pulls into another checkout.

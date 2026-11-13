@@ -176,7 +176,8 @@ type Backend struct {
 func NewBackend(ctx context.Context, opts Options) (*Backend, error) {
 	opts.Connect.Atespace = cmp.Or(strings.TrimSpace(opts.Connect.Atespace), "default")
 	opts.CPU, opts.Memory = cmp.Or(strings.TrimSpace(opts.CPU), "4"), cmp.Or(strings.TrimSpace(opts.Memory), "8Gi")
-	opts.Image, opts.PollInterval = cmp.Or(strings.TrimSpace(opts.Image), DefaultImage()), cmp.Or(opts.PollInterval, 250*time.Millisecond)
+	// An empty Image means the default, resolved per task by taskImage.
+	opts.Image, opts.PollInterval = strings.TrimSpace(opts.Image), cmp.Or(opts.PollInterval, 250*time.Millisecond)
 	opts.StartTimeout = cmp.Or(opts.StartTimeout, DefaultStartTimeout)
 	opts.CacheDir = cmp.Or(strings.TrimSpace(opts.CacheDir), filepath.Join(jobclient.ConfigDir(), "ax-jobs"))
 	if len(opts.EgressHosts) == 0 {
@@ -355,7 +356,7 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	if id = strings.TrimSpace(cmp.Or(id, spec.ID)); id == "" {
 		id, _ = jobs.NewID()
 	}
-	img := cmp.Or(strings.TrimSpace(b.opts.Image), DefaultImage())
+	img := b.taskImage(ctx)
 	spec.ID, spec.Backend, spec.Objective = "", "", strings.TrimSpace(spec.Objective)
 	spec.Repo.URL, spec.Repo.Path, spec.Repo.BaseRef = strings.TrimSpace(spec.Repo.URL), strings.TrimSpace(spec.Repo.Path), cmp.Or(strings.TrimSpace(spec.Repo.BaseRef), "main")
 	if img == "" {
