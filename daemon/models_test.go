@@ -40,14 +40,14 @@ func TestModelsCatalogEndpoint(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body.Defaults["chat"].Model != "openrouter/free" || body.Defaults["coding"].Model != "gemini-3.8-flash" {
+		if body.Defaults["chat"].Model != "openrouter/free" || body.Defaults["coding"].Model != "gemini-3-flash-preview" {
 			t.Fatal(body)
 		}
 		found := false
 		for _, p := range body.Providers {
 			if p.Provider == "gemini" {
 				for _, m := range p.Models {
-					if m.ID == "gemini-3.8-flash" && len(m.ThinkingLevels) == 3 {
+					if m.ID == "gemini-3-flash-preview" && len(m.ThinkingLevels) >= 3 {
 						found = true
 					}
 				}

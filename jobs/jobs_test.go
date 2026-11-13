@@ -39,7 +39,7 @@ func TestCreateHasNoSideEffects(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].Type != "job_created" {
 		t.Fatalf("events %v err %v", events, err)
 	}
-	if job.Spec.Provider != "gemini" || job.Spec.Model != "gemini-3.8-flash" || job.Spec.Delivery != "none" {
+	if job.Spec.Provider != "gemini" || job.Spec.Model != "gemini-3-flash-preview" || job.Spec.Thinking != "low" || job.Spec.Delivery != "none" {
 		t.Fatal(job.Spec)
 	}
 	if explicit, err := m.Create(context.Background(), Spec{ID: "job-0123456789ab", Objective: "explicit id", Repo: RepoSpec{URL: "https://example.invalid/repo.git"}}); err != nil || explicit.ID != "job-0123456789ab" || explicit.Spec.ID != "" {

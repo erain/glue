@@ -170,7 +170,7 @@ directly, or select by name via `providers.New`.
 
 CLI defaults depend on activity: `glue run` and `glue serve` use
 `openrouter` / `openrouter/free`; `--coding` and `glue goal` use
-`gemini` / `gemini-3.8-flash`. Explicit `--provider` and `--model`
+`gemini` / `gemini-3-flash-preview` with thinking `low`. Explicit `--provider` and `--model`
 override these choices. `glue models` labels the chat and coding defaults.
 
 ```go

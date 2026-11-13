@@ -333,6 +333,7 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 	if err != nil {
 		return s, invalid("provider", err.Error())
 	}
+	s.Thinking = modelselection.DefaultThinking(s.Provider, s.Model, s.Thinking)
 	if _, err := providers.ThinkingOptions(s.Provider, s.Model, s.Thinking); err != nil {
 		return s, invalid("thinking", err.Error())
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/erain/glue"
 	"github.com/erain/glue/cmd/glue/atmentions"
 	"github.com/erain/glue/cmd/glue/tui"
+	"github.com/erain/glue/internal/modelselection"
 	"github.com/erain/glue/providers"
 	filestore "github.com/erain/glue/stores/file"
 	toolscoding "github.com/erain/glue/tools/coding"
@@ -167,6 +168,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	if err != nil {
 		return err
 	}
+	*thinking = modelselection.DefaultThinking(providerName, normalizeModel(effectiveModel), *thinking)
 	providerOptions, err := providers.ThinkingOptions(providerName, normalizeModel(effectiveModel), *thinking)
 	if err != nil {
 		return err

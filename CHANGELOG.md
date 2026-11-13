@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- **The default coding model is now `gemini-3-flash-preview` with thinking
+  `low`** (was `gemini-3.8-flash`). Measured on remote jobs, it answers in about
+  1 s per model turn against 14–17 s, so a one-line job takes 22 s instead of
+  over 5 minutes. An unset `--thinking` on that model means `low`; pass
+  `--model gemini-3.8-flash` to keep the previous model.
+
 - Every `turn_end` loop event now records `model_ms`, the model request's
   duration. New `scripts/ax-dev/e2e/latency.sh` measures a remote job's submit
   stages and model-turn latency against budgets.

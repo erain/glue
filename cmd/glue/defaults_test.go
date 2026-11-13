@@ -13,10 +13,10 @@ func TestDefaultSelectionByMode(t *testing.T) {
 		provider, model, wantProvider, wantModel string
 	}{
 		{"run", false, "", "", "openrouter", "openrouter/free"},
-		{"coding run", true, "", "", "gemini", "gemini-3.8-flash"},
-		{"goal", true, "", "", "gemini", "gemini-3.8-flash"},
+		{"coding run", true, "", "", "gemini", "gemini-3-flash-preview"},
+		{"goal", true, "", "", "gemini", "gemini-3-flash-preview"},
 		{"serve", false, "", "", "openrouter", "openrouter/free"},
-		{"coding serve", true, "", "", "gemini", "gemini-3.8-flash"},
+		{"coding serve", true, "", "", "gemini", "gemini-3-flash-preview"},
 		{"provider override", true, "codex", "", "codex", "gpt-5-codex"},
 		{"chat override", false, "gemini", "custom", "gemini", "custom"},
 		{"explicit", true, "openrouter", "custom", "openrouter", "custom"},
@@ -36,7 +36,7 @@ func TestModelsLabelsModeDefaults(t *testing.T) {
 	if err := modelsCommand(nil, &out, &errs); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"gemini-3.8-flash", "openrouter/free"} {
+	for _, line := range []string{"gemini-3-flash-preview", "openrouter/free"} {
 		found := false
 		for _, row := range strings.Split(out.String(), "\n") {
 			if strings.Contains(row, line) && (strings.Contains(row, "coding") || strings.Contains(row, "chat")) {

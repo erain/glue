@@ -17,6 +17,7 @@ import (
 
 	"github.com/erain/glue"
 	"github.com/erain/glue/daemon"
+	"github.com/erain/glue/internal/modelselection"
 	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/providers"
 	toolscoding "github.com/erain/glue/tools/coding"
@@ -117,6 +118,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	if err != nil {
 		return err
 	}
+	*thinking = modelselection.DefaultThinking(providerName, normalizeModel(effectiveModel), *thinking)
 	providerOptions, err := providers.ThinkingOptions(providerName, normalizeModel(effectiveModel), *thinking)
 	if err != nil {
 		return err
