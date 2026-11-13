@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Turn-end events carry Metadata["model_ms"]: how long the model request of
+// that turn took, including retries, in milliseconds.
+
 // EventSteer is emitted when RunRequest.Steer input is added to the
 // conversation. Event.Message carries the user message.
 const EventSteer EventType = "steer"
@@ -140,7 +143,9 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 				emit(Event{Type: EventSteer, Message: messagePtr(msg)})
 			}
 		}
+		modelStart := time.Now()
 		assistant, err := runAssistantTurnWithRetry(ctx, req, messages, emit)
+		turnMeta := map[string]any{"model_ms": time.Since(modelStart).Milliseconds()}
 		if err != nil {
 			return fail(err)
 		}
@@ -158,10 +163,10 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 				messages = append(messages, nudge)
 				newMessages = append(newMessages, nudge)
 				emit(Event{Type: EventAutoContinue, Message: messagePtr(assistant)})
-				emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
+				emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant), Metadata: turnMeta})
 				continue
 			}
-			emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
+			emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant), Metadata: turnMeta})
 			return snapshot(), nil
 		}
 
@@ -191,7 +196,7 @@ func Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			return fail(verdict.err)
 		}
 
-		emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant)})
+		emit(Event{Type: EventTurnEnd, Message: messagePtr(assistant), Metadata: turnMeta})
 	}
 
 	// Budget exhausted with pending tool calls. Tag the last assistant

@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Every `turn_end` loop event now records `model_ms`, the model request's
+  duration. New `scripts/ax-dev/e2e/latency.sh` measures a remote job's submit
+  stages and model-turn latency against budgets.
+
 - New `glue job logs <id> [--tail N] [--json]` re-reads a job's history
   without following it or moving the attach cursor; `glue job attach` gains
   `--from-start` and `--tail N`, prints the summary for a finished job with
