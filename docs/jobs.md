@@ -105,6 +105,10 @@ Finished jobs stop holding an AX worker. In direct mode no component runs while 
 
 `glue job logs <id> [--tail N] [--json]` prints a job's history up to its current end and returns: it does not follow, does not prompt for permissions, and does not move the attach cursor, so it prints the same history every time. `--json` prints one event envelope per line. On AX, a suspended task woken to read it is suspended again. `glue job attach --from-start` replays from the first event, and `--tail N` starts N events before the end; attaching to a finished job with nothing new prints its summary. A job that was continued has several `job_done` events, and attach stops only at the last one.
 
+### When the cluster is full
+
+If no AX worker has room for a new task, submit does not hang: the job is created with status `queued`, its ID is printed, the error says so, and `glue` exits with status 75 (`EX_TEMPFAIL`) so scripts can retry. A task that does not become ready within `--start-timeout` (default 2m) is reported the same way. Start a queued job later with `glue job start <id>`; it is not started automatically.
+
 ### Questions
 
 A job can ask you a question with its `ask_user` tool when the repository contradicts the objective or a decision is yours. The job then shows `waiting_for_input`, `glue job show` prints the question and its options, `--notify` targets get a notification, and `glue job attach` prompts for an answer inline (an empty line leaves it for later). Answer with `glue job answer <id> "<text>"` (`--question <id>` when several are open); the API is `POST /v1/jobs/{id}/answers` with `{"question_id", "text"}`. Answers are durable: they become guidance for every later maker and checker session, and if the task restarts and the model asks the same question again it gets the recorded answer at once. With `--on-question assume`, or after `--question-timeout` (default 30m) without an answer, the job continues on its best assumption and lists the unanswered questions under `assumptions` in `result.json`. Answering from the web UI is tracked in #597.

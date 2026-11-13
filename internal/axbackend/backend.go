@@ -38,6 +38,39 @@ import (
 // SubmitUnknown is recorded when CreateTask fails with an ambiguous transport or deadline error.
 const SubmitUnknown jobs.Status = "submit_unknown"
 
+// Queued is recorded for a job whose task could not start because no AX
+// worker had room, or did not become ready within the start timeout. Start
+// it again with Start.
+const Queued jobs.Status = "queued"
+
+// ErrNoCapacity means no AX worker had room for the task.
+var ErrNoCapacity = errors.New("no AX worker has room for the task")
+
+// ErrStartTimeout means the task did not become ready within Options.StartTimeout.
+var ErrStartTimeout = errors.New("the AX task did not become ready in time")
+
+// noCapacityGrace is how long Resume waits before trusting a no-capacity failure.
+var noCapacityGrace = 3 * time.Second
+
+// DefaultStartTimeout bounds how long Resume waits for a task to be ready.
+const DefaultStartTimeout = 2 * time.Minute
+
+// noCapacity reports whether a Failed task failed only because no worker had room.
+func noCapacity(t *v1alpha1.Task) bool {
+	if t.GetStatus().GetPhase() != "Failed" {
+		return false
+	}
+	return slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
+		return c.GetReason() == "ActorResumeFailed" && noRoomMessage(c.GetMessage())
+	})
+}
+
+// noRoomMessage matches Substrate's "no worker has room" resume failure, which
+// AX reports either from ResumeTask or later as a task condition.
+func noRoomMessage(msg string) bool {
+	return strings.Contains(msg, "ResourceExhausted") && strings.Contains(msg, "no worker has room") || strings.Contains(msg, "no worker has room for the actor")
+}
+
 // DefaultEgressHosts is the default TLS passthrough allowlist for AX coding tasks.
 var DefaultEgressHosts = []string{"github.com", "api.github.com", "codeload.github.com", "proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "generativelanguage.googleapis.com", "openrouter.ai", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"}
 
@@ -112,7 +145,9 @@ type Options struct {
 	EgressHosts                          []string
 	Credentials                          jobs.Credentials
 	PollInterval                         time.Duration
-	GetJob                               func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error)
+	// StartTimeout bounds the wait for a resumed task to be ready (default 2m).
+	StartTimeout time.Duration
+	GetJob       func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error)
 	// Progress, when set, is called as each submit stage completes:
 	// "workspace", "task", "egress", "sandbox ready", "credentials", "started".
 	Progress  func(stage string)
@@ -142,6 +177,7 @@ func NewBackend(ctx context.Context, opts Options) (*Backend, error) {
 	opts.Connect.Atespace = cmp.Or(strings.TrimSpace(opts.Connect.Atespace), "default")
 	opts.CPU, opts.Memory = cmp.Or(strings.TrimSpace(opts.CPU), "4"), cmp.Or(strings.TrimSpace(opts.Memory), "8Gi")
 	opts.Image, opts.PollInterval = cmp.Or(strings.TrimSpace(opts.Image), DefaultImage()), cmp.Or(opts.PollInterval, 250*time.Millisecond)
+	opts.StartTimeout = cmp.Or(opts.StartTimeout, DefaultStartTimeout)
 	opts.CacheDir = cmp.Or(strings.TrimSpace(opts.CacheDir), filepath.Join(jobclient.ConfigDir(), "ax-jobs"))
 	if len(opts.EgressHosts) == 0 {
 		opts.EgressHosts = slices.Clone(DefaultEgressHosts)
@@ -203,7 +239,7 @@ func resolveTaskSecret(ctx context.Context, opts Options, conn *Connection) (str
 }
 
 func isTerminal(st jobs.Status) bool {
-	return st != "" && st != jobs.Created && st != SubmitUnknown && st != jobs.Running && st != jobs.WaitingForInput && st != jobs.WaitingForCredentials && st != jobs.Suspended
+	return st != "" && st != jobs.Created && st != SubmitUnknown && st != Queued && st != jobs.Running && st != jobs.WaitingForInput && st != jobs.WaitingForCredentials && st != jobs.Suspended
 }
 func isWorkspaceReady(t *v1alpha1.Task) bool {
 	return t.GetStatus().GetPhase() == "Running" && slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
@@ -391,12 +427,33 @@ func (b *Backend) Resume(ctx context.Context, id string) error {
 	}
 	b.progress("egress")
 	if _, err := b.conn.AX.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)}); err != nil {
+		if noRoomMessage(err.Error()) {
+			return ErrNoCapacity
+		}
 		return fmt.Errorf("axbackend: resume task %s: %w", TaskName(id), err)
 	}
+	resumed := time.Now()
+	deadline := resumed.Add(b.opts.StartTimeout)
 	for {
 		t, err := b.getTask(ctx, id)
+		// A queued task still shows its earlier failure until AX picks up
+		// this resume, so a no-capacity failure counts only after a grace period.
+		if err == nil && noCapacity(t) {
+			if time.Since(resumed) > noCapacityGrace {
+				return ErrNoCapacity
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(b.opts.PollInterval):
+			}
+			continue
+		}
 		if err != nil || t.GetStatus().GetPhase() == "Failed" {
 			return cmp.Or(err, fmt.Errorf("axbackend: task %s entered Failed phase", TaskName(id)))
+		}
+		if time.Now().After(deadline) {
+			return ErrStartTimeout
 		}
 		if isWorkspaceReady(t) {
 			b.progress("sandbox ready")
@@ -416,6 +473,9 @@ func (b *Backend) Resume(ctx context.Context, id string) error {
 
 func (b *Backend) EnsureRunning(ctx context.Context, id string) error {
 	t, err := b.getTask(ctx, id)
+	if err == nil && noCapacity(t) {
+		return b.Resume(ctx, id)
+	}
 	if err != nil || t.GetStatus().GetPhase() == "Failed" {
 		return cmp.Or(err, fmt.Errorf("axbackend: task %s is in Failed phase", TaskName(id)))
 	}
@@ -433,6 +493,12 @@ func (b *Backend) Start(ctx context.Context, id string) (jobs.Job, error) {
 		}
 	}
 	if err := b.Resume(ctx, id); err != nil {
+		if errors.Is(err, ErrNoCapacity) || errors.Is(err, ErrStartTimeout) {
+			// Leave the task created; a later Start resumes it again.
+			_ = b.Suspend(ctx, id)
+			b.recordState(ctx, id, spec, Queued, time.Time{})
+			return jobs.Job{ID: id, Spec: spec, Status: Queued}, err
+		}
 		return jobs.Job{}, err
 	}
 	var started jobs.Job
@@ -466,6 +532,8 @@ func resolvePhaseStatus(phase string, st jobs.Status, suspendedWins bool) jobs.S
 	switch {
 	case isTerminal(st):
 		return st
+	case st == Queued && phase != "Running":
+		return Queued
 	case phase == "Failed":
 		return jobs.Errored
 	case phase == "Suspended" && (suspendedWins || st == ""):

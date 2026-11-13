@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- A remote job submitted while every AX worker is busy is now reported as
+  `queued` (exit status 75) instead of failing or hanging; start it later with
+  `glue job start`. `--start-timeout` bounds the wait for a worker.
+
 - Remote jobs can ask the developer a question (`ask_user`) instead of
   guessing; answer with `glue job answer` or inline in `attach`. Answers become
   durable guidance for later sessions, and `--on-question assume` /

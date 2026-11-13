@@ -141,3 +141,22 @@ func TestJobAnswer(t *testing.T) {
 		t.Fatalf("answer --question: %v %+v", err, api)
 	}
 }
+
+type queuedFakeAPI struct{ jobAPI }
+
+func (queuedFakeAPI) Close() error { return nil }
+func (queuedFakeAPI) Submit(_ context.Context, spec jobs.Spec, _ bool) (jobs.Job, error) {
+	return jobs.Job{ID: "job-0123456789ab", Spec: spec, Status: axbackend.Queued}, axbackend.ErrNoCapacity
+}
+
+func TestSubmitQueuedExitCode(t *testing.T) {
+	clearJobTestEnv(t)
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return queuedFakeAPI{}, nil }
+	var stdout, stderr bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{"--remote", "x", "--ax", "--repo", "https://github.com/erain/glue-sandbox"}, strings.NewReader(""), &stdout, &stderr, fakeFactory(nil), serveDaemon, nil)
+	if code != exitQueued || stdout.String() != "job-0123456789ab\n" || !strings.Contains(stderr.String(), "queued: no AX worker has room") || !strings.Contains(stderr.String(), "glue job start job-0123456789ab") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
