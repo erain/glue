@@ -54,7 +54,12 @@ Each iteration:
 3. **Verify (checker)**: a separate session — its own model and a verifier
    system prompt — audits each checklist item against concrete evidence and
    returns a structured verdict (`Session.PromptJSON`). It is told not to trust
-   the maker and not to accept proxy signals.
+   the maker and not to accept proxy signals. It cannot write files: by
+   default it gets the maker's tools without `write_file`/`edit_file`
+   (`glue.AuditTools`), and the planner additionally gets no command
+   execution, so neither can do or undo the work before the maker runs or
+   after it. Operator guidance overrides the goal and checklist where they
+   conflict, for maker and checker alike.
 4. **Decide**: update the checklist from the verdict; stop on `achieved`,
    `blocked` (no progress), `budget_limited`, or `max_iterations`.
 
