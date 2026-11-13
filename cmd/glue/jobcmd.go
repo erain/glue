@@ -73,6 +73,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&models, "model", "model; repeat it with --attempts to spread the attempts across models")
 	attempts := fs.Int("attempts", 1, "submit this many attempts of the objective in parallel (max 8)")
 	group := fs.String("group", "", "list: only the attempts in this group")
+	jobContext := fs.String("notes", "", "background notes for the agent, such as findings from a session; planner and maker see them")
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
 	status, before, remember, reason := fs.String("status", "", "status"), fs.String("before", "", "before cursor"), fs.String("remember", "", "remember scope"), fs.String("reason", "", "reason")
@@ -249,6 +250,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			Budgets: budgets,
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 			Setup: setup, SetupTimeout: *setupTimeout, OnQuestion: strings.TrimSpace(*onQuestion), QuestionTimeout: *questionTimeout,
+			Context: strings.TrimSpace(*jobContext),
 		}
 		if *attempts > 1 {
 			return submitAttempts(ctx, c, spec, *attempts, models, *start, stdout, stderr)

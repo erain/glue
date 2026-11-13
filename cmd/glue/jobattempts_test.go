@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/tui"
 	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/jobs"
 )
@@ -294,5 +295,24 @@ func closeLivePR(t *testing.T, prURL, token string) {
 	if resp, err := http.DefaultClient.Do(req); err == nil {
 		resp.Body.Close()
 		t.Logf("closed %s: %s", prURL, resp.Status)
+	}
+}
+
+func TestSubmitRemoteFromTUI(t *testing.T) {
+	api := &attemptsFakeAPI{}
+	clearJobTestEnv(t)
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return api, nil }
+	var lines []string
+	id, err := submitRemoteFromTUI(context.Background(), pushedCheckout(t), tui.RemoteRequest{Objective: "-fix the flaky test", Context: "developer: it races"}, func(l string) { lines = append(lines, l) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(api.jobs) != 1 || id != api.jobs[0].ID || api.jobs[0].Spec.Context != "developer: it races" || api.jobs[0].Spec.Objective != "-fix the flaky test" {
+		t.Fatalf("id %q, jobs %+v", id, api.jobs)
+	}
+	if len(lines) == 0 {
+		t.Fatal("no submit stages reported")
 	}
 }

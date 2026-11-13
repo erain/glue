@@ -58,6 +58,10 @@ type Config struct {
 	// isolation with a friendly message.
 	BuildTools func(workDir string) ([]glue.Tool, error)
 
+	// SubmitRemote submits a remote job for the workspace repo and returns
+	// its ID; progress receives the submit stages. Nil disables /remote.
+	SubmitRemote func(ctx context.Context, req RemoteRequest, progress func(string)) (string, error)
+
 	// Pricing enables dollar estimates in /usage and the status bar.
 	// The zero value keeps the display token-only.
 	Pricing Pricing
@@ -1043,6 +1047,8 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		return m.runSlashClone()
 	case "tree":
 		return m.runSlashTree()
+	case "remote":
+		return m.runSlashRemote(cmd.Arg)
 	default:
 		m.appendSystem("unknown command: /" + cmd.Name + " (try /help)")
 		m.rerender()

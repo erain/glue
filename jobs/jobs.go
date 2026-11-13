@@ -47,6 +47,9 @@ type Budgets struct {
 	WallClock     time.Duration `json:"wall_clock"`
 }
 
+// MaxContextBytes caps Spec.Context.
+const MaxContextBytes = 16 << 10
+
 // Spec describes a coding objective and its execution settings.
 type Spec struct {
 	ID        string     `json:"id,omitempty"`
@@ -67,6 +70,9 @@ type Spec struct {
 	OnQuestion      string        `json:"on_question,omitempty"`
 	QuestionTimeout time.Duration `json:"question_timeout,omitempty"`
 	Delivery        string        `json:"delivery"`
+	// Context is background for the objective, such as the conversation it
+	// came out of; planner and maker prompts include it.
+	Context string `json:"context,omitempty"`
 	// Group ties attempts of one objective submitted together (glue --attempts).
 	Group   string `json:"group,omitempty"`
 	Backend string `json:"backend,omitempty"`
@@ -324,6 +330,9 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 			return s, invalid("verify", "commands require an executable")
 		}
+	}
+	if len(s.Context) > MaxContextBytes {
+		return s, invalid("context", fmt.Sprintf("must be at most %d bytes", MaxContextBytes))
 	}
 	switch s.OnQuestion {
 	case "", OnQuestionWait, OnQuestionAssume:
