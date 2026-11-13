@@ -10,6 +10,8 @@ refinement ([#526](https://github.com/erain/glue/issues/526),
 [ADR-0020](adr/0020-ax-first-direct-execution.md)) track the architecture and
 milestones below.
 
+> Using remote jobs? Start with [remote-quickstart.md](remote-quickstart.md). This page is the design and roadmap.
+
 ## The experience
 
 1. `glue --remote "Fix failing race test" --verify "go test -race ./..." --deliver pr`

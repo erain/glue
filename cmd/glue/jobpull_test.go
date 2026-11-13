@@ -173,3 +173,17 @@ func TestJobPullRefusesCheckedOutBranch(t *testing.T) {
 		t.Fatalf("err=%v greet.txt=%q", err, data)
 	}
 }
+
+func TestJobPullApplyOnSnapshotWork(t *testing.T) {
+	user, api := pullFixture(t, true)
+	// Uncommitted work that a --snapshot job started from; the job extended it.
+	must(0, os.WriteFile(filepath.Join(user, "notes.txt"), []byte("one\ntwo\n"), 0o600))
+	api.patch = []byte("diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,3 @@\n one\n two\n+three\n")
+	var out bytes.Buffer
+	if err := pullJob(context.Background(), api, api.result.JobID, user, pullOptions{apply: true}, &out); err != nil {
+		t.Fatalf("apply onto the snapshot's own work: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(user, "notes.txt")); string(data) != "one\ntwo\nthree\n" {
+		t.Fatalf("notes.txt = %q", data)
+	}
+}

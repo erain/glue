@@ -16,6 +16,12 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- New `docs/remote-quickstart.md`: from `glue job doctor` to tested changes in your
+  checkout in five minutes, and `scripts/demo/aha.sh`, which runs that story on
+  the cluster and fails on any miss. `glue job pull --apply` now applies a patch
+  that fits your working tree as is without `--force` (the usual case after
+  `--snapshot`).
+
 - Remote jobs start in about 3 s instead of 13 s, and a suspended task resumes in
   0.2 s instead of 11 s: glue clones the repository inside the task itself instead
   of using AX workspace git, whose setup could not reach GitHub in the sandbox and
