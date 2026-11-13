@@ -30,6 +30,11 @@ glue job list
 glue job attach "$id"   # replays missed events; Ctrl-C detaches without canceling
 glue job result "$id"   # branch, verification exit codes, and draft PR URL
 glue job pull "$id" --checkout   # the job's branch, in your checkout
+
+# Try it three times (or on several models) at once and keep the best one:
+glue --remote "Speed up the parser" --verify "go test ./..." --attempts 3 --model gemini-3-flash-preview --model gemini-3-pro-preview
+glue job compare <group>  # verify, lines changed, time, tokens per attempt
+glue job pick <id>        # draft PR for that attempt; the other branches are deleted
 ```
 
 Put repo-wide settings (image, setup, verify commands, extra egress hosts,

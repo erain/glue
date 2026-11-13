@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `--attempts N` runs several attempts of one objective in parallel, spread
+  across models with repeated `--model`; `glue job compare` puts them side by
+  side and `glue job pick` opens the draft PR for the one you keep and deletes
+  the other branches. `glue job list --group` filters by attempt group.
+
 - A remote job submitted while every AX worker is busy is now reported as
   `queued` (exit status 75) instead of failing or hanging; start it later with
   `glue job start`. `--start-timeout` bounds the wait for a worker.
