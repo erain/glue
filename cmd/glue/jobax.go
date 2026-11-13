@@ -137,6 +137,7 @@ type jobTargetOpts struct {
 	notify                                        []string
 	egress                                        []string // hosts allowed on top of the defaults
 	cpu, memory                                   string
+	startTimeout                                  time.Duration
 }
 
 func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (jobAPI, bool, error) {
@@ -161,7 +162,7 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 				AXServer:   cmp.Or(strings.TrimSpace(os.Getenv("GLUE_AX_SERVER")), strings.TrimSpace(os.Getenv("AX_SERVER_ADDR"))),
 				KubeConfig: kubeCfg, KubeContext: kubeCtx, Atespace: cmp.Or(strings.TrimSpace(t.atespace), "default"),
 			},
-			Image: strings.TrimSpace(t.image), CPU: t.cpu, Memory: t.memory, Credentials: creds, EgressHosts: egress, Progress: t.progress,
+			Image: strings.TrimSpace(t.image), CPU: t.cpu, Memory: t.memory, StartTimeout: t.startTimeout, Credentials: creds, EgressHosts: egress, Progress: t.progress,
 		})
 		return api, true, err
 	}

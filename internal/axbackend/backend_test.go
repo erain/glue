@@ -43,6 +43,7 @@ type fakeAXControlPlane struct {
 	polls                                  map[string]int
 	createTaskCalls, resumeCalls, getCalls int
 	failFirstCreateTask                    error
+	noRoom, neverReady, noRoomRPC          bool
 	taskHTTPHits                           atomic.Int32
 }
 
@@ -93,6 +94,9 @@ func (f *fakeAXControlPlane) SuspendTask(_ context.Context, req *v1alpha1.Suspen
 func (f *fakeAXControlPlane) ResumeTask(_ context.Context, req *v1alpha1.ResumeTaskRequest) (*v1alpha1.Task, error) {
 	defer f.lockStep("ResumeTask")()
 	f.resumeCalls, f.polls[req.GetName()] = f.resumeCalls+1, 0
+	if f.noRoomRPC {
+		return nil, status.Error(codes.Internal, "resuming task on substrate: resuming actor: rpc error: code = ResourceExhausted desc = no worker has room for the actor")
+	}
 	if t, ok := f.tasks[req.GetName()]; ok && f.egress[req.GetName()] {
 		t.Status = &v1alpha1.TaskStatus{Phase: "Pending"}
 		return t, nil
@@ -106,7 +110,11 @@ func (f *fakeAXControlPlane) GetTask(_ context.Context, req *v1alpha1.GetTaskReq
 	if !ok {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
-	if f.polls[req.GetName()]++; t.GetStatus().GetPhase() == "Pending" && f.polls[req.GetName()] >= 2 {
+	if f.polls[req.GetName()]++; f.noRoom && t.GetStatus().GetPhase() == "Pending" {
+		t.Status = &v1alpha1.TaskStatus{Phase: "Failed", Conditions: []*v1alpha1.Condition{{Type: "Ready", Status: "False", Reason: "ActorResumeFailed", Message: "resuming actor default/" + req.GetName() + ": rpc error: code = ResourceExhausted desc = no worker has room for the actor"}}}
+	} else if f.neverReady {
+		// stays Pending
+	} else if t.GetStatus().GetPhase() == "Pending" && f.polls[req.GetName()] >= 2 {
 		t.Status = &v1alpha1.TaskStatus{Phase: "Running", Conditions: []*v1alpha1.Condition{{Type: "WorkspaceReady", Status: "True"}}}
 	}
 	return t, nil
@@ -437,4 +445,70 @@ func TestDefaultEgressHosts(t *testing.T) {
 	for _, h := range []string{"github.com", "proxy.golang.org", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "generativelanguage.googleapis.com", "openrouter.ai"} {
 		check(t, slices.Contains(DefaultEgressHosts, h), "DefaultEgressHosts lacks %s", h)
 	}
+}
+
+func credsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/credentials" {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+		return
+	}
+	jobID := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")[0]
+	_, _ = fmt.Fprintf(w, `{"id":%q,"status":"running","credentials":"present"}`, jobID)
+}
+
+func TestSubmitReportsQueuedWhenNoWorker(t *testing.T) {
+	orig := noCapacityGrace
+	noCapacityGrace = 0
+	t.Cleanup(func() { noCapacityGrace = orig })
+	cp, _, _, b := newFakeBackendEnv(t, credsHandler)
+	cp.mu.Lock()
+	cp.noRoom = true
+	cp.mu.Unlock()
+	job, err := b.Submit(t.Context(), "job-queued000001", jobs.Spec{Objective: "wait for room", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
+	check(t, errors.Is(err, ErrNoCapacity) && job.Status == Queued, "submit with a full pool = %+v, %v", job, err)
+	list := must(b.ListJobs(t.Context(), jobs.Filter{}))(t)
+	check(t, len(list) == 1 && list[0].Status == Queued, "list = %+v", list)
+	d := must(b.Show(t.Context(), "job-queued000001"))(t)
+	check(t, d.Status == Queued, "show status = %q", d.Status)
+}
+
+func TestQueuedJobStartsLater(t *testing.T) {
+	orig := noCapacityGrace
+	noCapacityGrace = 0
+	t.Cleanup(func() { noCapacityGrace = orig })
+	cp, _, _, b := newFakeBackendEnv(t, credsHandler)
+	cp.mu.Lock()
+	cp.noRoom = true
+	cp.mu.Unlock()
+	_, err := b.Submit(t.Context(), "job-queued000002", jobs.Spec{Objective: "x", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
+	check(t, errors.Is(err, ErrNoCapacity), "first submit: %v", err)
+	cp.mu.Lock()
+	cp.noRoom = false
+	cp.mu.Unlock()
+	job := must(b.Start(t.Context(), "job-queued000002"))(t)
+	check(t, job.Status == jobs.Running, "started later = %+v", job)
+}
+
+func TestStartTimeoutFlag(t *testing.T) {
+	cp, _, opts, _ := newFakeBackendEnv(t, credsHandler)
+	cp.mu.Lock()
+	cp.neverReady = true
+	cp.mu.Unlock()
+	opts.StartTimeout = 50 * time.Millisecond
+	b := must(NewBackend(t.Context(), opts))(t)
+	defer b.Close()
+	start := time.Now()
+	job, err := b.Submit(t.Context(), "job-timeout00001", jobs.Spec{Objective: "x", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
+	check(t, errors.Is(err, ErrStartTimeout) && job.Status == Queued && time.Since(start) < 5*time.Second, "start timeout: %+v %v after %s", job, err, time.Since(start))
+}
+
+func TestResumeRPCNoRoomIsQueued(t *testing.T) {
+	cp, _, _, b := newFakeBackendEnv(t, credsHandler)
+	cp.mu.Lock()
+	cp.noRoomRPC = true
+	cp.mu.Unlock()
+	job, err := b.Submit(t.Context(), "job-queued000003", jobs.Spec{Objective: "x", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
+	check(t, errors.Is(err, ErrNoCapacity) && job.Status == Queued && job.ID == "job-queued000003", "ResumeTask no-room = %+v, %v", job, err)
+	list := must(b.ListJobs(t.Context(), jobs.Filter{}))(t)
+	check(t, len(list) == 1 && list[0].Status == Queued, "list = %+v", list)
 }

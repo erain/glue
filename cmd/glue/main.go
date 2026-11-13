@@ -114,7 +114,7 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if strings.HasPrefix(args[0], "-") && hasRemoteFlag(args) {
 		if err := jobCommand(ctx, append([]string{"submit"}, args...), stdin, stdout, stderr, client); err != nil {
 			fmt.Fprintln(stderr, err)
-			return 1
+			return exitCodeOf(err)
 		}
 		return 0
 	}
@@ -155,7 +155,7 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	case "job":
 		if err := jobCommand(ctx, args[1:], stdin, stdout, stderr, client); err != nil {
 			fmt.Fprintln(stderr, err)
-			return 1
+			return exitCodeOf(err)
 		}
 		return 0
 	default:

@@ -88,6 +88,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&egressHosts, "egress-host", "remote jobs: extra host the task may reach over TLS (port 443); repeatable")
 	fs.StringVar(&target.cpu, "cpu", "", "remote jobs: AX task CPU limit (default 4)")
 	fs.StringVar(&target.memory, "memory", "", "remote jobs: AX task memory limit (default 8Gi)")
+	fs.DurationVar(&target.startTimeout, "start-timeout", 0, "remote jobs: how long to wait for an AX worker before reporting the job as queued (default 2m)")
 	var notify repeatedStrings
 	fs.Var(&notify, "notify", "remote jobs: URL to POST to when the job waits for input or finishes; repeatable (default GLUE_NOTIFY_URL)")
 	onQuestion := fs.String("on-question", "", "remote jobs: wait (default) for answers to the agent's questions, or assume at once")
@@ -236,6 +237,10 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 			Setup: setup, SetupTimeout: *setupTimeout, OnQuestion: strings.TrimSpace(*onQuestion), QuestionTimeout: *questionTimeout,
 		}, *start)
+		if queued := queuedError(err, job.ID); queued != nil {
+			fmt.Fprintln(stdout, job.ID)
+			return queued
+		}
 		if err != nil {
 			return err
 		}
@@ -267,6 +272,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return jobLogs(ctx, c, pos[0], *tail, *asJSON, *verbose, stdout)
 	case "start":
 		job, err := c.Start(ctx, pos[0])
+		if queued := queuedError(err, pos[0]); queued != nil {
+			return queued
+		}
 		if err == nil {
 			fmt.Fprintf(stdout, "%s\t%s\n", job.ID, job.Status)
 		}
@@ -748,4 +756,33 @@ func promptJobPermission(ctx context.Context, input *bufio.Reader, stderr io.Wri
 			return connectPermissionDecision{Allow: false, Reason: "permission denied by user"}, nil
 		}
 	}
+}
+
+// exitQueued is the exit status for a job that could not start yet
+// (EX_TEMPFAIL): retrying later may succeed.
+const exitQueued = 75
+
+// exitError carries a process exit status with an error.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
+
+func exitCodeOf(err error) int {
+	var ee *exitError
+	if errors.As(err, &ee) {
+		return ee.code
+	}
+	return 1
+}
+
+// queuedError turns a no-capacity or start-timeout error into the "queued" message.
+func queuedError(err error, id string) error {
+	if !errors.Is(err, axbackend.ErrNoCapacity) && !errors.Is(err, axbackend.ErrStartTimeout) {
+		return nil
+	}
+	return &exitError{code: exitQueued, err: fmt.Errorf("queued: %w. The job %s is created but not started; start it later with: glue job start %s", err, id, id)}
 }
