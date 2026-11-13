@@ -87,7 +87,7 @@ func TestGuidanceDeliveredToNextMakerPrompt(t *testing.T) {
 				text += part.Text
 			}
 		}
-		if strings.Contains(text, "Include examples.") != (i >= 3) {
+		if strings.Contains(text, "Include examples.") != (i >= 2) { // from the checker of the iteration it arrived in
 			t.Fatalf("request %d: %s", i, text)
 		}
 	}
@@ -108,7 +108,7 @@ func TestGuidanceDeliveredToNextMakerPrompt(t *testing.T) {
 				t.Fatal("duplicate delivery")
 			}
 			delivered = e.Seq
-			if e.Iteration == nil || *e.Iteration != 2 {
+			if e.Iteration == nil || *e.Iteration != 1 { // delivered to iteration 1's checker
 				t.Fatal(e)
 			}
 		}

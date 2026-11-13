@@ -77,7 +77,7 @@ func (m *Manager) notifyURLs() []string {
 func (m *Manager) maybeNotify(id, typ string, payload any) {
 	var event string
 	switch typ {
-	case "permission_request":
+	case "permission_request", "question":
 		event = "waiting_for_input"
 	case "job_done":
 		event = "done"
@@ -102,6 +102,9 @@ func (m *Manager) maybeNotify(id, typ string, payload any) {
 	} else {
 		n.Status = WaitingForInput
 		if p, ok := payload.(map[string]any); ok {
+			if q, ok := p["question"].(string); ok && q != "" {
+				n.Question = q
+			}
 			if req, ok := p["request"]; ok {
 				raw, _ := json.Marshal(req)
 				var r struct{ Tool, Action, Target string }

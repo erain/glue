@@ -62,8 +62,12 @@ type Spec struct {
 	// starts; a failure ends the job as blocked without calling the model.
 	Setup        [][]string    `json:"setup,omitempty"`
 	SetupTimeout time.Duration `json:"setup_timeout,omitempty"`
-	Delivery     string        `json:"delivery"`
-	Backend      string        `json:"backend,omitempty"`
+	// OnQuestion is what the ask_user tool does: "wait" (the default) for an
+	// answer up to QuestionTimeout (default 30m), or "assume" at once.
+	OnQuestion      string        `json:"on_question,omitempty"`
+	QuestionTimeout time.Duration `json:"question_timeout,omitempty"`
+	Delivery        string        `json:"delivery"`
+	Backend         string        `json:"backend,omitempty"`
 
 	AllowedBinaries     []string      `json:"allowed_binaries,omitempty"`
 	ShellEnvPass        []string      `json:"shell_env_pass,omitempty"`
@@ -318,6 +322,14 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 			return s, invalid("verify", "commands require an executable")
 		}
+	}
+	switch s.OnQuestion {
+	case "", OnQuestionWait, OnQuestionAssume:
+	default:
+		return s, invalid("on_question", "must be wait or assume")
+	}
+	if s.QuestionTimeout < 0 {
+		return s, invalid("question_timeout", "must not be negative")
 	}
 	if s.SetupTimeout < 0 {
 		return s, invalid("setup_timeout", "must not be negative")

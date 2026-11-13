@@ -160,6 +160,11 @@ func (c *Client) Patch(ctx context.Context, id string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 6<<20))
 }
 
+// Answer answers a job's open question; questionID may be empty when one is open.
+func (c *Client) Answer(ctx context.Context, id, questionID, text string) error {
+	return c.doJSON(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/answers", map[string]string{"question_id": questionID, "text": text}, http.StatusOK, nil)
+}
+
 func (c *Client) Cancel(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/v1/jobs/"+url.PathEscape(id), nil, http.StatusAccepted, nil)
 }

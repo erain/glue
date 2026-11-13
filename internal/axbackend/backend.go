@@ -755,6 +755,9 @@ func (b *Backend) Permissions(ctx context.Context, id, state string) ([]jobs.Per
 func (b *Backend) Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error {
 	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Decide(ctx, id, permID, allow, rememberFor, reason) })
 }
+func (b *Backend) Answer(ctx context.Context, id, questionID, text string) error {
+	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Answer(ctx, id, questionID, text) })
+}
 func (b *Backend) Say(ctx context.Context, id, text string) error {
 	return b.withRunning(ctx, id, func(c *jobclient.Client) error { return c.Say(ctx, id, text) })
 }

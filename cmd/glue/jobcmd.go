@@ -31,6 +31,7 @@ type jobAPI interface {
 	Patch(ctx context.Context, id string) ([]byte, error)
 	Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error
 	Say(ctx context.Context, id, text string) error
+	Answer(ctx context.Context, id, questionID, text string) error
 	Continue(ctx context.Context, id, text string, maxIterations int) error
 	Cancel(ctx context.Context, id string) error
 	Delete(ctx context.Context, id string) error
@@ -47,7 +48,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -89,6 +90,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.StringVar(&target.memory, "memory", "", "remote jobs: AX task memory limit (default 8Gi)")
 	var notify repeatedStrings
 	fs.Var(&notify, "notify", "remote jobs: URL to POST to when the job waits for input or finishes; repeatable (default GLUE_NOTIFY_URL)")
+	onQuestion := fs.String("on-question", "", "remote jobs: wait (default) for answers to the agent's questions, or assume at once")
+	questionTimeout := fs.Duration("question-timeout", 0, "how long a job waits for an answer before it assumes (default 30m)")
+	questionID := fs.String("question", "", "answer: the question ID, when several are open")
 	var setupRaw repeatedStrings
 	fs.Var(&setupRaw, "setup", "command run in the workspace before the agent starts; repeatable")
 	setupTimeout := fs.Duration("setup-timeout", 0, "timeout for each --setup command (default 10m)")
@@ -230,7 +234,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			ID: jobID, Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
 			Budgets: budgets,
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
-			Setup: setup, SetupTimeout: *setupTimeout,
+			Setup: setup, SetupTimeout: *setupTimeout, OnQuestion: strings.TrimSpace(*onQuestion), QuestionTimeout: *questionTimeout,
 		}, *start)
 		if err != nil {
 			return err
@@ -288,6 +292,13 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "snapshot_of: %s\n", d.Spec.Repo.SnapshotOf)
 		}
 		fmt.Fprintf(stdout, "wall_clock: %s\ntoken_budget: %s\n", budgetText(d.Spec.Budgets.WallClock.String(), d.Spec.Budgets.WallClock == 0), budgetText(fmt.Sprint(d.Spec.Budgets.TokenBudget), d.Spec.Budgets.TokenBudget == 0))
+		if q := d.Question; q != nil {
+			fmt.Fprintf(stdout, "question: %s\n", q.Question)
+			if len(q.Options) > 0 {
+				fmt.Fprintf(stdout, "options: %s\n", strings.Join(q.Options, " | "))
+			}
+			fmt.Fprintf(stdout, "answer with: glue job answer %s \"<text>\"\n", d.ID)
+		}
 		if a := d.Activity; !a.LastEventAt.IsZero() {
 			fmt.Fprintf(stdout, "activity: %s, %d model turns, last tool %s, last event %s ago\n", cmp.Or(a.Phase, "-"), a.ModelTurns, cmp.Or(a.LastTool, "-"), shortAge(time.Since(a.LastEventAt)))
 		}
@@ -334,6 +345,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "verify: %s (exit %d, %dms)\n", strings.Join(v.Argv, " "), v.ExitCode, v.DurationMS)
 		}
 		return nil
+	case "answer":
+		if len(pos) < 2 {
+			return fmt.Errorf("usage: glue job answer <id> <text>")
+		}
+		return c.Answer(ctx, pos[0], strings.TrimSpace(*questionID), strings.TrimSpace(strings.Join(pos[1:], " ")))
 	case "approve", "deny", "say":
 		if len(pos) < 2 {
 			return fmt.Errorf("usage: glue job %s <id> <arg>", sub)
@@ -644,6 +660,21 @@ func renderJobEvent(ctx context.Context, c jobAPI, id string, ev eventlog.Envelo
 			return err
 		}
 		return c.Decide(ctx, id, perm.PermissionID, decision.Allow, decision.RememberFor, decision.Reason)
+	case "question":
+		r.render(ev)
+		q, _ := decodePayload[struct {
+			ID      string   `json:"question_id"`
+			Options []string `json:"options"`
+		}](ev.Payload)
+		d, err := c.Show(ctx, id)
+		if err != nil || d.Question == nil || d.Question.ID != q.ID {
+			return nil // already answered
+		}
+		answer, err := promptJobAnswer(ctx, input, stderr, q.Options)
+		if err != nil || answer == "" {
+			return err
+		}
+		return c.Answer(ctx, id, q.ID, answer)
 	case "job_done":
 		r.summary(ctx, c, id, ev)
 	default:
@@ -651,6 +682,33 @@ func renderJobEvent(ctx context.Context, c jobAPI, id string, ev eventlog.Envelo
 	}
 	return nil
 }
+
+// promptJobAnswer reads one answer line; an empty line leaves the question open.
+func promptJobAnswer(ctx context.Context, input *bufio.Reader, stderr io.Writer, options []string) (string, error) {
+	if len(options) > 0 {
+		fmt.Fprintf(stderr, "Options: %s\n", strings.Join(options, " | "))
+	}
+	fmt.Fprint(stderr, "Answer (empty to answer later with glue job answer): ")
+	type res struct {
+		line string
+		err  error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		line, err := input.ReadString('\n')
+		ch <- res{line, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", errJobDetached
+	case r := <-ch:
+		if r.err != nil && strings.TrimSpace(r.line) == "" {
+			return "", nil
+		}
+		return strings.TrimSpace(r.line), nil
+	}
+}
+
 func promptJobPermission(ctx context.Context, input *bufio.Reader, stderr io.Writer, perm connectPermissionPayload) (connectPermissionDecision, error) {
 	req := perm.Request
 	fmt.Fprintf(stderr, "\nPermission requested: %s", strings.TrimSpace(req.Tool+" "+req.Action))

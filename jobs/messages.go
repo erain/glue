@@ -72,6 +72,16 @@ func (m *Manager) guidance(ctx context.Context, id string, iteration int) (strin
 	var messages []eventlog.Envelope
 	var texts []string
 	for _, e := range events {
+		if e.Type == "answer" {
+			// Answers to ask_user are guidance for every later session too,
+			// so a new maker or the checker does not ask again.
+			var a struct{ Question, Text string }
+			raw, _ := json.Marshal(e.Payload)
+			if json.Unmarshal(raw, &a) == nil && a.Text != "" {
+				texts = append(texts, fmt.Sprintf("You asked the developer: %q. The developer answered: %s", a.Question, a.Text))
+			}
+			continue
+		}
 		if e.Type != "operator_message" && e.Type != "operator_message_delivered" {
 			continue
 		}

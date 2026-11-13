@@ -131,6 +131,15 @@ func (r *jobRenderer) render(ev eventlog.Envelope) {
 		if text := payloadString(ev.Payload, "text"); text != "" {
 			r.line(ev.Time, "operator: %s", oneLine(text))
 		}
+	case "question":
+		q, _ := decodePayload[struct {
+			Question string `json:"question"`
+		}](ev.Payload)
+		r.line(ev.Time, "question for you: %s", oneLine(q.Question))
+	case "answer":
+		r.line(ev.Time, "answered: %s", oneLine(payloadString(ev.Payload, "text")))
+	case "question_timeout", "question_assumed":
+		r.line(ev.Time, "no answer; the agent proceeds on its best assumption")
 	case "setup_end":
 		var end struct {
 			OK      bool                `json:"ok"`
@@ -301,6 +310,9 @@ func (r *jobRenderer) summary(ctx context.Context, c jobAPI, id string, ev event
 	}
 	if res.DeliveryError != "" {
 		row("delivery", "failed: "+oneLine(res.DeliveryError))
+	}
+	for _, a := range res.Assumptions {
+		row("assumed", truncateRunes(a, 120))
 	}
 	row("next", fmt.Sprintf("glue job result %s · glue job diff %s · glue job pull %s", id, id, id))
 }
