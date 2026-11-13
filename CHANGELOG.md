@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote jobs start in about 3 s instead of 13 s, and a suspended task resumes in
+  0.2 s instead of 11 s: glue clones the repository inside the task itself instead
+  of using AX workspace git, whose setup could not reach GitHub in the sandbox and
+  retried for about 10 s on every boot.
+
 - Remote job agents are told that everything left in the repository is delivered,
   and not to leave planning notes or scratch files in it.
 

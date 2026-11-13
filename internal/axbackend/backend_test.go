@@ -573,3 +573,16 @@ func TestResumeRPCNoRoomIsQueued(t *testing.T) {
 	list := must(b.ListJobs(t.Context(), jobs.Filter{}))(t)
 	check(t, len(list) == 1 && list[0].Status == Queued, "list = %+v", list)
 }
+
+func TestTaskClonesRepoItself(t *testing.T) {
+	cp, _, _, b := newFakeBackendEnv(t, credsHandler)
+	_, err := b.Create(t.Context(), "job-clone0000001", jobs.Spec{Objective: "x", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox", BaseRef: "dev", SnapshotOf: "main"}})
+	mustOK(t, err)
+	cp.mu.Lock()
+	ws := cp.workspaces[WorkspaceName("job-clone0000001")]
+	task := cp.tasks[TaskName("job-clone0000001")]
+	cp.mu.Unlock()
+	check(t, ws != nil && len(ws.GetSpec().GetGit()) == 0 && len(ws.GetSpec().GetFiles()) == 1, "workspace declares git (AX's setup cannot fetch it in the sandbox): %+v", ws.GetSpec())
+	repo, _ := task.GetSpec().GetConfig().AsMap()["repo"].(map[string]any)
+	check(t, repo["url"] == "https://github.com/erain/glue-sandbox" && repo["base_ref"] == "dev" && repo["snapshot_of"] == "main" && repo["path"] == nil, "task config repo = %v", repo)
+}

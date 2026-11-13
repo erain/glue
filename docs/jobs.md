@@ -174,7 +174,14 @@ Extra egress hosts always add to the defaults and are printed in the submit summ
 | `gemini-3.8-flash`, `low` | 13.2 s | 14.1 s | 22.7 s | 254 s |
 | `gemini-3-flash-preview`, `low` (default since #590) | 12.8 s | 1.0 s | 1.1 s | 22 s |
 
-About 10.5 s of the submit time is AX building a golden snapshot for the task's own template (#591), and the former default coding model was about 15 times slower per turn, so #590 made `gemini-3-flash-preview` at `low` the default.
+The former default coding model was about 15 times slower per turn, so #590 made `gemini-3-flash-preview` at `low` the default.
+
+About 10.5 s of the submit time, and of every resume of a suspended task, was not snapshotting: AX's workspace git setup runs in the task runner before the task command, cannot resolve `github.com` there, retries for about 10 s, and leaves no "done" marker, so it repeated on every boot (#591). Glue now clones the repository itself inside the task (with the job's GitHub token) and declares no workspace git. Measured on 2026-11-13, "Create bench.txt containing the line ok." (`kind-glue-ax`, two runs each):
+
+| | Before | After |
+|---|---|---|
+| Submit → job ID | 13.4 s, 12.9 s | 3.1 s, 2.4 s |
+| Resume a suspended task | 10.9 s, 10.9 s | 0.2 s, 0.2 s |
 
 `glue job list` prints an aligned table (ID, status, age, repo, objective) sized to the terminal; `--json` keeps the full records for scripts. `glue job show` adds an `activity` line: the current phase, the number of model turns so far, the last tool called, and how long ago the job last recorded anything. Usage in `show` updates after every model turn, not only at iteration boundaries (`jobs.Detail.Activity`). Every subcommand that takes a job ID also accepts a unique prefix, with or without `job-` (`glue job show 55f8`), or `latest` for the newest job.
 
