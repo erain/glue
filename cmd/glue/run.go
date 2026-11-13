@@ -311,6 +311,9 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			ProviderImpl: providerImpl,
 			AlwaysAllow:  *yolo,
 			BuildTools:   buildToolsAt,
+			SubmitRemote: func(ctx context.Context, req tui.RemoteRequest, progress func(string)) (string, error) {
+				return submitRemoteFromTUI(ctx, *workDir, req, progress)
+			},
 			Pricing: tui.Pricing{
 				Enabled:                 usagePricingEnabled(*usagePricing),
 				InputUSDPerMillion:      usagePricing.InputUSDPerMillion,

@@ -37,6 +37,10 @@ type GoalSpec struct {
 
 	// Objective is the natural-language goal. Required.
 	Objective string
+	// Context is background from the developer, such as the conversation the
+	// goal came out of. Planner and maker prompts show it under its own
+	// heading; it is not a list of extra requirements.
+	Context string
 
 	// SessionPrefix is the base for the generated maker/checker session ids.
 	// Defaults to "goal".
@@ -407,7 +411,7 @@ func (a *Agent) planGoal(ctx context.Context, spec GoalSpec) ([]ChecklistItem, U
 	}
 	opts = append(opts, WithMaxTurns(plannerMaxTurns(spec.MaxTurns)))
 	var plan goalPlan
-	res, err := sess.PromptJSON(ctx, planPrompt(spec.Objective), &plan, opts...)
+	res, err := sess.PromptJSON(ctx, withGoalContext(planPrompt(spec.Objective), spec.Context), &plan, opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
 	if err != nil && ctx.Err() == nil && isLoopBudgetStop(err) {
@@ -459,7 +463,7 @@ func (a *Agent) finalPlan(ctx context.Context, spec GoalSpec, observations strin
 	if spec.Model != "" {
 		opts = append(opts, WithModel(spec.Model))
 	}
-	text := planPrompt(spec.Objective) + "\n\nYou have no tools now. Plan from the objective and what was already observed in the workspace:\n" + observations
+	text := withGoalContext(planPrompt(spec.Objective), spec.Context) + "\n\nYou have no tools now. Plan from the objective and what was already observed in the workspace:\n" + observations
 	return sess.PromptJSON(ctx, text, plan, opts...)
 }
 
@@ -519,7 +523,7 @@ func (a *Agent) runGoalMaker(ctx context.Context, spec GoalSpec, iter int, check
 	if spec.Permission != nil {
 		opts = append(opts, WithPermission(spec.Permission))
 	}
-	res, err := sess.Prompt(ctx, withGoalGuidance(makerPrompt(spec.Objective, iter, checklist), guidance), opts...)
+	res, err := sess.Prompt(ctx, withGoalGuidance(withGoalContext(makerPrompt(spec.Objective, iter, checklist), spec.Context), guidance), opts...)
 	var usage Usage
 	sumUsage(&usage, res.NewMessages)
 	return usage, err
@@ -602,6 +606,14 @@ func withGoalGuidance(prompt, guidance string) string {
 		return prompt
 	}
 	return "Operator guidance\n" + guidance + "\n\n" + prompt
+}
+
+// withGoalContext appends the developer's background context to a prompt.
+func withGoalContext(prompt, context string) string {
+	if context = strings.TrimSpace(context); context == "" {
+		return prompt
+	}
+	return prompt + "\n\nContext from the developer's session (background for the goal, not extra requirements):\n" + context
 }
 
 // ---- prompts ----

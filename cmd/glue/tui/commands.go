@@ -60,6 +60,7 @@ func slashSpecs() []slashSpec {
 		{Name: "clear", Aliases: []string{"new"}, Desc: "clear the transcript and start a fresh session id"},
 		{Name: "usage", Desc: "show this turn's token usage (when the provider reports it)"},
 		{Name: "tools", Desc: "list registered tools"},
+		{Name: "remote", Args: "[--snapshot] <objective>", Desc: "hand the task to a remote AX job, with this session as context"},
 		{Name: "goal", Args: "<objective>", Desc: "pursue a goal autonomously (also: status · pause · resume · list · clear)"},
 		{Name: "copy", Args: "[N]", Desc: "copy an assistant reply's raw markdown to the clipboard (Ctrl+Y = last)"},
 		{Name: "model", Args: "<id>", Desc: "switch model for subsequent turns"},

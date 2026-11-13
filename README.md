@@ -554,7 +554,10 @@ transcript), **`/fork [N]`** (branch from message N — defaults to
 original intact), **`/clone`** (full duplicate of the current
 session), **`/tree`** (visualize the session lineage with
 `├─ / └─` glyphs, current node marked `◉`; pick one to switch — see
-[ADR-0015](docs/adr/0015-session-tree.md)), and **`/goal <objective>`**
+[ADR-0015](docs/adr/0015-session-tree.md)), **`/remote [--snapshot] <objective>`**
+(hand the task to a remote AX job with this session's latest compaction
+summary, or its last 4,000 characters, as background; the same local-state
+checks as `glue --remote` apply), and **`/goal <objective>`**
 (pursue a goal autonomously in the background via `Agent.PursueGoal` —
 plan → maker → independent checker per iteration, with a live `[x]/[ ]`
 checklist card in the transcript, a `◎ goal · iter 2/10 · 1/4 ✓` status-bar

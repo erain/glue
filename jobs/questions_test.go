@@ -5,6 +5,7 @@ package jobs
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,4 +168,61 @@ func TestAnswerBecomesGuidance(t *testing.T) {
 	if err != nil || !strings.Contains(g, `You asked the developer: "What retry limit?". The developer answered: 7`) {
 		t.Fatalf("guidance = %q, %v", g, err)
 	}
+}
+
+func TestSpecContextInPrompts(t *testing.T) {
+	p := &requestRecorder{scriptProvider: scriptProvider{turns: [][]glue.ProviderEvent{
+		turn(`{"items":[{"title":"fix the race"}]}`),
+		turn("fixed"),
+		turn(`{"done":true,"items":[{"title":"fix the race","done":true,"evidence":"ok"}],"summary":"done"}`),
+	}}}
+	m, err := New(Options{StateDir: t.TempDir(), ProviderFactory: func(string) (glue.Provider, error) { return p, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	job, err := m.Create(context.Background(), Spec{Objective: "fix the flaky test", Context: "developer: TestPool races on the counter in pool.go:42", Repo: RepoSpec{Path: repoFixture(t)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitJob(t, m, job.ID); got.Status != Achieved {
+		t.Fatalf("status = %s", got.Status)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, want := range []bool{true, true, false} { // planner, maker, checker
+		has := strings.Contains(p.texts[i], "Context from the developer's session") && strings.Contains(p.texts[i], "pool.go:42")
+		if has != want {
+			t.Fatalf("request %d has context = %v:\n%s", i, has, p.texts[i])
+		}
+	}
+	if _, err := m.Create(context.Background(), Spec{Objective: "x", Context: strings.Repeat("x", MaxContextBytes+1), Repo: RepoSpec{Path: repoFixture(t)}}); err == nil {
+		t.Fatal("oversized context accepted")
+	}
+}
+
+// requestRecorder records the user text of each request's first user message.
+type requestRecorder struct {
+	scriptProvider
+	mu    sync.Mutex
+	texts []string
+}
+
+func (p *requestRecorder) Stream(ctx context.Context, req glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
+	var text string
+	for _, msg := range req.Messages {
+		if msg.Role == glue.MessageRoleUser {
+			for _, c := range msg.Content {
+				text += c.Text
+			}
+			break
+		}
+	}
+	p.mu.Lock()
+	p.texts = append(p.texts, text)
+	p.mu.Unlock()
+	return p.scriptProvider.Stream(ctx, req)
 }

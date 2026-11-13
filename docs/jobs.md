@@ -105,6 +105,10 @@ Finished jobs stop holding an AX worker. In direct mode no component runs while 
 
 `glue job logs <id> [--tail N] [--json]` prints a job's history up to its current end and returns: it does not follow, does not prompt for permissions, and does not move the attach cursor, so it prints the same history every time. `--json` prints one event envelope per line. On AX, a suspended task woken to read it is suspended again. `glue job attach --from-start` replays from the first event, and `--tail N` starts N events before the end; attaching to a finished job with nothing new prints its summary. A job that was continued has several `job_done` events, and attach stops only at the last one.
 
+### From the TUI: `/remote`
+
+In `glue run --coding`, `/remote <objective>` submits a remote job for the workspace repo without leaving the session, and prints the submit summary and the job ID. The job gets this session as background in `context` (also `--notes` on the CLI): the latest `/compact` summary and what followed it, or else the last 4,000 characters of the conversation. Environment-context blocks and tool output are left out. Planner and maker prompts show it under "Context from the developer's session"; it is not a list of extra requirements. Local-state checks are the same as for `glue --remote`; `/remote --snapshot <objective>` sends the working tree as it is.
+
 ### Several attempts at once
 
 `--attempts N` (at most 8) submits N jobs with the same spec and a shared group ID, which is printed to stderr with the next commands. Repeat `--model` to spread the attempts across models in order (`--attempts 3 --model a --model b` runs a, b, a). Attempts deliver to branches even with `--deliver pr`, so you get one PR, not N:

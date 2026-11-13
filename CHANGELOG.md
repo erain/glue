@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- TUI `/remote [--snapshot] <objective>` hands the task to a remote job with
+  the session as background context (`jobs.Spec.Context`, CLI `--notes`).
+  **Library:** `GoalSpec.Context` adds background to planner and maker prompts.
+
 - `--attempts N` runs several attempts of one objective in parallel, spread
   across models with repeated `--model`; `glue job compare` puts them side by
   side and `glue job pick` opens the draft PR for the one you keep and deletes

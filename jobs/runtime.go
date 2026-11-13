@@ -269,7 +269,7 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			stop()
 		}
 	}()
-	spec := glue.GoalSpec{RequirePersistence: true, Objective: job.Spec.Objective, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: run.budgets.MaxIterations, TokenBudget: run.budgets.TokenBudget, InitialUsage: run.initialUsage,
+	spec := glue.GoalSpec{RequirePersistence: true, Objective: job.Spec.Objective, Context: job.Spec.Context, SessionPrefix: id, WorkDir: workspace.Path, MaxIterations: run.budgets.MaxIterations, TokenBudget: run.budgets.TokenBudget, InitialUsage: run.initialUsage,
 		Guidance: func(ctx context.Context, iteration int) (string, error) { return m.guidance(ctx, id, iteration) },
 		Emit:     func(e glue.GoalEvent) { emit(string(e.Type), e, "", &e.Iteration) },
 		OnSession: func(phase string, iteration int, s *glue.Session) {
