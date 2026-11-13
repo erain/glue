@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue job continue <id> --from-pr [--dry-run]` turns a job's PR review threads,
+  new comments and failed checks into continue instructions. Achieved jobs can
+  be continued with new instructions, and a continued job's delivery reuses its
+  open PR and comments on it instead of opening a second one.
+
 - `glue --remote --issue <n>` starts a remote job from a GitHub issue: the title is
   the objective, the body and latest comments are context, and the draft PR is
   titled after the issue and says `Closes #<n>`. Repeat `--issue` for one job per issue.

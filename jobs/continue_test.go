@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/erain/glue"
@@ -74,8 +75,33 @@ func TestContinueBlockedJob(t *testing.T) {
 	if resumed != 1 || delivered != 1 {
 		t.Fatalf("resumed %d delivered %d", resumed, delivered)
 	}
-	if err := m.Continue(context.Background(), job.ID, "again", 1); !errors.Is(err, ErrConflict) {
+	if err := m.Continue(context.Background(), job.ID, "", 1); !errors.Is(err, ErrConflict) {
+		t.Fatal("an achieved job continued without new instructions:", err)
+	}
+}
+
+func TestContinueAchievedJobWithFeedback(t *testing.T) {
+	m, job, _ := achievedJob(t)
+	p := &requestRecorder{scriptProvider: scriptProvider{turns: [][]glue.ProviderEvent{
+		turn("renamed it"),
+		turn(`{"done":true,"items":[{"title":"write file","done":true},{"title":"follow-up","done":true,"evidence":"renamed"}]}`),
+	}}}
+	m.options.ProviderFactory = func(string) (glue.Provider, error) { return p, nil }
+	if err := m.Continue(context.Background(), job.ID, "Address this feedback on the pull request:\nrename Get to Acquire", 1); err != nil {
 		t.Fatal(err)
+	}
+	if got := waitJob(t, m, job.ID); got.Status != Achieved {
+		t.Fatal(got)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.texts) != 2 {
+		t.Fatalf("requests = %d", len(p.texts))
+	}
+	for i, text := range p.texts { // maker, then checker
+		if !strings.Contains(text, "[ ] Follow-up: Address this feedback on the pull request:") || !strings.Contains(text, "rename Get to Acquire") {
+			t.Fatalf("request %d lacks the follow-up item or guidance:\n%s", i, text)
+		}
 	}
 }
 
