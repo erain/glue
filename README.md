@@ -21,30 +21,24 @@ build your own tool-calling agents on the same provider-agnostic loop.
   [Flue](https://github.com/withastro/flue) and
   [pi-mono](https://github.com/badlogic/pi-mono).
 
-```sh
-# Check that remote jobs will work from here (cluster, image, repo, tokens):
-glue job doctor
-# Start an autonomous coding job on AX from any git checkout, then close your lid:
-id=$(glue --remote "Fix the race in pool_test.go" --verify "go test -race ./..." --deliver pr --notify https://ntfy.sh/<your-topic>)
-glue job list
-glue job attach "$id"   # replays missed events; Ctrl-C detaches without canceling
-glue job result "$id"   # branch, verification exit codes, and draft PR URL
-glue job pull "$id" --checkout   # the job's branch, in your checkout
+**Remote jobs in five minutes → [docs/remote-quickstart.md](docs/remote-quickstart.md).**
 
-# Try it three times (or on several models) at once and keep the best one:
-glue --remote "Speed up the parser" --verify "go test ./..." --attempts 3 --model gemini-3-flash-preview --model gemini-3-pro-preview
-glue job compare <group>  # verify, lines changed, time, tokens per attempt
-glue job pick <id>        # draft PR for that attempt; the other branches are deleted
+```sh
+glue job doctor                       # cluster, image, repo, tokens: what to fix, if anything
+glue --remote "Add Sub(a, b int) next to Add, with a table-driven test" \
+  --snapshot --verify "go test ./..." --notify https://ntfy.sh/<your-topic>
+glue job attach latest                # live transcript; Ctrl-C detaches, the job keeps going
+glue job pull latest --apply          # the result, on top of the work you sent
 ```
 
-Put repo-wide settings (image, setup, verify commands, extra egress hosts,
-resources) in `.glue/remote.yaml` instead of repeating flags; see
-[docs/jobs.md](docs/jobs.md#per-repo-settings-glueremoteyaml).
-
-Remote jobs start from your current branch. If you have unpushed commits or
-uncommitted changes, `glue --remote` stops and tells you instead of silently
-working on different code; push first, pass `--snapshot` to send your working tree as it is, or pass
-`--base <ref>` or `--ignore-local`.
+The job ID comes back in about 3 seconds; your phone hears when the job is done
+or needs an answer from you (`glue job answer`). `--snapshot` sends uncommitted
+work; without it, glue refuses to start from unpushed changes rather than work
+on different code. More: `--attempts N` with `glue job compare`/`pick`,
+`--issue <n>` to start from a GitHub issue, `--deliver pr` and
+`glue job continue --from-pr` for review rounds, `glue job say --interrupt` to
+redirect a running job, `/remote` and `/jobs` in the TUI, and per-repo settings
+in `.glue/remote.yaml` ([docs/jobs.md](docs/jobs.md)).
 
 ```go
 agent := glue.NewAgent(glue.AgentOptions{

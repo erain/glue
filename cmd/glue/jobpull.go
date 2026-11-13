@@ -101,6 +101,15 @@ func sameRepoURL(a, b string) bool {
 // applyPatch applies patch to the working tree in dir with a three-way
 // merge. Without force it refuses when the patch touches locally changed files.
 func applyPatch(ctx context.Context, dir string, patch []byte, force bool) error {
+	// A patch that applies cleanly to the working tree as it is cannot lose
+	// local work: this is the usual case after --snapshot, where the job
+	// started from your uncommitted files.
+	if _, err := gitWithStdin(ctx, dir, patch, "apply", "--check", "-"); err == nil {
+		if _, err := gitWithStdin(ctx, dir, patch, "apply", "-"); err != nil {
+			return fmt.Errorf("apply job patch: %w", err)
+		}
+		return nil
+	}
 	if !force {
 		touched, err := gitWithStdin(ctx, dir, patch, "apply", "--numstat", "-")
 		if err != nil {
