@@ -60,6 +60,12 @@ func (f *attemptsFakeAPI) Result(_ context.Context, id string) (jobs.Result, err
 func runAttemptsCLI(t *testing.T, api *attemptsFakeAPI, args ...string) (string, string, error) {
 	t.Helper()
 	clearJobTestEnv(t)
+	return runAttemptsCLIKeepEnv(t, api, args...)
+}
+
+// runAttemptsCLIKeepEnv runs the job CLI against api without resetting the environment.
+func runAttemptsCLIKeepEnv(t *testing.T, api *attemptsFakeAPI, args ...string) (string, string, error) {
+	t.Helper()
 	orig := newAXJobAPI
 	t.Cleanup(func() { newAXJobAPI = orig })
 	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return api, nil }

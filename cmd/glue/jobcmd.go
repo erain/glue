@@ -73,6 +73,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.Var(&models, "model", "model; repeat it with --attempts to spread the attempts across models")
 	attempts := fs.Int("attempts", 1, "submit this many attempts of the objective in parallel (max 8)")
 	group := fs.String("group", "", "list: only the attempts in this group")
+	var issueRefs repeatedStrings
+	fs.Var(&issueRefs, "issue", "start the job from a GitHub issue (number, owner/repo#N, or URL); repeat for one job per issue")
 	jobContext := fs.String("notes", "", "background notes for the agent, such as findings from a session; planner and maker see them")
 	policy, deliver := fs.String("policy", "", "permission policy: auto, workspace-auto, ask-all, or yolo"), fs.String("deliver", "", "delivery mode")
 	fs.StringVar(deliver, "delivery", "", "delivery mode alias")
@@ -201,6 +203,15 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	switch sub {
 	case "submit":
 		obj := cmp.Or(strings.TrimSpace(*objective), strings.TrimSpace(remote.objective), strings.TrimSpace(strings.Join(pos, " ")))
+		if len(issueRefs) > 0 {
+			if obj != "" {
+				return errors.New("give either an objective or --issue, not both")
+			}
+			if *attempts > 1 {
+				return errors.New("--issue and --attempts cannot be combined")
+			}
+			obj = issuePlaceholder
+		}
 		var repoSpec jobs.RepoSpec
 		var jobID string
 		if *snapshot {
@@ -251,6 +262,11 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 			Setup: setup, SetupTimeout: *setupTimeout, OnQuestion: strings.TrimSpace(*onQuestion), QuestionTimeout: *questionTimeout,
 			Context: strings.TrimSpace(*jobContext),
+		}
+		if len(issueRefs) > 0 {
+			tok, _ := githubToken(ctx)
+			// Only an explicit repository URL lets an issue come from elsewhere.
+			return submitIssues(ctx, c, spec, issueRefs, isRemoteRepoRef(strings.TrimSpace(*repo)), tok, *start, stdout, stderr)
 		}
 		if *attempts > 1 {
 			return submitAttempts(ctx, c, spec, *attempts, models, *start, stdout, stderr)

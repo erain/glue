@@ -526,7 +526,7 @@ func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal gl
 	}
 	base := prBase(ctx, job, token, defaultBranch)
 	title, _, _ := strings.Cut(strings.TrimSpace(goal.Summary), "\n")
-	if title == "" {
+	if job.Spec.Issue != "" || title == "" { // an issue job's objective is the issue title
 		title, _, _ = strings.Cut(strings.TrimSpace(job.Spec.Objective), "\n")
 	}
 	if title == "" {
@@ -536,7 +536,7 @@ func openGitHubDraftPR(ctx context.Context, owner, repo string, job Job, goal gl
 		HTMLURL string `json:"html_url"`
 		URL     string `json:"url"`
 	}
-	reqBody := map[string]any{"title": title, "head": head, "base": base, "body": formatPRBody(job, goal, res), "draft": true}
+	reqBody := map[string]any{"title": title, "head": head, "base": base, "body": prBody(job, goal, res, owner, repo), "draft": true}
 	if err := githubJSON(ctx, http.MethodPost, fmt.Sprintf("%s/repos/%s/pulls", apiBase, targetRepo), token, reqBody, &prResp); err != nil {
 		return "", err
 	}

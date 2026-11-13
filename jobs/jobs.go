@@ -73,6 +73,9 @@ type Spec struct {
 	// Context is background for the objective, such as the conversation it
 	// came out of; planner and maker prompts include it.
 	Context string `json:"context,omitempty"`
+	// Issue is the GitHub issue the job was started from, "owner/repo#N";
+	// a draft PR says it closes the issue.
+	Issue string `json:"issue,omitempty"`
 	// Group ties attempts of one objective submitted together (glue --attempts).
 	Group   string `json:"group,omitempty"`
 	Backend string `json:"backend,omitempty"`
