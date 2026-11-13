@@ -484,6 +484,9 @@ func jobLogs(ctx context.Context, c jobAPI, id string, tail int, asJSON, verbose
 		after = max(end-int64(tail), 0)
 	}
 	r := newJobRenderer(stdout, verbose)
+	if after > 0 {
+		r.start = d.CreatedAt // keep times and duration relative to the job, not the tail
+	}
 	enc := json.NewEncoder(stdout)
 	err = c.StreamEvents(ctx, id, after, func(ev eventlog.Envelope) error {
 		if asJSON {
@@ -519,7 +522,7 @@ func attachJob(ctx context.Context, c jobAPI, id string, stdin io.Reader, stdout
 	if o.tail > 0 || after > 0 {
 		if d, err := c.Show(ctx, id); err == nil && d.LastSeq > 0 {
 			if o.tail > 0 {
-				after = max(d.LastSeq-int64(o.tail), 0)
+				after, r.start = max(d.LastSeq-int64(o.tail), 0), d.CreatedAt
 			}
 			// A finished job with nothing new still gets its summary.
 			if !isActive(d.Status) && after >= d.LastSeq {
