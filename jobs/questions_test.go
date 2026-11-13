@@ -200,6 +200,9 @@ func TestSpecContextInPrompts(t *testing.T) {
 			t.Fatalf("request %d has context = %v:\n%s", i, has, p.texts[i])
 		}
 	}
+	if !strings.Contains(p.systems[1], "do not write planning notes, checklists, or other scratch files") {
+		t.Fatalf("maker system prompt lacks the scratch-file rule:\n%s", p.systems[1])
+	}
 	// The checker (request 3) audits: no file-writing tools, no ask_user.
 	if !slices.Contains(p.tools[1], "write_file") || !slices.Contains(p.tools[1], "ask_user") {
 		t.Fatalf("maker tools = %v", p.tools[1])
@@ -220,9 +223,10 @@ func TestSpecContextInPrompts(t *testing.T) {
 // requestRecorder records the user text of each request's first user message.
 type requestRecorder struct {
 	scriptProvider
-	mu    sync.Mutex
-	texts []string
-	tools [][]string
+	mu      sync.Mutex
+	texts   []string
+	tools   [][]string
+	systems []string
 }
 
 func (p *requestRecorder) Stream(ctx context.Context, req glue.ProviderRequest) (<-chan glue.ProviderEvent, error) {
@@ -242,6 +246,7 @@ func (p *requestRecorder) Stream(ctx context.Context, req glue.ProviderRequest) 
 	p.mu.Lock()
 	p.texts = append(p.texts, text)
 	p.tools = append(p.tools, names)
+	p.systems = append(p.systems, req.SystemPrompt)
 	p.mu.Unlock()
 	return p.scriptProvider.Stream(ctx, req)
 }
