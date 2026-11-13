@@ -130,3 +130,58 @@ func applyRemoteConfig(cfg *remoteConfig, set map[string]bool, t *jobTargetOpts,
 	}
 	return remoteConfigPath + ": " + strings.Join(used, ", ")
 }
+
+// splitCommand splits a command line into argv the way a POSIX shell would
+// for plain words: whitespace separates arguments, single quotes keep text
+// literally, double quotes keep spaces and honor \" and \\, and a backslash
+// outside quotes escapes the next character. It does not expand variables or
+// globs; use sh -c '...' for that.
+func splitCommand(line string) ([]string, error) {
+	var args []string
+	var cur strings.Builder
+	inArg, quote := false, rune(0)
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			} else {
+				cur.WriteRune(c)
+			}
+		case quote == '"':
+			switch {
+			case c == '"':
+				quote = 0
+			case c == '\\' && i+1 < len(runes) && (runes[i+1] == '"' || runes[i+1] == '\\'):
+				i++
+				cur.WriteRune(runes[i])
+			default:
+				cur.WriteRune(c)
+			}
+		case c == '\'' || c == '"':
+			quote, inArg = c, true
+		case c == '\\' && i+1 < len(runes):
+			i++
+			cur.WriteRune(runes[i])
+			inArg = true
+		case c == ' ' || c == '\t' || c == '\n':
+			if inArg {
+				args = append(args, cur.String())
+				cur.Reset()
+				inArg = false
+			}
+		default:
+			cur.WriteRune(c)
+			inArg = true
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated %c quote in %q", quote, line)
+	}
+	if inArg {
+		args = append(args, cur.String())
+	}
+	return args, nil
+}

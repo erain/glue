@@ -228,6 +228,12 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 	if err != nil {
 		return empty, err
 	}
+	if blocked, err := m.runSetup(ctx, id, job, workspace.Path, workspace.BaseSHA); err != nil || blocked != nil {
+		if blocked != nil {
+			return *blocked, nil
+		}
+		return empty, err
+	}
 	provider, err := m.resolveProvider(ctx, id, job.Spec)
 	if err != nil {
 		return empty, err

@@ -70,6 +70,8 @@ type Result struct {
 	// Partial marks a canceled or errored job whose unfinished work was
 	// committed (and pushed when delivery allows) so it is not lost.
 	Partial bool `json:"partial,omitempty"`
+	// Setup records the setup commands that ran before the agent started.
+	Setup []VerifyResult `json:"setup,omitempty"`
 	// BudgetExceeded names the budget that stopped a budget_limited job: "wall_clock" or "token_budget".
 	BudgetExceeded string `json:"budget_exceeded,omitempty"`
 }
@@ -147,6 +149,7 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 		BaseRef: job.Spec.Repo.BaseRef, BaseSHA: job.BaseSHA, Branch: "glue/" + job.ID,
 		Verify: []VerifyResult{}, Iterations: goal.Iterations, Usage: goal.Usage, Summary: goal.Summary,
 	}
+	res.Setup = m.setupResults(id)
 	if status == BudgetLimited {
 		res.BudgetExceeded = "wall_clock"
 		if job.Spec.Budgets.TokenBudget > 0 && goal.Usage.TotalTokens >= job.Spec.Budgets.TokenBudget {
@@ -155,6 +158,10 @@ func (m *Manager) finalize(id string, goal glue.GoalResult, status Status) error
 	}
 	if info, err := os.Stat(job.Workspace); job.Workspace != "" && err == nil && info.IsDir() {
 		deliverable := status == Achieved || status == Blocked || status == MaxIterations || status == BudgetLimited
+		if end, ok := m.lastSetup(context.Background(), id); ok && !end.OK {
+			// Nothing was built; do not verify, commit, or push setup's leftovers.
+			deliverable = false
+		}
 		if deliverable {
 			if len(job.Spec.Verify) > 0 {
 				if resolved, err := coding.ResolveOptions(m.codingOptions(job.ID, job.Spec, job.Workspace, job.BaseSHA)); err != nil {
