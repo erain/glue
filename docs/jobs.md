@@ -14,6 +14,7 @@ with `--coding`).
 | `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. Jobs submitted directly to AX default to `wall_clock: 1h` and `token_budget: 2000000` when unset; `--no-budget` removes those defaults. A job stopped by a budget ends `budget_limited`, still runs the finalize step, and records `budget_exceeded` (`wall_clock` or `token_budget`) in `result.json`. |
 | `policy` | `string` | Permission profile (`auto` default, `workspace-auto`, `ask-all`, `yolo`, or custom policy name). |
 | `verify` | `[][]string` | Post-goal verification commands (`argv` slices) executed in the job workspace. |
+| `setup`, `setup_timeout` | `[][]string`, duration | Commands run in the job workspace before the agent starts (see Setup); default timeout 10m each. |
 | `delivery` | `string` | `none`, `branch`, or `draft_pr`. Defaults to `none` for local jobs and to `branch` for jobs submitted directly to AX, so work done in a sandbox always reaches `origin`. |
 | `allowed_binaries`, `shell_env_pass`, `shell_env`, `shell_env_secret_allow`, `shell_timeout` | shell config | Per-job overrides for the coding shell and verification environment. |
 
@@ -120,6 +121,12 @@ budgets: {wall_clock: 30m, token_budget: 500000, max_iterations: 4}
 ```
 
 Extra egress hosts always add to the defaults and are printed in the submit summary (`egress    defaults + …`), together with the keys the file supplied (`config    .glue/remote.yaml: …`). The file is read only from a local checkout, not when you submit with `--repo <url>`.
+
+### Setup
+
+`setup` commands (`--setup <cmd>`, repeatable, or `setup:` in `.glue/remote.yaml`) run in the job workspace, with the job's shell environment, before the agent plans anything. Each command gets `--setup-timeout` (default 10m). The transcript shows a `setup` phase with each command's exit code and, for a failure, its last output lines. If a command fails, the job ends `blocked` with the evidence under `setup` in `result.json` and no model call at all; nothing is committed or pushed. Setup runs once per job: a job that completed setup does not run it again after a restart or AX resume. Files that setup leaves changed are listed in the transcript, because finalize commits them unless `.gitignore` covers them.
+
+`--setup` and `--verify` values are split like a shell command line: quotes group words (`--setup "sh -c 'npm ci && npm run build'"`), but variables and globs are not expanded; use `sh -c` for those.
 
 ### Latency
 

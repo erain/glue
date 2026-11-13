@@ -58,8 +58,12 @@ type Spec struct {
 	Budgets   Budgets    `json:"budgets"`
 	Policy    string     `json:"policy"`
 	Verify    [][]string `json:"verify"`
-	Delivery  string     `json:"delivery"`
-	Backend   string     `json:"backend,omitempty"`
+	// Setup commands (argv slices) run in the job workspace before the agent
+	// starts; a failure ends the job as blocked without calling the model.
+	Setup        [][]string    `json:"setup,omitempty"`
+	SetupTimeout time.Duration `json:"setup_timeout,omitempty"`
+	Delivery     string        `json:"delivery"`
+	Backend      string        `json:"backend,omitempty"`
 
 	AllowedBinaries     []string      `json:"allowed_binaries,omitempty"`
 	ShellEnvPass        []string      `json:"shell_env_pass,omitempty"`
@@ -313,6 +317,14 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 	for _, argv := range s.Verify {
 		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 			return s, invalid("verify", "commands require an executable")
+		}
+	}
+	if s.SetupTimeout < 0 {
+		return s, invalid("setup_timeout", "must not be negative")
+	}
+	for _, argv := range s.Setup {
+		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+			return s, invalid("setup", "commands must not be empty")
 		}
 	}
 	if s.ShellTimeout < 0 {

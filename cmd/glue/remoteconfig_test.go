@@ -122,3 +122,22 @@ func TestRemoteConfigSummary(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitCommand(t *testing.T) {
+	for in, want := range map[string][]string{
+		"go test ./...":                        {"go", "test", "./..."},
+		"sh -c 'echo hi >&2; exit 7'":          {"sh", "-c", "echo hi >&2; exit 7"},
+		`grep -q "two words" README.md`:        {"grep", "-q", "two words", "README.md"},
+		`echo "a \"quoted\" word" back\ slash`: {"echo", `a "quoted" word`, "back slash"},
+		"  npm   ci  ":                         {"npm", "ci"},
+		`echo ''`:                              {"echo", ""},
+	} {
+		got, err := splitCommand(in)
+		if err != nil || strings.Join(got, "|") != strings.Join(want, "|") || len(got) != len(want) {
+			t.Fatalf("splitCommand(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if _, err := splitCommand("sh -c 'unterminated"); err == nil {
+		t.Fatal("unterminated quote accepted")
+	}
+}

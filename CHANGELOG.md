@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Remote jobs can run setup commands before the agent starts (`--setup`,
+  `--setup-timeout`, or `setup:` in `.glue/remote.yaml`). A failing setup
+  blocks the job with its output and zero model calls; setup runs once per
+  job. `--setup` and `--verify` now honor shell-style quoting.
+
 - Repos can describe their remote jobs in `.glue/remote.yaml` (image, setup,
   verify, delivery, policy, extra egress hosts, CPU/memory, budgets); flags win
   over the file. New `--egress-host`, `--cpu` and `--memory` flags.

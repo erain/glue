@@ -89,6 +89,8 @@ func (r *jobRenderer) render(ev eventlog.Envelope) {
 	}
 	if ev.Phase != "" && ev.Phase != r.phase {
 		switch ev.Phase {
+		case "setup":
+			r.line(ev.Time, "setup")
 		case "planner":
 			r.line(ev.Time, "planning")
 		case "checker":
@@ -128,6 +130,29 @@ func (r *jobRenderer) render(ev eventlog.Envelope) {
 	case "operator_message":
 		if text := payloadString(ev.Payload, "text"); text != "" {
 			r.line(ev.Time, "operator: %s", oneLine(text))
+		}
+	case "setup_end":
+		var end struct {
+			OK      bool                `json:"ok"`
+			Results []jobs.VerifyResult `json:"results"`
+			Changed []string            `json:"changed"`
+		}
+		raw, _ := json.Marshal(ev.Payload)
+		_ = json.Unmarshal(raw, &end)
+		for _, v := range end.Results {
+			mark := "✓"
+			if v.ExitCode != 0 {
+				mark = "✗"
+			}
+			r.line(ev.Time, "  %s %s  (exit %d, %.1fs)", mark, jobs.ShellJoin(v.Argv), v.ExitCode, float64(v.DurationMS)/1000)
+			if v.ExitCode != 0 {
+				for _, l := range lastLines(v.OutputTail, renderFailureLines) {
+					r.raw("            " + truncateRunes(l, renderMaxLine-12))
+				}
+			}
+		}
+		if len(end.Changed) > 0 {
+			r.line(ev.Time, "  setup changed %d file(s); they are committed with the job unless .gitignore covers them", len(end.Changed))
 		}
 	case "operator_message_delivered":
 		r.line(ev.Time, "operator message delivered to the agent")
@@ -254,6 +279,13 @@ func (r *jobRenderer) summary(ctx context.Context, c jobAPI, id string, ev event
 		row("duration", ev.Time.Sub(r.start).Round(time.Second).String())
 	}
 	row("tokens", thousands(max(res.Usage.TotalTokens, p.Result.Usage.TotalTokens)))
+	for _, v := range res.Setup {
+		mark := "✓"
+		if v.ExitCode != 0 {
+			mark = "✗"
+		}
+		row("setup", fmt.Sprintf("%s %s (exit %d, %.1fs)", mark, truncateRunes(jobs.ShellJoin(v.Argv), 80), v.ExitCode, float64(v.DurationMS)/1000))
+	}
 	if res.Branch != "" && res.HeadSHA != "" && res.HeadSHA != res.BaseSHA {
 		row("branch", res.Branch)
 	}
@@ -265,12 +297,20 @@ func (r *jobRenderer) summary(ctx context.Context, c jobAPI, id string, ev event
 		if v.ExitCode != 0 {
 			mark = "✗"
 		}
-		row("verify", fmt.Sprintf("%s %s (exit %d, %.1fs)", mark, truncateRunes(strings.Join(v.Argv, " "), 80), v.ExitCode, float64(v.DurationMS)/1000))
+		row("verify", fmt.Sprintf("%s %s (exit %d, %.1fs)", mark, truncateRunes(jobs.ShellJoin(v.Argv), 80), v.ExitCode, float64(v.DurationMS)/1000))
 	}
 	if res.DeliveryError != "" {
 		row("delivery", "failed: "+oneLine(res.DeliveryError))
 	}
 	row("next", fmt.Sprintf("glue job result %s · glue job diff %s · glue job pull %s", id, id, id))
+}
+
+func lastLines(s string, n int) []string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
 }
 
 func thousands(n int64) string {

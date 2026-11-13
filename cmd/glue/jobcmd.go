@@ -89,6 +89,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.StringVar(&target.memory, "memory", "", "remote jobs: AX task memory limit (default 8Gi)")
 	var notify repeatedStrings
 	fs.Var(&notify, "notify", "remote jobs: URL to POST to when the job waits for input or finishes; repeatable (default GLUE_NOTIFY_URL)")
+	var setupRaw repeatedStrings
+	fs.Var(&setupRaw, "setup", "command run in the workspace before the agent starts; repeatable")
+	setupTimeout := fs.Duration("setup-timeout", 0, "timeout for each --setup command (default 10m)")
 	var verifyRaw repeatedStrings
 	fs.Var(&verifyRaw, "verify", "verification command")
 	pos, err := parseInterspersed(fs, args)
@@ -144,6 +147,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			}
 			if cfg != nil {
 				cfgNote = applyRemoteConfig(cfg, set, &target, &verifyRaw, deliver, policy, wallClock, budget, maxIter)
+				if len(cfg.Setup) > 0 && !set["setup"] {
+					setupRaw = append(repeatedStrings(nil), cfg.Setup...)
+				}
 			}
 		}
 	}
@@ -197,10 +203,20 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		} else if repoSpec, err = resolveSubmitRepo(ctx, directAX, remote.enabled, *ignoreLocal, *backend, *repo, *baseRef, obj); err != nil {
 			return err
 		}
-		var verify [][]string
-		for _, raw := range verifyRaw {
-			if fields := strings.Fields(raw); len(fields) > 0 {
-				verify = append(verify, fields)
+		var setup, verify [][]string
+		for _, list := range []struct {
+			raw  []string
+			out  *[][]string
+			name string
+		}{{setupRaw, &setup, "--setup"}, {verifyRaw, &verify, "--verify"}} {
+			for _, raw := range list.raw {
+				argv, err := splitCommand(raw)
+				if err != nil {
+					return fmt.Errorf("%s: %w", list.name, err)
+				}
+				if len(argv) > 0 {
+					*list.out = append(*list.out, argv)
+				}
 			}
 		}
 		if strings.TrimSpace(*deliver) == "pr" {
@@ -214,6 +230,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			ID: jobID, Objective: obj, Repo: repoSpec, Provider: strings.TrimSpace(*provider), Model: normalizeModel(strings.TrimSpace(*model)), Thinking: strings.TrimSpace(*thinking),
 			Budgets: budgets,
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
+			Setup: setup, SetupTimeout: *setupTimeout,
 		}, *start)
 		if err != nil {
 			return err
