@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/erain/glue/cmd/glue/tui"
+	"github.com/erain/glue/jobs"
 )
 
 // submitRemoteFromTUI runs the CLI submit path for /remote, so the TUI gets
@@ -61,4 +64,44 @@ func (w *lineWriter) flush() {
 		w.emit(string(w.buf))
 	}
 	w.buf = nil
+}
+
+// tuiJobs implements tui.JobsBridge with the glue job commands, so the TUI
+// reaches the same backend (AX or a daemon) as the CLI.
+type tuiJobs struct{ workDir string }
+
+func (t tuiJobs) run(ctx context.Context, args ...string) (string, error) {
+	var stdout, stderr bytes.Buffer
+	if err := jobCommand(ctx, args, strings.NewReader(""), &stdout, &stderr, nil); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
+	}
+	return stdout.String() + stderr.String(), nil
+}
+
+// List reads job records only; it never wakes a suspended task.
+func (t tuiJobs) List(ctx context.Context) ([]tui.JobRow, error) {
+	var stdout bytes.Buffer
+	if err := jobCommand(ctx, []string{"list", "--json", "--limit", "20"}, strings.NewReader(""), &stdout, &bytes.Buffer{}, nil); err != nil {
+		return nil, err
+	}
+	var out struct{ Jobs []jobs.Job }
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		return nil, err
+	}
+	rows := make([]tui.JobRow, 0, len(out.Jobs))
+	for _, j := range out.Jobs {
+		rows = append(rows, tui.JobRow{ID: j.ID, Status: string(j.Status), Objective: j.Spec.Objective, Updated: j.UpdatedAt})
+	}
+	return rows, nil
+}
+
+func (t tuiJobs) Transcript(ctx context.Context, id string) (string, error) {
+	return t.run(ctx, "logs", id)
+}
+
+func (t tuiJobs) Pull(ctx context.Context, id string) (string, error) {
+	return t.run(ctx, "pull", id, "--repo", cmp.Or(t.workDir, "."))
 }
