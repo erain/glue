@@ -63,6 +63,18 @@ lookup exits nonzero instead of reporting a clean audit.
   `scripts/check-tracker.sh --strict` job is the obvious shape; not
   wired up by default since it requires repo settings.
 
+## Turning an issue into a draft PR: `glue --remote --issue`
+
+A well-written issue can be handed to a remote coding job directly:
+
+```sh
+glue --remote --issue 565                 # issue in this checkout's repo
+glue --remote --issue 12 --issue 13       # one job per issue; prints "<job-id>\t#<n>" lines
+glue --remote --issue https://github.com/owner/repo/issues/7 --repo https://github.com/owner/repo
+```
+
+The issue title becomes the objective, and the body plus the last 10 comments (capped at 12,000 characters) become the job's context. Delivery defaults to a draft PR whose title is the issue title and whose body starts with `Closes #<n>`. Closed issues, pull requests, and issues from another repository than the checkout (unless `--repo <url>` names the repository to work in) are refused before any job is submitted. Nothing is written to the issue. See [docs/jobs.md](jobs.md#from-a-github-issue---issue).
+
 ## `gh` cheatsheet
 
 The recurring per-issue operations from `CONTRIBUTING.md`:

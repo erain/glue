@@ -16,6 +16,10 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue --remote --issue <n>` starts a remote job from a GitHub issue: the title is
+  the objective, the body and latest comments are context, and the draft PR is
+  titled after the issue and says `Closes #<n>`. Repeat `--issue` for one job per issue.
+
 - TUI `/remote [--snapshot] <objective>` hands the task to a remote job with
   the session as background context (`jobs.Spec.Context`, CLI `--notes`).
   **Library:** `GoalSpec.Context` adds background to planner and maker prompts.
