@@ -8,6 +8,7 @@ const SSE_EVENT_TYPES = [
   "message", "job_created", "job_started", "job_waiting", "job_resumed", "job_done", "task_suspended", "task_resumed",
   "plan", "iteration_start", "maker_done", "verdict", "done", "blocked", "budget_limited", "max_iterations",
   "operator_message", "operator_message_delivered", "run_interrupted",
+  "question", "answer", "question_timeout", "question_assumed", "turn_interrupted",
   "permission_request", "permission_decision", "permission_expired", "permission_auto",
   "loop_start", "loop_end", "turn_start", "turn_end", "message_start", "message_end",
   "text_delta", "tool_start", "tool_end", "error", "retry", "guardrail", "auto_continue",
@@ -181,6 +182,8 @@ async function renderJobsList(root) {
           ),
           el("div", { className: "job-stats" },
             pendingCount > 0 ? el("span", { className: "badge status-waiting_for_input", "data-testid": "job-pending-permissions" }, `${pendingCount} pending`) : null,
+            // Waiting with no pending permission means the agent asked a question.
+            j.status === "waiting_for_input" && pendingCount === 0 ? el("span", { className: "badge status-waiting_for_input", "data-testid": "job-question" }, "question") : null,
             el("span", { "data-testid": "job-iteration" }, `iter ${j.iteration ?? 0}/${maxIter}`),
             el("time", { "data-testid": "job-updated", datetime: j.updated_at || "" }, formatTime(j.updated_at))
           )
@@ -267,6 +270,35 @@ export function upsertPermissionCard(state, permId, req = {}, permState = "pendi
   return entry;
 }
 
+// renderQuestionCard shows the agent's open question with its options and an
+// answer box that posts to /v1/jobs/{id}/answers.
+export function renderQuestionCard(jobId, q, onAnswered) {
+  const input = el("input", { className: "input question-input", type: "text", placeholder: "Your answer", "data-testid": "question-input" });
+  const errEl = el("p", { className: "error-text", "data-testid": "question-error", hidden: true });
+  const submit = el("button", { className: "btn", type: "submit", "data-testid": "question-submit" }, "Answer");
+  async function answer(text) {
+    if (!text) return;
+    errEl.hidden = true;
+    submit.disabled = input.disabled = true;
+    try {
+      await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/answers`, { question_id: q.id, text });
+      onAnswered?.(text);
+    } catch (err) {
+      errEl.textContent = err.message || "Answer failed";
+      errEl.hidden = false;
+      submit.disabled = input.disabled = false;
+    }
+  }
+  const options = (q.options || []).map((o) => el("button", { className: "btn btn-secondary", type: "button", "data-testid": "question-option", onclick: () => answer(o) }, o));
+  return el("div", { className: "card question-card", "data-testid": "question-card", "data-question-id": q.id || "" },
+    el("h3", {}, "The agent is asking"),
+    el("p", { className: "pre-wrap", "data-testid": "question-text" }, q.question || ""),
+    options.length ? el("div", { className: "permission-buttons" }, ...options) : null,
+    el("form", { className: "steer-form", onsubmit: (e) => { e.preventDefault(); answer(input.value.trim()); } }, input, submit),
+    errEl
+  );
+}
+
 export function applyJobEvent(state, env) {
   const seq = Number(env?.seq || 0);
   if (seq > 0) {
@@ -279,6 +311,8 @@ export function applyJobEvent(state, env) {
     }
   }
   const p = env?.payload || {};
+  if (env.type === "question") state.onQuestion?.({ id: p.question_id, question: p.question, options: p.options });
+  if (env.type === "answer" || env.type === "question_timeout") state.onQuestionClosed?.(p.question_id);
   if (env.type === "text_delta") {
     const delta = p.delta || "";
     if (!delta || (env.phase && env.phase !== "maker")) return true;
@@ -432,6 +466,7 @@ async function renderJobDetail(root, jobId) {
   const usageEl = el("span", { "data-testid": "detail-usage" }, formatUsage(detail.usage));
   const streamEl = el("span", { className: "muted", "data-testid": "stream-status" }, "connecting…");
   const bannerEl = el("div", { className: "card pending-banner", "data-testid": "pending-permissions-banner", hidden: true });
+  const questionHostEl = el("div", { "data-testid": "question-host" });
   const resultPanelEl = el("div", { className: "card", "data-testid": "job-result-panel", hidden: true });
   const checklistEl = el("ul", { className: "checklist", "data-testid": "job-checklist" });
   const transcriptEl = el("div", { className: "transcript", "data-testid": "job-transcript" });
@@ -529,11 +564,20 @@ async function renderJobDetail(root, jobId) {
   state.updateChecklist(detail.checklist || []);
   syncControls(detail.status);
   for (const perm of pendingResp.permissions || []) upsertPermissionCard(state, perm.id, perm.request || {}, perm.state || "pending", 0);
+  let openQuestionId = "";
+  state.onQuestion = (q) => {
+    if (!q?.id || q.id === openQuestionId) return;
+    openQuestionId = q.id;
+    questionHostEl.replaceChildren(renderQuestionCard(jobId, q, () => { openQuestionId = ""; questionHostEl.replaceChildren(); state.updateStatus?.("running"); }));
+  };
+  state.onQuestionClosed = (id) => { if (id === openQuestionId) { openQuestionId = ""; questionHostEl.replaceChildren(); } };
+  if (detail.question) state.onQuestion(detail.question);
   if (!isActiveStatus(detail.status)) await loadResult();
 
   root.replaceChildren(el("section", { "data-testid": "job-detail-view" },
     el("a", { className: "back-link", href: "#/", "data-testid": "back-to-jobs" }, "← All jobs"),
     bannerEl,
+    questionHostEl,
     el("div", { className: "card", "data-testid": "job-header" },
       el("div", { className: "detail-header-top" }, statusEl, el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId), cancelBtn),
       suspendedNoteEl,

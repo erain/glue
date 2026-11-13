@@ -45,6 +45,7 @@ var gatewayRoutes = []Route{
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
 	{http.MethodGet, "/v1/jobs/{id}/permissions", false}, {http.MethodPost, "/v1/jobs/{id}/permissions/{permID}/decision", false},
 	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
+	{http.MethodPost, "/v1/jobs/{id}/answers", false},
 }
 
 // Server serves the glue-gateway HTTP API, upstream SSE proxy, and browser UI.
@@ -793,7 +794,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	default:
-		if r.Method == http.MethodPost && (sub == "messages" || sub == "continue" || (len(parts) == 4 && parts[1] == "permissions" && parts[3] == "decision")) {
+		if r.Method == http.MethodPost && (sub == "messages" || sub == "continue" || sub == "answers" || (len(parts) == 4 && parts[1] == "permissions" && parts[3] == "decision")) {
 			body, err := io.ReadAll(r.Body)
 			if isTooLarge(w, err) {
 				return
@@ -809,6 +810,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					respond(w, 0, nil, err)
 					return
 				}
+			}
+			if sub == "messages" && r.URL.Query().Get("interrupt") == "true" {
+				sub += "?interrupt=true"
 			}
 			if code, respBody, err := b.Do(r.Context(), r.Method, rec.BackendRef+"/"+sub, body); err == nil {
 				w.Header().Set("Content-Type", "application/json")

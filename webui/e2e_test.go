@@ -72,7 +72,7 @@ func (p *scriptedE2EProvider) Stream(ctx context.Context, _ glue.ProviderRequest
 	}
 	p.mu.Unlock()
 
-	if call == 3 {
+	if call == 4 { // after ask_user and write_file
 		p.midJobOnce.Do(func() { close(p.midJobReached) })
 		select {
 		case <-p.releaseFinish:
@@ -159,6 +159,11 @@ func TestE2EJobBrowserWorkflow(t *testing.T) {
 		releaseFinish: make(chan struct{}),
 		turns: [][]glue.ProviderEvent{
 			textEvents(`{"items":[{"title":"Create hello.txt"}]}`),
+			{
+				{Type: glue.ProviderEventStart},
+				{Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "call-ask-1", Name: "ask_user", Arguments: json.RawMessage(`{"question":"Which greeting should hello.txt contain?","options":["hello browser e2e","hi"]}`)}},
+				{Type: glue.ProviderEventDone},
+			},
 			{
 				{Type: glue.ProviderEventStart},
 				{Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "call-write-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"hello.txt","content":"hello browser e2e\n"}`)}},
@@ -283,6 +288,16 @@ func TestE2EJobBrowserWorkflow(t *testing.T) {
 	if err := chromedp.Do(bctx, chromedp.Click(jobRowSel)); err != nil {
 		t.Fatalf("step 2 open job: %v", err)
 	}
+
+	// 3a. The agent's question appears as a card; answer it with an option.
+	waitJS(t, bctx, "step 3a wait question card", `Boolean(
+		document.querySelector('[data-testid="question-card"] [data-testid="question-text"]')?.textContent?.includes("Which greeting") &&
+		document.querySelectorAll('[data-testid="question-option"]').length === 2
+	)`)
+	if err := chromedp.Do(bctx, chromedp.Click(`[data-testid="question-option"]`)); err != nil {
+		t.Fatalf("step 3a answer question: %v", err)
+	}
+	waitJS(t, bctx, "step 3a question card closes", `!document.querySelector('[data-testid="question-card"]')`)
 
 	// 3. Transcript shows the plan and the first tool call (plus the pending permission card).
 	waitJS(t, bctx, "step 3 wait plan, tool call, and permission card", `Boolean(

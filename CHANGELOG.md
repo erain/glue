@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Answer a remote job's questions from the browser: the web UI job page shows
+  the question with option buttons and an answer box, the jobs list marks jobs
+  waiting on one, and `glue-gateway` forwards `POST /v1/jobs/{id}/answers`
+  (and `messages?interrupt=true`).
+
 - New remote tasks on the default image run `ghcr.io/erain/glue-task@sha256:…`:
   the published tag is resolved to its digest at task creation, so a task runs
   (and records) one exact build even if a node cached an older image under the
