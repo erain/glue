@@ -375,12 +375,15 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 			return job, fmt.Errorf("axbackend: reconcile task %s: %w", TaskName(id), err)
 		}
 	}
-	if _, err := b.conn.AX.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: WorkspaceName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.WorkspaceSpec{Git: []*v1alpha1.GitRepo{{Name: "repo", Repo: spec.Repo.URL, Branch: spec.Repo.BaseRef, Dir: ".", Depth: 1}}, Files: []*v1alpha1.File{{Path: ".glue/token", Content: daemon.HashToken(b.taskToken(id)) + "\n"}}}}}); err != nil {
+	if _, err := b.conn.AX.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: WorkspaceName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.WorkspaceSpec{Files: []*v1alpha1.File{{Path: ".glue/token", Content: daemon.HashToken(b.taskToken(id)) + "\n"}}}}}); err != nil {
 		return job, fmt.Errorf("axbackend: update workspace %s: %w", WorkspaceName(id), err)
 	}
 	b.progress("workspace")
 	taskCfg := spec
-	taskCfg.ID, taskCfg.Repo = id, jobs.RepoSpec{Path: "/workspace", BaseRef: spec.Repo.BaseRef, SnapshotOf: spec.Repo.SnapshotOf}
+	// glue clones the repo itself inside the task. AX's workspace git setup
+	// runs before the task's network is usable, fails, and retries for about
+	// 10 s on every boot, which made every start and resume slow.
+	taskCfg.ID, taskCfg.Repo = id, jobs.RepoSpec{URL: spec.Repo.URL, BaseRef: spec.Repo.BaseRef, SnapshotOf: spec.Repo.SnapshotOf}
 	rawCfg, _ := json.Marshal(taskCfg)
 	var cfgMap map[string]any
 	_ = json.Unmarshal(rawCfg, &cfgMap)
