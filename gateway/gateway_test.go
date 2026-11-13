@@ -879,3 +879,16 @@ func TestStructuredAccessLogRedactsSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayForwardsAnswersAndInterrupts(t *testing.T) {
+	_, _, backendTS, repo := newBackendFixture(t)
+	_, cli := newGatewayFixture(t, backendTS.URL)
+	job := must(cli.Submit(t.Context(), jobs.Spec{Objective: "write hello.txt", Repo: jobs.RepoSpec{Path: repo}}, false))
+	// The backend, not the gateway, answers: no question is open yet.
+	if err := cli.Answer(t.Context(), job.ID, "", "yes"); err == nil || !strings.Contains(err.Error(), "no open question") {
+		t.Fatalf("answer through the gateway: %v", err)
+	}
+	if err := cli.Interrupt(t.Context(), job.ID, "stop and read this"); err != nil {
+		t.Fatalf("interrupt through the gateway: %v", err)
+	}
+}
