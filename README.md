@@ -3,6 +3,8 @@
 [![CI](https://github.com/erain/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/erain/glue/actions/workflows/ci.yml)
 
 **Glue is an AX-first, remote-first coding agent and Go agent framework.**
+Website: <https://glue-framework-site.vercel.app> · coding agent:
+<https://glue-coding-agent-site.vercel.app>.
 Start a coding job from your laptop in one command, close your lid, and come
 back to verified commits and a draft pull request — or import Glue's Go SDK to
 build your own tool-calling agents on the same provider-agnostic loop.
@@ -51,11 +53,19 @@ result, _ := session.Prompt(ctx, "What's the weather in Toronto?")
 fmt.Println(result.Text)
 ```
 
-- **Run remote coding jobs on AX:** → [Showcase & runbook](docs/demo-ax-develops-ax.md) · [Jobs reference](docs/jobs.md) · [ADR-0020](docs/adr/0020-ax-first-direct-execution.md)
+- **Run remote coding jobs on AX:** → [Quickstart](docs/remote-quickstart.md) · [Jobs reference](docs/jobs.md) · [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) · [Showcase](docs/demo-ax-develops-ax.md)
 - **Build an agent with the Go SDK:** → [docs/building-agents.md](docs/building-agents.md) · [Quickstart](#quickstart)
 - **Architecture & roadmap:** → [Concepts](#concepts) · [docs/design.md](docs/design.md) · [Project plan](docs/project-plan.md) · [Remote roadmap](docs/remote-mode-roadmap.md)
 
 ## Install
+
+The coding agent CLI:
+
+```sh
+go install github.com/erain/glue/cmd/glue@latest
+```
+
+The Go framework:
 
 ```sh
 go get github.com/erain/glue
@@ -650,17 +660,18 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 Glue focuses on two surfaces: the **AX-first, remote-first coding agent**
 (`glue --remote`, `glue job`, interactive TUI, local goals, and optional
 host-mode `glue-gateway` + `webui`) and the **Go agent framework**
-(`github.com/erain/glue`). Peggy is retired. Remote jobs execute directly on
+(`github.com/erain/glue`). Remote jobs execute directly on
 [AX](https://github.com/google/ax) with `auto` policy by default and zero
-custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md))
-— **[see it in action](docs/demo-ax-develops-ax.md)**. Execution mode is
-independent of model/provider selection. The [project plan](docs/project-plan.md)
-and [remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
-[tracker #392](https://github.com/erain/glue/issues/392),
-[tracker #402](https://github.com/erain/glue/issues/402), and
-[tracker #526](https://github.com/erain/glue/issues/526). Releases are tagged on
-a `1.x` line
-(currently well past `v1.10`), but the stability stance is still the
+custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md));
+remote mode Phases 1–3 are shipped, and `scripts/demo/aha.sh` proves the
+[five-minute quickstart](docs/remote-quickstart.md) end to end on a live
+cluster. Execution mode is independent of model/provider selection. The
+[project plan](docs/project-plan.md) and
+[remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
+[tracker #392](https://github.com/erain/glue/issues/392) and
+[tracker #402](https://github.com/erain/glue/issues/402). Releases are tagged on
+a `1.x` line (latest `v1.13.0`; newer work is listed under *Unreleased* in the
+CHANGELOG), but the stability stance is still the
 pre-stability one recorded in
 [ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md) (see its
 addendum for why the tags say `1.x`): the public `Agent` / `Session`

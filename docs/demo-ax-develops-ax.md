@@ -2,6 +2,8 @@
 
 End-to-end showcase for Glue remote mode ([tracker #402](https://github.com/erain/glue/issues/402), [tracker #526](https://github.com/erain/glue/issues/526), [ADR-0019](adr/0019-remote-jobs-architecture.md), [ADR-0020](adr/0020-ax-first-direct-execution.md)): dispatch a coding job directly from your laptop to an [AX](https://github.com/google/ax) cluster in one command (`glue --remote "<objective>"`), close your lid while it executes autonomously (`auto` policy by default), and inspect or retrieve verified commits and a draft pull request — or optionally attach a host-mode `glue-gateway` for mobile browser approvals and idle-wait task suspension.
 
+> **New here?** Follow the [remote quickstart](remote-quickstart.md) instead: it needs no locally built image and is checked end to end by `scripts/demo/aha.sh`. This page is the Phase 2 showcase record (AX `56bd0fc`, 2026-11), kept for its measurements and upstream AX feedback; some numbers predate later speedups (for example, submit now takes about 3 s, not 13 s).
+
 ## 1. Pre-Flight Checklist
 
 1. **AX contribution rules and repository access:**

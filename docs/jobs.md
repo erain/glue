@@ -172,7 +172,7 @@ Extra egress hosts always add to the defaults and are printed in the submit summ
 |---|---|---|---|---|
 | `gemini-3.8-flash` (former default) | 13.2 s | 17.3 s | 30.5 s | 337 s |
 | `gemini-3.8-flash`, `low` | 13.2 s | 14.1 s | 22.7 s | 254 s |
-| `gemini-3-flash-preview`, `low` (default since #590) | 12.8 s | 1.0 s | 1.1 s | 22 s |
+| `gemini-3-flash-preview`, `low` (default since #590) | 12.8 s (about 3 s since #591, below) | 1.0 s | 1.1 s | 22 s |
 
 The former default coding model was about 15 times slower per turn, so #590 made `gemini-3-flash-preview` at `low` the default.
 
