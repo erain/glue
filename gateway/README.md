@@ -36,8 +36,12 @@ state_dir: /var/lib/glue-gateway
 
 # Client authentication configuration (required).
 auth:
-  # Authentication mode: "github" (OAuth App + allowlist) or "dev-token" (local dev only; refused on https:// public_url unless --insecure-dev is passed).
-  mode: github
+  # Authentication mode: "cloudflare-access" (Zero Trust Cf-Access-Jwt-Assertion), "github" (OAuth App + allowlist), or "dev-token" (local dev only; refused on https:// public_url unless --insecure-dev is passed).
+  mode: cloudflare-access
+  # Cloudflare Access team domain, Application Audience tag, and optional exact/@domain allowlist (required/used when mode: cloudflare-access; or GLUE_CF_ACCESS_TEAM_DOMAIN / GLUE_CF_ACCESS_AUD / GLUE_ALLOWED_EMAILS; optional certs_url defaults to https://<team_domain>/cdn-cgi/access/certs).
+  team_domain: myteam.cloudflareaccess.com
+  aud: replace-with-cloudflare-access-aud
+  allowed_emails: [you@example.com]
   # GitHub OAuth App credentials (required when mode: github; or set GLUE_GITHUB_CLIENT_ID / GLUE_GITHUB_CLIENT_SECRET).
   client_id: replace-with-github-oauth-client-id
   client_secret: replace-with-github-oauth-client-secret
@@ -126,7 +130,9 @@ For `type: ax` backends, `glue-gateway` delegates to `internal/axbackend.Backend
 - `sessions(id, login, github_id, csrf_token, created_at, last_seen_at, expires_at)`: stores server-side browser sessions with random 256-bit IDs, `HttpOnly; Secure; SameSite=Lax` cookies, 7-day absolute TTL, 24-hour idle TTL, and `X-Glue-CSRF` double-submit enforcement.
 - `api_tokens(id, name, owner, token_hash, prefix, created_at, last_used_at)`: stores SHA-256-hashed personal API tokens for CLI `Authorization: Bearer <token>` authentication.
 
-## Creating a GitHub OAuth App and Personal API Tokens
+## Cloudflare Access (Recommended), GitHub OAuth, and Personal API Tokens
+
+0. **Cloudflare Access (`auth.mode: cloudflare-access`, zero OAuth App setup):** Protect `<public_url>` with a Cloudflare Zero Trust Self-hosted Application and set `team_domain` + `aud` (plus optional `allowed_emails`). `glue-gateway` verifies `Cf-Access-Jwt-Assertion` (`RS256`/`ES256`) against cached JWKS keys and mints the `HttpOnly` `glue_session` cookie + `csrf_token` automatically on `GET /v1/session` with zero second login prompt.
 
 1. In GitHub **Settings -> Developer settings -> OAuth Apps -> New OAuth App**, set **Homepage URL** to `<public_url>` and **Authorization callback URL** to `<public_url>/auth/github/callback`.
 2. Configure `auth.mode: github`, `client_id`, `client_secret` (or `GLUE_GITHUB_CLIENT_ID` / `GLUE_GITHUB_CLIENT_SECRET`), and `allowed_logins` in `gateway.yaml`.
@@ -139,7 +145,7 @@ When exposed publicly on a host or VM behind a named Cloudflare Tunnel (see [`de
 
 - **HSTS & trusted `X-Forwarded-Proto`:** Responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains` and session cookies carry `Secure` whenever `public_url` starts with `https://`, TLS is terminated directly, or `trust_forwarded_proto: true` with `X-Forwarded-Proto: https`.
 - **Request limits & HTTP timeouts:** Request bodies are capped at `max_body_bytes` (default `1 MiB`, rejecting larger payloads with `413 Request Entity Too Large`), and `NewHTTPServer` configures `ReadHeaderTimeout: 10s`, `ReadTimeout: 30s`, and `IdleTimeout: 120s`.
-- **Redacted structured access logs & `/healthz`:** Every request logs `method`, `path` (without query parameters), `status`, `duration_ms`, and `remote_ip`, never logging bearer tokens, cookies, or OAuth secrets. `GET /healthz` returns `{"ok":true}` with no version or internal details.
+- **Redacted structured access logs & `/healthz`:** Every request logs `method`, `path` (without query parameters), `status`, `duration_ms`, and `remote_ip`, never logging bearer tokens, `Cf-Access-Jwt-Assertion` / `CF_Authorization`, cookies, or OAuth secrets. `GET /healthz` returns `{"ok":true}` with no version or internal details.
 
 ## Using with `glue job` and the Browser UI
 

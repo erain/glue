@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -37,6 +39,10 @@ var DefaultEgressHosts = slices.Clone(axbackend.DefaultEgressHosts)
 // AuthConfig configures client authentication for glue-gateway.
 type AuthConfig struct {
 	Mode, Token        string
+	TeamDomain         string        `yaml:"team_domain"`
+	AUD                string        `yaml:"aud"`
+	AllowedEmails      []string      `yaml:"allowed_emails"`
+	CertsURL           string        `yaml:"certs_url"`
 	ClientID           string        `yaml:"client_id"`
 	ClientSecret       string        `yaml:"client_secret"`
 	AllowedLogins      []string      `yaml:"allowed_logins"`
@@ -137,6 +143,29 @@ func (cfg Config) Validate() (Config, error) {
 			return Config{}, errors.New("gateway: invalid empty entry in auth.allowed_logins")
 		}
 	}
+	if rawTD := cmp.Or(strings.TrimSpace(cfg.Auth.TeamDomain), strings.TrimSpace(os.Getenv("GLUE_CF_ACCESS_TEAM_DOMAIN"))); rawTD != "" {
+		td := strings.TrimRight(rawTD, "/")
+		if !strings.Contains(td, "://") {
+			td = "https://" + td
+		}
+		u, err := url.Parse(td)
+		if err != nil || u.Hostname() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (strings.EqualFold(u.Hostname(), "localhost") || (net.ParseIP(u.Hostname()) != nil && net.ParseIP(u.Hostname()).IsLoopback())))) {
+			return Config{}, fmt.Errorf("gateway: invalid auth.team_domain %q", rawTD)
+		}
+		cfg.Auth.TeamDomain = strings.ToLower(u.Scheme + "://" + u.Host)
+	}
+	cfg.Auth.AUD = cmp.Or(strings.TrimSpace(cfg.Auth.AUD), strings.TrimSpace(os.Getenv("GLUE_CF_ACCESS_AUD")))
+	if envAE := strings.TrimSpace(os.Getenv("GLUE_ALLOWED_EMAILS")); len(cfg.Auth.AllowedEmails) == 0 && envAE != "" {
+		cfg.Auth.AllowedEmails = strings.Split(envAE, ",")
+	}
+	for i := range cfg.Auth.AllowedEmails {
+		if cfg.Auth.AllowedEmails[i] = strings.TrimSpace(cfg.Auth.AllowedEmails[i]); cfg.Auth.AllowedEmails[i] == "" || cfg.Auth.AllowedEmails[i] == "@" {
+			return Config{}, errors.New("gateway: invalid empty entry in auth.allowed_emails")
+		}
+	}
+	if cfg.Auth.CertsURL = strings.TrimSpace(cfg.Auth.CertsURL); cfg.Auth.CertsURL == "" && cfg.Auth.TeamDomain != "" {
+		cfg.Auth.CertsURL = cfg.Auth.TeamDomain + "/cdn-cgi/access/certs"
+	}
 	cfg.Auth.SessionAbsoluteTTL, cfg.Auth.SessionIdleTTL, cfg.Auth.RateLimitPerMin = cmp.Or(cfg.Auth.SessionAbsoluteTTL, DefaultSessionAbsoluteTTL), cmp.Or(cfg.Auth.SessionIdleTTL, DefaultSessionIdleTTL), cmp.Or(cfg.Auth.RateLimitPerMin, DefaultAuthRateLimit)
 	cfg.Auth.AuthorizeURL, cfg.Auth.TokenURL, cfg.Auth.UserURL = cmp.Or(strings.TrimSpace(cfg.Auth.AuthorizeURL), "https://github.com/login/oauth/authorize"), cmp.Or(strings.TrimSpace(cfg.Auth.TokenURL), "https://github.com/login/oauth/access_token"), cmp.Or(strings.TrimSpace(cfg.Auth.UserURL), "https://api.github.com/user")
 	cfg.Credentials.GitHubToken = cmp.Or(strings.TrimSpace(cfg.Credentials.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN")))
@@ -169,7 +198,7 @@ func (cfg Config) Validate() (Config, error) {
 	if cfg.Auth.Mode == "dev-token" && strings.HasPrefix(strings.ToLower(cfg.PublicURL), "https://") && !cfg.Auth.InsecureDev {
 		return Config{}, errors.New("gateway: dev-token mode is not allowed when public_url is https:// unless --insecure-dev is passed")
 	}
-	authOK := (cfg.Auth.Mode == "dev-token" && cfg.Auth.Token != "") || (cfg.Auth.Mode == "github" && cfg.PublicURL != "" && cfg.Auth.ClientID != "" && cfg.Auth.ClientSecret != "" && len(cfg.Auth.AllowedLogins) > 0)
+	authOK := (cfg.Auth.Mode == "dev-token" && cfg.Auth.Token != "") || (cfg.Auth.Mode == "github" && cfg.PublicURL != "" && cfg.Auth.ClientID != "" && cfg.Auth.ClientSecret != "" && len(cfg.Auth.AllowedLogins) > 0) || (cfg.Auth.Mode == "cloudflare-access" && cfg.Auth.TeamDomain != "" && cfg.Auth.AUD != "")
 	if cfg.MaxBodyBytes <= 0 || cfg.SuspendAfter < 0 || cfg.ResumeTimeout < 0 || cfg.RetainTasks < 0 || cfg.Auth.SessionAbsoluteTTL <= 0 || cfg.Auth.SessionIdleTTL <= 0 || cfg.Auth.RateLimitPerMin <= 0 || cfg.StateDir == "" || !authOK || len(cfg.Backends) == 0 {
 		return Config{}, fmt.Errorf("gateway: invalid config (state_dir=%q, auth.mode=%q, has_token=%v, backends=%d)", cfg.StateDir, cfg.Auth.Mode, cfg.Auth.Token != "", len(cfg.Backends))
 	}

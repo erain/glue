@@ -74,6 +74,7 @@ function stopBackground() {
   if (activeStream) { activeStream.close(); activeStream = null; }
 }
 
+let sessionLogin = "";
 function setSessionBanner(text) {
   const s = document.getElementById("session-status");
   if (s) s.textContent = text;
@@ -81,9 +82,14 @@ function setSessionBanner(text) {
 
 function renderLogin() {
   stopBackground();
+  sessionLogin = "";
   setSessionBanner("Sign in required");
   const root = document.getElementById("app");
   if (!root) return;
+  if (getAuthMode() === "cloudflare-access") {
+    root.replaceChildren(el("section", { className: "card login-card", "data-testid": "login-view" }, el("h2", {}, "Cloudflare Access Required"), el("p", { className: "muted", "data-testid": "cf-access-notice" }, "Sign in through Cloudflare Access at your gateway public URL to open this workspace.")));
+    return;
+  }
   const input = el("input", { className: "input", type: "password", name: "token", placeholder: "Daemon token", required: "true", "data-testid": "login-token" });
   const errEl = el("p", { className: "error-text", "data-testid": "login-error", hidden: true });
   const btn = el("button", { className: "btn", type: "submit", "data-testid": "login-submit" }, "Sign in");
@@ -638,7 +644,8 @@ async function route() {
   if (!root) return;
   const session = getCSRFToken() ? { authenticated: true } : await fetchSession();
   if (!session) { renderLogin(); return; }
-  setSessionBanner("Authenticated");
+  if (session.login) sessionLogin = session.login;
+  setSessionBanner(sessionLogin && sessionLogin !== "dev-token" ? `Signed in as ${sessionLogin}` : "Authenticated");
   if (window.location.hash === "#/tokens") {
     await renderTokensView(root);
     return;

@@ -1,6 +1,6 @@
 # Runbook: Public `glue-gateway` via Cloudflare Tunnel (`deploy/cloudflared`)
 
-CLI users run coding jobs directly on AX via `glue --remote "<objective>"` without deploying a gateway ([ADR-0020](../adr/0020-ax-first-direct-execution.md)). Deploy `glue-gateway` out-of-cluster on a host or VM when you want the mobile/desktop browser UI (`webui`), GitHub OAuth allowlist sign-in, personal API tokens, or background idle-wait AX task suspension exposed at `https://<your-host>` through a named [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — with HSTS, request body size limits, server timeouts, redacted access logs, zero open inbound host ports, and zero `glue-system` Kubernetes manifests.
+CLI users run coding jobs directly on AX via `glue --remote "<objective>"` without deploying a gateway ([ADR-0020](../adr/0020-ax-first-direct-execution.md)). Deploy `glue-gateway` out-of-cluster on a host or VM when you want the mobile/desktop browser UI (`webui`), zero-prompt **Cloudflare Access** Zero Trust sign-in, personal API tokens, or background idle-wait AX task suspension exposed at `https://<your-host>` through a named [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — with HSTS, request body size limits, server timeouts, redacted access logs, zero open inbound host ports, and zero `glue-system` Kubernetes manifests.
 
 ## 1. Create the Cloudflare Tunnel and DNS Record
 
@@ -12,15 +12,9 @@ cloudflared tunnel route dns glue-gateway "${GLUE_PUBLIC_HOST}"
 export TUNNEL_TOKEN="$(cloudflared tunnel token glue-gateway)"
 ```
 
-## 2. Create the GitHub OAuth App
+## 2. Create the Cloudflare Access Application (Zero OAuth App Setup)
 
-In GitHub **Settings -> Developer settings -> OAuth Apps -> New OAuth App**:
-
-- **Application name:** `Glue Gateway`
-- **Homepage URL:** `https://<your-host>`
-- **Authorization callback URL:** `https://<your-host>/auth/github/callback`
-
-Record the **Client ID** (`GLUE_GITHUB_CLIENT_ID`) and generate a **Client secret** (`GLUE_GITHUB_CLIENT_SECRET`).
+In **Cloudflare Zero Trust -> Access -> Applications -> Add an application -> Self-hosted**, protect `glue.example.com` with an **Allow** policy restricted to your email or identity provider group (Google, GitHub, or Passkey SSO), and record your **Team domain** (`<team>.cloudflareaccess.com` -> `GLUE_CF_ACCESS_TEAM_DOMAIN`) and **Application Audience (AUD) Tag** (`GLUE_CF_ACCESS_AUD`).
 
 ## 3. Configure and Start on a Host or VM (`systemd` + Pure `type: ax`)
 
@@ -31,9 +25,8 @@ Record the **Client ID** (`GLUE_GITHUB_CLIENT_ID`) and generate a **Client secre
    trust_forwarded_proto: true
    state_dir: /var/lib/glue-gateway
    auth:
-     mode: github
-     allowed_logins:
-       - your-github-login
+     mode: cloudflare-access
+     allowed_emails: [you@example.com]
    default_backend: ax
    backends:
      - name: ax
@@ -43,10 +36,10 @@ Record the **Client ID** (`GLUE_GITHUB_CLIENT_ID`) and generate a **Client secre
        kube_config: /etc/glue-gateway/kubeconfig
        kube_context: your-ax-context
    ```
-2. Store OAuth and runtime task credentials in `/etc/glue-gateway/gateway.env` (`chmod 0600`, never stored in AX `Task.spec.env`):
+2. Store Cloudflare Access and runtime task credentials in `/etc/glue-gateway/gateway.env` (`chmod 0600`, never stored in AX `Task.spec.env`):
    ```sh
-   GLUE_GITHUB_CLIENT_ID=...
-   GLUE_GITHUB_CLIENT_SECRET=...
+   GLUE_CF_ACCESS_TEAM_DOMAIN=myteam.cloudflareaccess.com
+   GLUE_CF_ACCESS_AUD=...
    GLUE_GITHUB_TOKEN=...
    GEMINI_API_KEY=...
    ```
@@ -76,8 +69,8 @@ ss -tlnp
 
 In a browser:
 
-1. Sign in with an allowlisted GitHub account -> lands on the **Jobs** list (`#/`) with an `HttpOnly; Secure; SameSite=Lax` `glue_session` cookie.
-2. Sign in with a non-allowlisted GitHub account -> receives `403 Forbidden` (**Access Denied** page) and no session cookie.
+1. Open `https://<your-host>` while signed in to Cloudflare Access -> lands directly on **Jobs** (`#/`, `Signed in as <email>`) with zero second login screen and an `HttpOnly; Secure; SameSite=Lax` `glue_session` cookie.
+2. Sign in with an identity outside `allowed_emails` -> receives `403 Forbidden` and no session cookie.
 3. Restart recovery: `sudo systemctl restart cloudflared glue-gateway` reloads `/var/lib/glue-gateway/events.sqlite` and reconnects the tunnel automatically.
 
 ## 5. Rotate Secrets
@@ -92,6 +85,6 @@ In a browser:
 sudo systemctl stop cloudflared
 ```
 
-## 7. Optional Second Factor: Cloudflare Access
+## 7. Alternative Without Cloudflare Access: GitHub OAuth (`auth.mode: github`)
 
-For defense in depth ahead of the gateway's own GitHub OAuth check, create a **Self-hosted Application** in **Cloudflare Zero Trust -> Access -> Applications** for `<your-host>` with an **Allow** policy restricted to your email or GitHub identity. Cloudflare edges then require Access authentication before forwarding any request through the tunnel to `glue-gateway`.
+When exposing `glue-gateway` without Cloudflare Access, register a GitHub OAuth App with callback `https://<your-host>/auth/github/callback` and set `auth.mode: github`, `allowed_logins`, `GLUE_GITHUB_CLIENT_ID`, and `GLUE_GITHUB_CLIENT_SECRET`.
