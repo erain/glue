@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -390,4 +392,38 @@ func TestE2EJobBrowserWorkflow(t *testing.T) {
 	if err != nil || !sessionCookieHTTPOnly {
 		t.Fatalf("expected HttpOnly session cookie to be invisible to document.cookie (err=%v, ok=%v)", err, sessionCookieHTTPOnly)
 	}
+
+	t.Run("cloudflare-access", func(t *testing.T) {
+		var edgeAuth atomic.Bool
+		edgeAuth.Store(true)
+		cfTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ck, _ := r.Cookie("glue_session")
+			if strings.HasPrefix(r.URL.Path, "/v1/") && (!edgeAuth.Load() || (r.URL.Path != "/v1/session" && (ck == nil || ck.Value != "cf-sess-1"))) {
+				http.Error(w, `{"auth_mode":"cloudflare-access","error":{"message":"unauthorized"}}`, http.StatusUnauthorized)
+			} else if r.URL.Path == "/v1/session" {
+				http.SetCookie(w, &http.Cookie{Name: "glue_session", Value: "cf-sess-1", Path: "/", HttpOnly: true})
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true,"authenticated":true,"auth_mode":"cloudflare-access","login":"alice@example.com","csrf_token":"cf-csrf-123"}`))
+			} else {
+				r.Header.Set("Authorization", "Bearer "+daemonToken)
+				srv.ServeHTTP(w, r)
+			}
+		}))
+		t.Cleanup(cfTS.Close)
+		cfCtx, cancelCF := chromedp.NewContext(allocCtx)
+		t.Cleanup(cancelCF)
+		if err := chromedp.Do(cfCtx, chromedp.Navigate(cfTS.URL)); err != nil {
+			t.Fatal(err)
+		}
+		waitJS(t, cfCtx, "cf jobs", `Boolean(document.querySelector('[data-testid="jobs-view"]') && !document.querySelector('[data-testid="login-view"]') && document.querySelector('#session-status')?.textContent === "Signed in as alice@example.com" && !document.cookie.includes("glue_session"))`)
+		if err := chromedp.Do(cfCtx, chromedp.Click(jobRowSel)); err != nil {
+			t.Fatal(err)
+		}
+		waitJS(t, cfCtx, "cf detail", `Boolean(document.querySelector('[data-testid="job-detail-view"]') && document.querySelector('#session-status')?.textContent === "Signed in as alice@example.com")`)
+		edgeAuth.Store(false)
+		if err := chromedp.Do(cfCtx, chromedp.Reload()); err != nil {
+			t.Fatal(err)
+		}
+		waitJS(t, cfCtx, "cf notice", `Boolean(document.querySelector('[data-testid="cf-access-notice"]') && !document.querySelector('[data-testid="login-token"]'))`)
+	})
 }

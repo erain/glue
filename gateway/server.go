@@ -52,6 +52,7 @@ var gatewayRoutes = []Route{
 type Server struct {
 	cfg      Config
 	reg      *Registry
+	cfAccess *cfAccessVerifier
 	backends map[string]Backend
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -138,7 +139,7 @@ func NewServer(cfg Config) (*Server, error) {
 		backends[b.Name] = axb
 	}
 	s := &Server{
-		cfg: cfg, reg: reg, backends: backends, ctx: ctx, cancel: cancel, watchers: map[string]bool{},
+		cfg: cfg, reg: reg, cfAccess: &cfAccessVerifier{certsURL: cfg.Auth.CertsURL, teamDomain: cfg.Auth.TeamDomain, aud: cfg.Auth.AUD, now: cfg.Now}, backends: backends, ctx: ctx, cancel: cancel, watchers: map[string]bool{},
 		viewers: map[string]int{}, waiting: map[string]time.Time{}, remap: map[string]string{}, orphans: []string{}, rateHits: map[string][]time.Time{}, notify: make(chan struct{}),
 	}
 	s.reconcileOrphans(ctx)
@@ -387,6 +388,9 @@ func eqToken(a, b string) bool {
 	return a != "" && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 func (s *Server) isAllowedLogin(login string) bool {
+	if s.cfg.Auth.Mode == "cloudflare-access" {
+		return len(s.cfg.Auth.AllowedEmails) == 0 || slices.ContainsFunc(s.cfg.Auth.AllowedEmails, func(a string) bool { return matchAllowedEmail(login, a) })
+	}
 	return s.cfg.Auth.Mode != "github" || slices.ContainsFunc(s.cfg.Auth.AllowedLogins, func(a string) bool { return strings.EqualFold(a, login) })
 }
 func (s *Server) allowAuthRate(r *http.Request) bool {
@@ -487,6 +491,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Session, bool) {
+	wantLogin, ok := "", false
 	if got := r.Header.Get("Authorization"); got != "" {
 		raw := strings.TrimSpace(strings.TrimPrefix(got, "Bearer "))
 		if s.cfg.Auth.Mode == "dev-token" && eqToken(got, "Bearer "+s.cfg.Auth.Token) {
@@ -497,14 +502,27 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Session, boo
 				return Session{Login: tok.Owner}, true
 			}
 		}
-	} else if c, err := r.Cookie("glue_session"); err == nil {
-		if sess, err := s.reg.AuthenticateSession(r.Context(), c.Value, s.cfg.Auth.SessionIdleTTL); err == nil && s.isAllowedLogin(sess.Login) {
+	} else if wantLogin, ok = s.verifyCFAccess(w, r); !ok {
+		return Session{}, false
+	} else if c, err := r.Cookie("glue_session"); err == nil && (s.cfg.Auth.Mode != "cloudflare-access" || wantLogin != "") {
+		if sess, err := s.reg.AuthenticateSession(r.Context(), c.Value, s.cfg.Auth.SessionIdleTTL); err == nil && s.isAllowedLogin(sess.Login) && (wantLogin == "" || sess.Login == wantLogin) {
 			if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions || eqToken(r.Header.Get("X-Glue-CSRF"), sess.CSRFToken) {
 				return sess, true
 			}
 			writeErr(w, http.StatusForbidden, "forbidden", "missing or invalid CSRF token")
 			return Session{}, false
 		}
+	}
+	if wantLogin != "" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			writeErr(w, http.StatusForbidden, "forbidden", "missing or invalid CSRF token")
+		} else if sess, err := s.reg.CreateSession(r.Context(), wantLogin, 0, s.cfg.Auth.SessionAbsoluteTTL); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+		} else {
+			s.setCookie(w, r, "glue_session", sess.ID, int(s.cfg.Auth.SessionAbsoluteTTL.Seconds()))
+			return sess, true
+		}
+		return Session{}, false
 	}
 	writeJSON(w, http.StatusUnauthorized, map[string]any{"auth_mode": s.cfg.Auth.Mode, "error": map[string]any{"code": "unauthorized", "message": "missing or invalid credentials", "retryable": false}})
 	return Session{}, false

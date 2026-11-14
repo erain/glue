@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue-gateway` adds `auth.mode: cloudflare-access` (`team_domain`, `aud`, optional `allowed_emails`), verifying `Cf-Access-Jwt-Assertion` (`RS256`/`ES256`) against cached JWKS keys and establishing CSRF-protected `glue_session` cookies with zero OAuth App registration or second login screen.
+
 - New `docs/remote-mode-phase4-ux.md`: Phase 4 remote UX design and `P0`–`P3`
   Critical User Journey roadmap (Cloudflare Access in-cluster `glue-gateway`,
   interactive + autonomous serverless AX workspaces, browser unified diff and

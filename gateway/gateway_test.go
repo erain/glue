@@ -5,11 +5,19 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -69,6 +77,10 @@ func TestConfigParseAndValidate(t *testing.T) {
 		{"auth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "state_dir=\"\""},
 		{"public_url: https://gw.example.com\nstate_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "--insecure-dev"},
 		{"state_dir: /tmp\nauth: {mode: github, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.mode=\"github\""},
+		{"state_dir: /tmp\nauth: {mode: cloudflare-access, team_domain: myteam.cloudflareaccess.com}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.mode=\"cloudflare-access\""},
+		{"state_dir: /tmp\nauth: {mode: cloudflare-access, aud: a}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.mode=\"cloudflare-access\""},
+		{"state_dir: /tmp\nauth: {mode: cloudflare-access, team_domain: http://myteam.cloudflareaccess.com, aud: a}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.team_domain"},
+		{"state_dir: /tmp\nauth: {mode: cloudflare-access, team_domain: myteam.cloudflareaccess.com, aud: a, allowed_emails: [\"\"]}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "auth.allowed_emails"},
 		{"state_dir: /tmp\nauth: {mode: dev-token}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n", "has_token=false"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\n", "backends=0"},
 		{"state_dir: /tmp\nauth: {mode: dev-token, token: t}\nbackends: [{name: l, type: local, url: http://x, token: t}, {name: l, type: local, url: http://y, token: t}]\n", "duplicate=true"},
@@ -79,6 +91,14 @@ func TestConfigParseAndValidate(t *testing.T) {
 		if _, err := ParseConfig([]byte(tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("yaml=%q: got err=%v, want substring %q", tc.yaml, err, tc.want)
 		}
+	}
+	t.Setenv("GLUE_CF_ACCESS_TEAM_DOMAIN", "myteam.cloudflareaccess.com/")
+	t.Setenv("GLUE_CF_ACCESS_AUD", "cf-aud-1")
+	t.Setenv("GLUE_ALLOWED_EMAILS", " Alice@Example.com , @corp.io ")
+	cfCfg := must(ParseConfig([]byte("public_url: https://gw.example.com/\nstate_dir: /tmp\nauth: {mode: cloudflare-access}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n")))
+	loCfg := must(ParseConfig([]byte("state_dir: /tmp\nauth: {mode: cloudflare-access, team_domain: http://127.0.0.1:9876/, aud: a}\nbackends: [{name: l, type: local, url: http://x, token: t}]\n")))
+	if cfCfg.Auth.CertsURL != "https://myteam.cloudflareaccess.com/cdn-cgi/access/certs" || cfCfg.Auth.AUD != "cf-aud-1" || !reflect.DeepEqual(cfCfg.Auth.AllowedEmails, []string{"Alice@Example.com", "@corp.io"}) || loCfg.Auth.TeamDomain != "http://127.0.0.1:9876" {
+		t.Fatalf("unexpected cloudflare-access configs: cf=%+v lo=%+v", cfCfg.Auth, loCfg.Auth)
 	}
 }
 func TestRegistryLifecycleAndEventDedup(t *testing.T) {
@@ -890,5 +910,149 @@ func TestGatewayForwardsAnswersAndInterrupts(t *testing.T) {
 	}
 	if err := cli.Interrupt(t.Context(), job.ID, "stop and read this"); err != nil {
 		t.Fatalf("interrupt through the gateway: %v", err)
+	}
+}
+
+type cfFixture struct {
+	h        *fakeAXHarness
+	gw       *Server
+	ts       *httptest.Server
+	jwksHits atomic.Int32
+	keys     atomic.Value
+}
+
+var cfRSA, cfEC = must(rsa.GenerateKey(rand.Reader, 2048)), must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+
+func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+func ecJWK(kid string, pub *ecdsa.PublicKey) jwkEntry {
+	raw := must(pub.Bytes())
+	return jwkEntry{Kid: kid, Kty: "EC", Crv: "P-256", Alg: "ES256", Use: "sig", X: b64u(raw[1:33]), Y: b64u(raw[33:65])}
+}
+func (f *cfFixture) mint(alg, kid string, signer any, kv ...any) string {
+	claims := map[string]any{"iss": "https://myteam.cloudflareaccess.com", "aud": "aud-1", "exp": f.h.Now().Add(10 * time.Minute).Unix(), "email": "alice@example.com"}
+	for i := 0; i < len(kv); i += 2 {
+		if claims[kv[i].(string)] = kv[i+1]; kv[i+1] == nil {
+			delete(claims, kv[i].(string))
+		}
+	}
+	msg := b64u([]byte(mustJSON(map[string]any{"alg": alg, "kid": kid}))) + "." + b64u([]byte(mustJSON(claims)))
+	sum := sha256.Sum256([]byte(msg))
+	if k, ok := signer.(*rsa.PrivateKey); ok {
+		return msg + "." + b64u(must(rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, sum[:])))
+	} else if k, ok := signer.(*ecdsa.PrivateKey); ok {
+		r, s, _ := ecdsa.Sign(rand.Reader, k, sum[:])
+		return msg + "." + b64u(append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...))
+	}
+	return msg + "."
+}
+func newCFFixture(t *testing.T, allowed []string) *cfFixture {
+	f := &cfFixture{h: &fakeAXHarness{}}
+	f.h.now.Store(time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC).UnixNano())
+	f.keys.Store([]jwkEntry{{Kid: "rsa-1", Kty: "RSA", Alg: "RS256", Use: "sig", N: b64u(cfRSA.N.Bytes()), E: b64u(big.NewInt(int64(cfRSA.E)).Bytes())}, ecJWK("ec-1", &cfEC.PublicKey)})
+	jwksTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		f.jwksHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"keys": f.keys.Load()})
+	}))
+	t.Cleanup(jwksTS.Close)
+	f.gw = must(NewServer(Config{PublicURL: "https://gw.example.com", StateDir: t.TempDir(), Now: f.h.Now, Auth: AuthConfig{Mode: "cloudflare-access", TeamDomain: "myteam.cloudflareaccess.com", AUD: "aud-1", AllowedEmails: allowed, CertsURL: jwksTS.URL + "/cdn-cgi/access/certs"}, Backends: []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}}, CustomBackends: map[string]Backend{"ax": f.h}}))
+	f.ts = httptest.NewServer(f.gw)
+	t.Cleanup(func() { f.ts.Close(); _ = f.gw.Close() })
+	return f
+}
+func (f *cfFixture) req(t *testing.T, method, path, jwtHdr string, ck *http.Cookie, csrf, body string) (int, map[string]any, *http.Cookie) {
+	r, _ := http.NewRequestWithContext(t.Context(), method, f.ts.URL+path, strings.NewReader(body))
+	for k, v := range map[string]string{"Cf-Access-Jwt-Assertion": jwtHdr, "X-Glue-CSRF": csrf} {
+		if v != "" {
+			r.Header.Set(k, v)
+		}
+	}
+	if ck != nil {
+		r.AddCookie(ck)
+	}
+	resp := must(f.ts.Client().Do(r))
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out, append(resp.Cookies(), nil)[0]
+}
+func (f *cfFixture) get(t *testing.T, tok string) int {
+	st, _, _ := f.req(t, http.MethodGet, "/v1/session", tok, nil, "", "")
+	return st
+}
+func TestCloudflareAccessValidRS256AndES256(t *testing.T) {
+	origOut, logBuf := log.Writer(), new(bytes.Buffer)
+	log.SetOutput(logBuf)
+	t.Cleanup(func() { log.SetOutput(origOut) })
+	f := newCFFixture(t, nil)
+	rsTok := f.mint("RS256", "rsa-1", cfRSA)
+	st1, s1, ck := f.req(t, http.MethodGet, "/v1/session", rsTok, nil, "", "")
+	csrf, _ := s1["csrf_token"].(string)
+	if st1 != http.StatusOK || s1["authenticated"] != true || s1["auth_mode"] != "cloudflare-access" || s1["login"] != "alice@example.com" || csrf == "" || ck == nil || !ck.HttpOnly || !ck.Secure {
+		t.Fatalf("RS256 session: status=%d body=%+v ck=%+v", st1, s1, ck)
+	}
+	post := func(c *http.Cookie, hdr string) int {
+		st, _, _ := f.req(t, http.MethodPost, "/v1/jobs", rsTok, c, hdr, `{"objective":"cf","repo":{"url":"https://github.com/erain/glue-sandbox"}}`)
+		return st
+	}
+	if st0, _, _ := f.req(t, http.MethodGet, "/v1/session", "", ck, "", ""); st0 != http.StatusUnauthorized || post(nil, csrf) != http.StatusForbidden || post(ck, "") != http.StatusForbidden || post(ck, "bad") != http.StatusForbidden || post(ck, csrf) != http.StatusCreated {
+		t.Fatalf("cookie/CSRF checks failed (no-jwt=%d)", st0)
+	}
+	esTok := f.mint("ES256", "ec-1", cfEC, "aud", []string{"other", "aud-1"}, "email", "", "common_name", "svc-runner")
+	if st2, s2, _ := f.req(t, http.MethodGet, "/v1/session", "", &http.Cookie{Name: "CF_Authorization", Value: esTok}, "", ""); st2 != http.StatusOK || s2["login"] != "svc-runner" {
+		t.Fatalf("ES256 cookie session: status=%d body=%+v", st2, s2)
+	}
+	pat := must(f.gw.reg.CreateToken(t.Context(), "alice@example.com", "cli"))
+	if list := must((&jobclient.Client{BaseURL: f.ts.URL, Token: pat.Token, HTTP: f.ts.Client()}).List(t.Context(), jobs.Filter{})); len(list) != 1 || strings.Contains(logBuf.String(), rsTok) || strings.Contains(logBuf.String(), esTok) || strings.Contains(logBuf.String(), ck.Value) || strings.Contains(logBuf.String(), pat.Token) {
+		t.Fatalf("PAT list=%d or secret leaked", len(list))
+	}
+}
+func TestCloudflareAccessRejectsBadAudIssExpAndAlgNone(t *testing.T) {
+	f := newCFFixture(t, nil)
+	now, unsigned := f.h.Now(), strings.TrimSuffix(f.mint("ES256", "ec-1", nil), ".")
+	derSum := sha256.Sum256([]byte(unsigned))
+	for name, tok := range map[string]string{
+		"missing": "", "bad_aud_str": f.mint("RS256", "rsa-1", cfRSA, "aud", "other"), "bad_aud_arr": f.mint("RS256", "rsa-1", cfRSA, "aud", []string{"x", "y"}), "bad_iss": f.mint("RS256", "rsa-1", cfRSA, "iss", "https://evil.cloudflareaccess.com"),
+		"expired": f.mint("RS256", "rsa-1", cfRSA, "exp", now.Add(-61*time.Second).Unix()), "future_nbf": f.mint("RS256", "rsa-1", cfRSA, "nbf", now.Add(61*time.Second).Unix()), "missing_exp": f.mint("RS256", "rsa-1", cfRSA, "exp", nil),
+		"alg_none": f.mint("none", "rsa-1", nil), "alg_hs256": f.mint("HS256", "rsa-1", nil) + "c2ln", "key_confuse": f.mint("RS256", "ec-1", cfRSA), "asn1_der": unsigned + "." + b64u(must(ecdsa.SignASN1(rand.Reader, cfEC, derSum[:]))),
+	} {
+		if st, body, _ := f.req(t, http.MethodGet, "/v1/session", tok, nil, "", ""); st != http.StatusUnauthorized || body["auth_mode"] != "cloudflare-access" {
+			t.Fatalf("case %s: status=%d body=%+v", name, st, body)
+		}
+	}
+	if st := f.get(t, f.mint("ES256", "ec-1", cfEC, "exp", now.Add(-30*time.Second).Unix(), "nbf", now.Add(30*time.Second).Unix())); st != http.StatusOK {
+		t.Fatalf("expected 60s skew leeway to accept +-30s token, got %d", st)
+	}
+}
+func TestCloudflareAccessKeyRotationRefresh(t *testing.T) {
+	f := newCFFixture(t, nil)
+	ec2, ec3 := must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader)), must(ecdsa.GenerateKey(elliptic.P256(), rand.Reader))
+	if f.get(t, f.mint("RS256", "rsa-1", cfRSA)) != http.StatusOK || f.get(t, f.mint("RS256", "rsa-1", cfRSA)) != http.StatusOK || f.jwksHits.Load() != 1 {
+		t.Fatalf("initial cached RS256 failed (hits=%d)", f.jwksHits.Load())
+	}
+	f.keys.Store([]jwkEntry{ecJWK("ec-2", &ec2.PublicKey)})
+	if st := f.get(t, f.mint("ES256", "ec-2", ec2)); st != http.StatusOK || f.jwksHits.Load() != 2 {
+		t.Fatalf("rotated status=%d jwksHits=%d", st, f.jwksHits.Load())
+	}
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Go(func() { _ = f.get(t, f.mint("ES256", fmt.Sprintf("forged-%d", i), ec2)) })
+	}
+	wg.Wait()
+	f.h.Advance(11*time.Second, f.gw)
+	f.keys.Store([]jwkEntry{ecJWK("ec-3", &ec3.PublicKey)})
+	if st := f.get(t, f.mint("ES256", "ec-3", ec3)); st != http.StatusOK || f.jwksHits.Load() != 3 {
+		t.Fatalf("post-cooldown status=%d jwksHits=%d, want 200/3", st, f.jwksHits.Load())
+	}
+}
+func TestCloudflareAccessAllowedEmails403(t *testing.T) {
+	f := newCFFixture(t, []string{"Alice@Example.com", "@corp.io"})
+	for email, want := range map[string]int{"alice@example.com": http.StatusOK, "bob@CORP.IO": http.StatusOK, "mallory@evil-corp.io": http.StatusForbidden, "eve@other.org": http.StatusForbidden} {
+		if st, _, ck := f.req(t, http.MethodGet, "/v1/session", f.mint("ES256", "ec-1", cfEC, "email", email), nil, "", ""); st != want || (want == http.StatusForbidden && ck != nil) {
+			t.Fatalf("email=%s: got status=%d ck=%v, want %d", email, st, ck, want)
+		}
+	}
+	pat := must(f.gw.reg.CreateToken(t.Context(), "eve@other.org", "cli"))
+	if _, err := (&jobclient.Client{BaseURL: f.ts.URL, Token: pat.Token, HTTP: f.ts.Client()}).List(t.Context(), jobs.Filter{}); err == nil {
+		t.Fatal("expected disallowed PAT to fail")
 	}
 }
