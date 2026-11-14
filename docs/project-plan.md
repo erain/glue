@@ -45,8 +45,12 @@ Phase 1 ([remote-mode-roadmap.md](remote-mode-roadmap.md),
 and Phase 2 ([ADR-0020](adr/0020-ax-first-direct-execution.md),
 [#526](https://github.com/erain/glue/issues/526)) are shipped, and so is
 Phase 3 ([remote-mode-phase3-design.md](remote-mode-phase3-design.md),
-2026-11-13), whose result is the [remote quickstart](remote-quickstart.md). The 2026-11-07
-planning steps below record how the initial roadmap was produced:
+2026-11-13), whose result is the [remote quickstart](remote-quickstart.md).
+Phase 4 ([remote-mode-phase4-ux.md](remote-mode-phase4-ux.md),
+[#623](https://github.com/erain/glue/issues/623)) plans the logged-in browser
+workspace, Cloudflare Access cluster gateway, and bidirectional local/remote
+continuity under [#402](https://github.com/erain/glue/issues/402). The
+2026-11-07 planning steps below record how the initial roadmap was produced:
 
 This is the plan for producing that roadmap, not an implementation backlog.
 Work through these deliverables in order under #392:
