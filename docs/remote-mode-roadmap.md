@@ -89,6 +89,7 @@ on finish, resuming them automatically on user action.
 | N. Bring the work home | Branch by default, `diff`, `pull`, continue from PR feedback, TUI handoff | #554–#558 |
 | O. Environments | Per-repo remote settings, setup phase, Node.js and Python image published to GHCR | #559–#562 |
 | P. Scale out and showcase | Queueing, parallel attempts, jobs from issues, quickstart and scripted demo | #563–#566 |
+| Q. Logged-in browser & continuity (Phase 4) | Opt-in Cloudflare Access in-cluster `glue-gateway`, interactive + goal AX workspaces, unified browser diff & 1-tap Draft PRs, two-way `ntfy` actions, and `/teleport` | #623–#630, #632–#638 |
 
 Milestones A–F shipped in tracker [#402](https://github.com/erain/glue/issues/402);
 Milestones G–J refine remote execution in tracker [#526](https://github.com/erain/glue/issues/526).
@@ -96,7 +97,11 @@ Milestones K–P are Phase 3, designed in
 [remote-mode-phase3-design.md](remote-mode-phase3-design.md) and shipped in
 [#402](https://github.com/erain/glue/issues/402) (PRs #567–#614, 2026-11-11 to
 2026-11-13); its exit gate is `scripts/demo/aha.sh`, which runs the
-[quickstart](remote-quickstart.md) on the standing cluster.
+[quickstart](remote-quickstart.md) on the standing cluster. Milestone Q is
+Phase 4, designed in [remote-mode-phase4-ux.md](remote-mode-phase4-ux.md)
+([#623](https://github.com/erain/glue/issues/623)) under
+[#402](https://github.com/erain/glue/issues/402) with exit gate
+`scripts/demo/anywhere.sh`.
 
 ## How each step is verified
 

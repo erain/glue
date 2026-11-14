@@ -16,6 +16,11 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- New `docs/remote-mode-phase4-ux.md`: Phase 4 remote UX design and `P0`–`P3`
+  Critical User Journey roadmap (Cloudflare Access in-cluster `glue-gateway`,
+  interactive + autonomous serverless AX workspaces, browser unified diff and
+  1-tap Draft PRs, two-way `ntfy` notifications, and local/remote teleport).
+
 - New `docs/remote-quickstart.md`: from `glue job doctor` to tested changes in your
   checkout in five minutes, and `scripts/demo/aha.sh`, which runs that story on
   the cluster and fails on any miss. `glue job pull --apply` now applies a patch
