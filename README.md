@@ -3,8 +3,7 @@
 [![CI](https://github.com/erain/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/erain/glue/actions/workflows/ci.yml)
 
 **Glue is an AX-first, remote-first coding agent and Go agent framework.**
-Website: <https://glue-framework-site.vercel.app> · coding agent:
-<https://glue-coding-agent-site.vercel.app>.
+Website: <https://glue-framework-site.vercel.app>.
 Start a coding job from your laptop in one command, close your lid, and come
 back to verified commits and a draft pull request — or import Glue's Go SDK to
 build your own tool-calling agents on the same provider-agnostic loop.
@@ -503,7 +502,7 @@ own `Executor` to run in a container/VM. See
 ## The `glue` CLI
 
 `cmd/glue` is a remote-first coding agent for AX and local checkouts, built on
-the public `glue` library API (homepage: <https://glue-coding-agent-site.vercel.app>):
+the public `glue` library API (remote jobs: [quickstart](docs/remote-quickstart.md)):
 
 ```sh
 # Launch an autonomous coding job directly on AX (auto policy by default, zero gateway needed):
