@@ -43,9 +43,9 @@ and keep `glue-gateway` as an optional out-of-cluster host/VM browser portal.
 Phase 1 ([remote-mode-roadmap.md](remote-mode-roadmap.md),
 [ADR-0019](adr/0019-remote-jobs-architecture.md), [#402](https://github.com/erain/glue/issues/402))
 and Phase 2 ([ADR-0020](adr/0020-ax-first-direct-execution.md),
-[#526](https://github.com/erain/glue/issues/526)) are shipped. Phase 3 (a
-hands-on product review and the next work queue) is designed in
-[remote-mode-phase3-design.md](remote-mode-phase3-design.md). The 2026-11-07
+[#526](https://github.com/erain/glue/issues/526)) are shipped, and so is
+Phase 3 ([remote-mode-phase3-design.md](remote-mode-phase3-design.md),
+2026-11-13), whose result is the [remote quickstart](remote-quickstart.md). The 2026-11-07
 planning steps below record how the initial roadmap was produced:
 
 This is the plan for producing that roadmap, not an implementation backlog.

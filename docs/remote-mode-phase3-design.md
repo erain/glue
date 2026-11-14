@@ -1,6 +1,7 @@
 # Remote Mode Phase 3: From Working Demo to Developer Aha Moment
 
-Status: proposed, 2026-11-11. Tracked in
+Status: shipped, 2026-11-13 (PRs #567–#614; the exit gate
+`scripts/demo/aha.sh` passes). Proposed 2026-11-11. Tracked in
 [#402](https://github.com/erain/glue/issues/402) (design issue
 [#537](https://github.com/erain/glue/issues/537)). Builds on Phase 1
 ([ADR-0019](adr/0019-remote-jobs-architecture.md)) and Phase 2
