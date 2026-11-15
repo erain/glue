@@ -159,4 +159,4 @@ glue job approve --server "$GLUE_SERVER" <job-id> <perm-id>
 glue job result --server "$GLUE_SERVER" <job-id>
 ```
 
-Open `http://127.0.0.1:8800` in a browser to view, steer, and approve jobs through the embedded `webui`.
+Open `http://127.0.0.1:8800` in a browser to launch new interactive workspaces, autonomous goals, and GitHub issue runs (`#/new`, backed by `GET /v1/models` and server-side `POST /v1/jobs` `issue` resolution), and to view, steer, and approve jobs through the embedded `webui`.

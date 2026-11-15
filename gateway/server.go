@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
@@ -40,7 +41,7 @@ type Route struct {
 var gatewayRoutes = []Route{
 	{http.MethodGet, "/", true}, {http.MethodGet, "/index.html", true}, {http.MethodGet, "/static/app.js", true}, {http.MethodGet, "/static/api.js", true}, {http.MethodGet, "/static/app.css", true},
 	{http.MethodGet, "/healthz", true}, {http.MethodGet, "/auth/github/login", true}, {http.MethodGet, "/auth/github/callback", true},
-	{http.MethodGet, "/v1/health", false}, {http.MethodGet, "/v1/session", false}, {http.MethodGet, "/v1/me", false}, {http.MethodPost, "/v1/session/login", false}, {http.MethodPost, "/v1/session/logout", false},
+	{http.MethodGet, "/v1/health", false}, {http.MethodGet, "/v1/session", false}, {http.MethodGet, "/v1/me", false}, {http.MethodGet, "/v1/models", false}, {http.MethodPost, "/v1/session/login", false}, {http.MethodPost, "/v1/session/logout", false},
 	{http.MethodGet, "/v1/tokens", false}, {http.MethodPost, "/v1/tokens", false}, {http.MethodDelete, "/v1/tokens/{id}", false},
 	{http.MethodGet, "/v1/backends", false}, {http.MethodGet, "/v1/diagnostics", false}, {http.MethodGet, "/v1/jobs", false}, {http.MethodPost, "/v1/jobs", false},
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
@@ -662,6 +663,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tok, err := s.reg.CreateToken(r.Context(), sess.Login, body.Name)
 		respond(w, http.StatusCreated, tok, err)
 		return
+	case "GET /v1/models":
+		writeJSON(w, http.StatusOK, daemon.ModelCatalog())
+		return
 	case "GET /v1/backends":
 		writeJSON(w, http.StatusOK, map[string]any{"backends": s.cfg.Backends, "default_backend": s.cfg.DefaultBackend})
 		return
@@ -675,15 +679,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusOK, map[string]any{"jobs": list}, err)
 		return
 	case "POST /v1/jobs":
+		start, err := false, error(nil)
+		if raw := r.URL.Query().Get("start"); raw != "" {
+			if start, err = strconv.ParseBool(raw); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid_request", "start must be a boolean")
+				return
+			}
+		}
 		var spec jobs.Spec
-		err := json.NewDecoder(r.Body).Decode(&spec)
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		err = dec.Decode(&spec)
 		if isTooLarge(w, err) {
 			return
 		}
 		name := cmp.Or(strings.TrimSpace(r.URL.Query().Get("backend")), strings.TrimSpace(spec.Backend), s.cfg.DefaultBackend)
 		b := s.backends[name]
-		if err != nil || b == nil {
+		if err != nil || dec.Decode(&struct{}{}) != io.EOF || b == nil {
 			writeErr(w, http.StatusBadRequest, "invalid_request", "invalid job spec or backend")
+			return
+		}
+		isAXCfg := slices.ContainsFunc(s.cfg.Backends, func(c BackendConfig) bool { return c.Name == name && c.Type == "ax" })
+		if spec, err = jobs.ResolveIssue(r.Context(), spec, s.cfg.Credentials.GitHubToken); err == nil {
+			if spec.Delivery == "pr" {
+				spec.Delivery = "draft_pr"
+			}
+			err = jobs.ValidateSpec(spec, isAXCfg)
+		}
+		if err != nil {
+			respond(w, 0, nil, err)
 			return
 		}
 		id, _ := jobs.NewID()
@@ -693,7 +717,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, err = s.reg.CreateJob(r.Context(), Record{ID: created.ID, Backend: name, BackendRef: created.ID, Owner: sess.Login, Spec: created.Spec, Status: created.Status, CreatedAt: created.CreatedAt, UpdatedAt: created.UpdatedAt})
 		}
 		if err == nil {
-			if start, _ := strconv.ParseBool(r.URL.Query().Get("start")); start {
+			if start {
 				created, err = b.Start(r.Context(), created.ID)
 			}
 			if err == nil {
@@ -702,6 +726,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		created.Spec.Backend = name
 		respond(w, http.StatusCreated, map[string]any{"job": created}, err)
+		return
+	}
+	if r.URL.Path == "/v1/models" {
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/tokens/") {

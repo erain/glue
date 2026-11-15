@@ -397,3 +397,63 @@ func TestPatchEndpointWhileRunning(t *testing.T) {
 	}
 	jobHTTP(t, s, http.MethodPost, "/v1/jobs/"+id+"/messages?interrupt=true", `{}`, http.StatusAccepted)
 }
+
+func TestPostJobsResolvesGitHubIssue(t *testing.T) {
+	var seenAuth atomic.Value
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth.Store(r.Header.Get("Authorization"))
+		if strings.HasSuffix(r.URL.Path, "/comments") {
+			_, _ = w.Write([]byte(`[{"body":"check phone width","user":{"login":"bob"}}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"title":"Ship #/new view","body":"Details here","state":"open","comments":1}`))
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	s, _, _ := jobHTTPFixture(t, nil)
+	s.jobs.SetCredentials(jobs.Credentials{GitHubToken: "pushed-gh-tok"})
+	for _, raw := range []string{`{"issue":"erain/glue-sandbox#42"}`, `{"issue":"#42","repo":{"url":"https://github.com/erain/glue-sandbox"}}`, `{"issue":"https://github.com/erain/glue-sandbox/issues/42","delivery":"branch"}`} {
+		job := jobHTTP(t, s, http.MethodPost, "/v1/jobs", raw, http.StatusCreated)["job"].(map[string]any)
+		spec := job["spec"].(map[string]any)
+		wantDel := "draft_pr"
+		if strings.Contains(raw, `"branch"`) {
+			wantDel = "branch"
+		}
+		if spec["objective"] != "Ship #/new view" || spec["issue"] != "erain/glue-sandbox#42" || spec["delivery"] != wantDel || spec["repo"].(map[string]any)["url"] != "https://github.com/erain/glue-sandbox" || !strings.Contains(spec["context"].(string), "@bob: check phone width") || seenAuth.Load() != "Bearer pushed-gh-tok" {
+			t.Fatalf("raw=%s spec=%+v auth=%v", raw, spec, seenAuth.Load())
+		}
+	}
+}
+
+func TestPostJobsValidationErrors(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/7") {
+			_, _ = w.Write([]byte(`{"title":"PR","state":"open","pull_request":{}}`))
+		} else {
+			_, _ = w.Write([]byte(`{"title":"Closed","state":"closed"}`))
+		}
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	t.Setenv("GLUE_GITHUB_TOKEN", "tok")
+	s, _, repo := jobHTTPFixture(t, nil)
+	for _, bad := range []string{`{"issue":"erain/glue-sandbox#7"}`, `{"issue":"erain/glue-sandbox#8"}`, `{"issue":"#42"}`, `{"mode":"interactive","issue":"erain/glue-sandbox#42"}`, `{"issue":"bad-ref"}`} {
+		jobHTTP(t, s, http.MethodPost, "/v1/jobs", bad, http.StatusBadRequest)
+	}
+	wLogin := httptest.NewRecorder()
+	s.ServeHTTP(wLogin, httptest.NewRequest(http.MethodPost, "/v1/session/login", strings.NewReader(`{"token":"token"}`)))
+	ck, csrf := wLogin.Result().Cookies()[0], s.csrfToken()
+	for _, tc := range []struct {
+		csrf string
+		want int
+	}{{"", http.StatusForbidden}, {"wrong", http.StatusForbidden}, {csrf, http.StatusCreated}} {
+		w, req := httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(`{"objective":"csrf","repo":{"path":`+`"`+repo+`"}}`))
+		req.AddCookie(ck)
+		if tc.csrf != "" {
+			req.Header.Set(csrfHeaderName, tc.csrf)
+		}
+		if s.ServeHTTP(w, req); w.Code != tc.want {
+			t.Fatalf("csrf=%q: got %d (%s), want %d", tc.csrf, w.Code, w.Body.String(), tc.want)
+		}
+	}
+}
