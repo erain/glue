@@ -255,15 +255,19 @@ func resolveUserAXTarget(kubeCfg, kubeCtx, atespace string) (string, string, str
 
 func applyUserConfig(cfg *userConfig, set map[string]bool, t *jobTargetOpts, provider, model, thinking, deliver *string) {
 	u, trim := cmp.Or(cfg, &userConfig{}), strings.TrimSpace
-	t.kubeconfig, t.kubectx, t.atespace = resolveUserAXTarget(t.kubeconfig, t.kubectx, t.atespace)
+	if t != nil {
+		t.kubeconfig, t.kubectx, t.atespace = resolveUserAXTarget(t.kubeconfig, t.kubectx, t.atespace)
+	}
 	or := func(keep bool, cur, env, def string) string {
 		return map[bool]string{true: cur, false: cmp.Or(trim(os.Getenv(env)), trim(def))}[keep]
 	}
 	*provider = or(set["provider"], *provider, "GLUE_PROVIDER", u.Provider)
-	sameProv := trim(u.Provider) == "" || strings.EqualFold(trim(*provider), trim(u.Provider))
+	sameProv := (trim(u.Provider) == "" && (trim(*provider) == "" || strings.EqualFold(trim(*provider), "gemini"))) || strings.EqualFold(trim(*provider), trim(u.Provider))
 	*model = or(set["model"], *model, "GLUE_MODEL", map[bool]string{true: u.Model}[sameProv])
 	*thinking = or(set["thinking"], *thinking, "GLUE_THINKING", map[bool]string{true: u.Thinking}[sameProv && ((!set["model"] && !envSet("GLUE_MODEL")) || strings.EqualFold(normalizeModel(trim(*model)), normalizeModel(trim(u.Model))))])
-	*deliver, set["deliver"] = or(set["deliver"] || set["delivery"], *deliver, "GLUE_DELIVER", cmp.Or(*deliver, u.Deliver)), set["deliver"] || envSet("GLUE_DELIVER")
+	if deliver != nil {
+		*deliver, set["deliver"] = or(set["deliver"] || set["delivery"], *deliver, "GLUE_DELIVER", cmp.Or(*deliver, u.Deliver)), set["deliver"] || envSet("GLUE_DELIVER")
+	}
 }
 
 func redactNotify(urls ...string) string {

@@ -11,6 +11,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,6 +93,10 @@ func defaultProviderFactory(name string) (glue.Provider, error) {
 	return provider, nil
 }
 
+// isTTY reports whether v is backed by a terminal. Tests override it to
+// exercise TTY and non-TTY CLI paths deterministically.
+var isTTY func(any) bool = isFileTTY
+
 func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory) int {
 	return runCLIWithDeps(ctx, args, os.Stdin, stdout, stderr, newProvider, serveDaemon, http.DefaultClient)
 }
@@ -103,7 +109,21 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 	if os.Getenv("GLUE_GIT_ASKPASS") == "1" {
 		return jobs.Askpass(args, stdout)
 	}
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+	if len(args) == 0 {
+		if !isTTY(stdin) || !isTTY(stdout) {
+			printUsage(stdout)
+			return 0
+		}
+		if err := runAgentCommand(ctx, "glue", true, nil, stdin, stdout, stderr, newProvider); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if args[0] == "help" && len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+		args = []string{args[1], "--help"}
+	}
+	if args[0] == "help" || args[0] == "-h" || args[0] == "-help" || args[0] == "--help" {
 		printUsage(stdout)
 		return 0
 	}
@@ -128,8 +148,8 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 			return 1
 		}
 		return 0
-	case "run":
-		if err := runCommand(ctx, args[1:], stdin, stdout, stderr, newProvider); err != nil {
+	case "code", "run":
+		if err := runAgentCommand(ctx, "glue "+args[0], args[0] == "code", args[1:], stdin, stdout, stderr, newProvider); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -266,140 +286,62 @@ func hasRemoteFlag(args []string) bool {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  glue --remote "<objective>" [--attach] [--repo <url|dir>] [--base <ref>] [--ignore-local | --snapshot] [--deliver <none|branch|pr>] [--verify <cmd>] [--policy <name>] [--env <path>]
-  glue run --prompt <text> [--provider <name>] [--id <id> | --continue] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
-  glue goal "<objective>" [--provider <name>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--yolo] [--worktree] [--max-iterations <n>] [--budget <tokens>] [--env <path>]
-  glue goal --resume [<id>] | --list [--store <dir>]
-  glue job <init|login|doctor|submit|start|list|show|attach|logs|result|diff|pull|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]
-  glue serve [--jobs] [--job-from-ax] [--provider <name>] [--listen 127.0.0.1:0] [--token-file <path>] [--metadata <path>] [--model <model>] [--store <dir>] [--work <dir>] [--coding] [--env <path>]
-  glue connect --prompt <text> [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --skill <name> [--arg key=value] [--id <id>] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --inspect [--inspect-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --status [--status-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --diagnose [--diagnose-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --tools [--tools-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --skills [--skills-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --roles [--roles-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --mcp-resources [--mcp-resources-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --mcp-prompts [--mcp-prompts-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --mcp-read --server <name> --uri <uri> [--mcp-read-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --mcp-prompt --server <name> --name <prompt> [--arg key=value] [--mcp-prompt-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --recall <query> [--recall-json] [--recall-memories] [--recall-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --memories [--memories-json] [--memory-limit <n>] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --forget-memory <id> [--forget-memory-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --permissions [--permissions-json] [--metadata <path>] [--base-url <url>] [--token <token>]
-  glue connect --forget-permission <id> [--forget-permission-json] [--metadata <path>] [--base-url <url>] [--token <token>]
+	fmt.Fprint(w, `Usage: glue [command] [flags]
 
-Commands:
-  models   List curated providers, models, and supported thinking levels (no credentials needed).
-  run      Run a local agent on any registered provider, optionally with coding tools.
-  goal     Run an autonomous goal loop headlessly (plan → make → verify until done or a guardrail trips); exit code reflects the outcome.
-  job      Submit, start, list, inspect, steer, and fetch results for durable coding jobs.
-  serve    Start a local HTTP+SSE daemon for Glue sessions, optionally with coding tools.
-  connect  Start a daemon prompt/skill run, or inspect daemon status/tools/skills/roles/MCP/recall surfaces.
-  version  Print the binary's version, git revision, and Go toolchain (also: --version, -v).
+Code locally:
+  glue                                Start interactive coding TUI in the current directory
+  glue code [flags]                   Run coding agent (--continue, --select, --model, --prompt)
+  glue run --prompt "<text>" [flags]  Run a one-shot or scripted prompt (--coding for tools)
+  glue goal "<objective>" [flags]     Pursue a local goal autonomously (--coding, --worktree)
 
-Defaults: chat uses provider openrouter, model openrouter/free.
-  --coding and goal use provider gemini, model gemini-3-flash-preview, thinking low.
-Explicit --provider and --model override defaults.
+Run remotely on AX:
+  glue job init                       Check setup and pair phone notifications via QR code
+  glue --remote "<objective>" [flags] Submit a remote coding job (--snapshot, --verify, --attach)
+  glue --remote -i "<prompt>" [flags] Start an interactive multi-turn remote workspace
 
-Flags:
-  --id       Session id. Defaults to "default".
-  --prompt   Prompt text. Required unless --skill is set or connect is in an inspection mode.
-  --skill    Connect mode: run one daemon skill instead of --prompt.
-  --provider Run/serve provider: codex, deepseek, gemini, nvidia, or openrouter. Defaults to gemini.
-             Use --provider codex for a ChatGPT-subscription coding agent (run "codex login" first).
-  --select   Run mode: choose provider, model, and thinking level in terminal menus.
-  --thinking Run/serve/goal thinking level for the selected model; see glue models.
-             Omit or use default to preserve API defaults.
-  --model    Model id. Defaults to the selected provider's default model. gemini/<model> accepted.
-  --store    File session store directory. Defaults to .glue/sessions.
-  --work     Workspace for AGENTS.md, skills, roles, and --coding tools. Defaults to ".".
-  --coding
-             Run/serve mode: register Glue's local coding tool bundle.
-  --allow-binary
-             Run/serve/goal --coding mode: allowed shell_exec binary basename; repeatable.
-  --shell-env-pass / --shell-env / --shell-env-secret-allow / --shell-timeout
-             Configure shell_exec environment pass-through, explicit KEY=VALUE vars, secret allowlist, and timeout.
-  --coding-allow-overwrite
-             Run/serve --coding mode: allow write_file overwrites when the model also sets overwrite=true.
-  --listen   Serve listen address. Defaults to 127.0.0.1:0.
-  --token    Serve bearer token. Defaults to GLUE_DAEMON_TOKEN or a generated token.
-  --token-file
-             Serve mode: durable bearer token file path (created with mode 0600 if missing).
-  --job-from-ax
-             Serve mode: create a job from AX task metadata or AX_TASK_YAML on startup (idempotent).
-  --metadata Serve connection metadata JSON. Defaults to the user config directory.
-  --base-url Connect daemon base URL override.
-  --role     Connect role override.
-  --max-turns Connect loop turn budget override.
-  --usage   Run/connect mode: print token usage summary to stderr when available.
-  --inspect  Connect mode: show daemon status and tools without starting a run.
-  --inspect-json
-             Connect --inspect mode: print JSON.
-  --status   Connect mode: show daemon status and exit without starting a run.
-  --status-json
-             Connect --status mode: print JSON.
-  --diagnose
-             Connect mode: diagnose daemon metadata, auth, reachability, and runtime state.
-  --diagnose-json
-             Connect --diagnose mode: print JSON.
-  --tools    Connect mode: list daemon tools and exit without starting a run.
-  --tools-json
-             Connect --tools mode: print JSON.
-  --skills   Connect mode: list daemon skills and exit without starting a run.
-  --skills-json
-             Connect --skills mode: print JSON.
-  --roles    Connect mode: list daemon roles and exit without starting a run.
-  --roles-json
-             Connect --roles mode: print JSON.
-  --mcp-resources
-             Connect mode: list daemon MCP resources and exit without starting a run.
-  --mcp-resources-json
-             Connect --mcp-resources mode: print JSON.
-  --mcp-prompts
-             Connect mode: list daemon MCP prompts and exit without starting a run.
-  --mcp-prompts-json
-             Connect --mcp-prompts mode: print JSON.
-  --mcp-read
-             Connect mode: read one daemon MCP resource and exit without starting a run.
-  --mcp-read-json
-             Connect --mcp-read mode: print JSON.
-  --mcp-prompt
-             Connect mode: render one daemon MCP prompt and exit without starting a run.
-  --mcp-prompt-json
-             Connect --mcp-prompt mode: print JSON.
-  --recall   Connect mode: search daemon recall history and exit without starting a run.
-  --recall-json
-             Connect --recall mode: print JSON. With no --recall flag, one positional query is accepted.
-  --recall-memories
-             Connect --recall mode: search only curated memories.
-  --recall-limit
-             Connect --recall mode: maximum hits; 0 uses daemon default.
-  --memories Connect mode: list daemon memories and exit without starting a run.
-  --memories-json
-             Connect --memories mode: print JSON.
-  --memory-limit
-             Connect --memories/--inspect mode: maximum memories; 0 means no limit.
-  --forget-memory
-             Connect mode: delete one daemon memory by id and exit without starting a run.
-  --forget-memory-json
-             Connect --forget-memory mode: print JSON.
-  --permissions
-             Connect mode: list daemon permission grants and exit without starting a run.
-  --permissions-json
-             Connect --permissions mode: print JSON.
-  --forget-permission
-             Connect mode: delete one daemon permission grant by id and exit without starting a run.
-  --forget-permission-json
-             Connect --forget-permission mode: print JSON.
-  --server   MCP server name for --mcp-read or --mcp-prompt.
-  --uri      MCP resource URI for --mcp-read.
-  --name     MCP prompt name for --mcp-prompt.
-  --arg      Skill or MCP prompt argument key=value. Repeatable.
-  --env      Load env vars from a .env file. Repeatable; shell env wins.
+Manage remote jobs:
+  glue job list | show <id>           List jobs or inspect status, questions, and permissions
+  glue job attach [<id>]              Stream live job events (Ctrl-C detaches cleanly)
+  glue job say | answer <id> "<text>" Steer a running job (--interrupt) or answer a question
+  glue job diff | pull | pr [<id>]    Review patch, pull branch/changes, or open a draft PR
+  glue job continue <id> [flags]      Resume a job with instructions or --from-pr feedback
+
+Models & daemon:
+  glue models [--provider <name>]     List providers, models, defaults, and thinking levels
+  glue serve [flags]                  Start local HTTP+SSE daemon (--coding, --jobs)
+  glue connect [flags]                Run a daemon prompt/skill or inspect daemon state
+  glue version                        Print version, git revision, and Go toolchain
+
+Defaults: coding/goal/remote use gemini/gemini-3-flash-preview (thinking low);
+  glue run without --coding uses openrouter/openrouter/free.
+  Run "glue <command> --help" or "glue help <command>" for command flags.
 `)
+}
+
+func parseCommandFlags(flags *flag.FlagSet, args []string, stdout, stderr io.Writer, usage string) (bool, error) {
+	flags.SetOutput(stderr)
+	flags.Usage = func() {}
+	err := flags.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		printFlagSetUsage(flags, stdout, usage)
+		return true, nil
+	}
+	return false, err
+}
+
+func printFlagSetUsage(flags *flag.FlagSet, w io.Writer, usage string) {
+	if strings.TrimSpace(usage) != "" {
+		fmt.Fprintf(w, "%s\n\n", strings.TrimRight(usage, "\n"))
+	}
+	fmt.Fprintln(w, "Flags:")
+	flags.VisitAll(func(f *flag.Flag) {
+		typ, desc := flag.UnquoteUsage(f)
+		spec := strings.TrimSpace(map[bool]string{true: "-", false: "--"}[len(f.Name) == 1] + f.Name + " " + typ)
+		if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" && f.DefValue != "0s" {
+			desc += fmt.Sprintf(" (default %s)", f.DefValue)
+		}
+		fmt.Fprintf(w, "  %-28s %s\n", spec, desc)
+	})
 }
 
 func loadEnvFiles(files []string) error {

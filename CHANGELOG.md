@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Running bare `glue` on a terminal now launches the interactive coding TUI directly (honoring `~/.config/glue/config.yaml` and `GLUE_PROVIDER`/`GLUE_MODEL`/`GLUE_THINKING`; non-TTY invocations still print usage and exit `0`), `glue code [flags]` enables coding tools and coding model defaults without `--coding`, and `glue --help` / `glue help [command]` replace the 135-line flag dump with a concise task-grouped guide while keeping per-command flags in `glue <command> --help`.
+
 - Personal remote defaults in `~/.config/glue/config.yaml` (`XDG_CONFIG_HOME`, `0600`, strict YAML `ax`, `public_url`, `notify`, `deliver`, `provider`, `model`, `thinking` with `flag > env > .glue/remote.yaml > ~/.config/glue/config.yaml > default` precedence) and `glue job init` one-scan QR phone pairing (`internal/qr`), keeping `NotifyURLs` durable across AX task restarts and redacted in `doctor`, submit summaries, and errors.
 
 - `glue job pr [<id>]` and `POST /v1/jobs/{id}/pr` open draft pull requests after completion for branch-delivered jobs and persist `pr_url` across `glue serve`, `glue-gateway`, direct AX (`~/.config/glue/ax-jobs/<id>.json`, without waking suspended tasks), and `glue job pick` so `glue job show`, `glue job result`, and `glue job continue --from-pr` find the PR URL.

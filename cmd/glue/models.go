@@ -19,12 +19,14 @@ type catalogProvider struct {
 	Models       []providers.ModelInfo `json:"models"`
 }
 
+const modelsUsage = "Usage:\n  glue models [--provider <name>] [--json]\n\nList curated providers, models, defaults, and supported thinking levels."
+
 func modelsCommand(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("glue models", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	provider := flags.String("provider", "", "filter by provider")
 	asJSON := flags.Bool("json", false, "print catalog as JSON")
-	if err := flags.Parse(args); err != nil {
+	if helped, err := parseCommandFlags(flags, args, stdout, stderr, modelsUsage); helped || err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {

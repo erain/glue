@@ -41,6 +41,8 @@ type serveConfig struct {
 
 type daemonMetadata = daemon.Metadata
 
+const serveUsage = "Usage:\n  glue serve [--coding] [--jobs] [--job-from-ax] [--listen 127.0.0.1:0] [--token-file <path>] [flags]\n\nStart a local HTTP+SSE daemon for Glue sessions and durable coding jobs."
+
 func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, newProvider providerFactory, serve serveFunc) (resultErr error) {
 	flags := flag.NewFlagSet("glue serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -68,7 +70,7 @@ func serveCommand(ctx context.Context, args []string, stdout io.Writer, stderr i
 	var codingCfg codingFlagConfig
 	registerShellFlags(flags, &codingCfg)
 
-	if err := flags.Parse(args); err != nil {
+	if helped, err := parseCommandFlags(flags, args, stdout, stderr, serveUsage); helped || err != nil {
 		return err
 	}
 	if err := codingCfg.validate(); err != nil {
