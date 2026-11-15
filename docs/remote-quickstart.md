@@ -17,19 +17,21 @@ You do not need to build an image: jobs use the published `ghcr.io/erain/glue-ta
 From your checkout:
 
 ```sh
-glue job doctor
+glue job init                         # runs glue job doctor, pairs your phone via QR, and saves ~/.config/glue/config.yaml (0600)
 ```
 ```
 ok    target         AX context kind-glue-ax, kubeconfig ~/.cache/glue/ax-dev/kubeconfig, atespace default
 ok    ax connection  tunnels up, router credentials minted
 ok    ax-server      reachable, 1 job(s)
+ok    user config    ~/.config/glue/config.yaml (not set; optional)
+ok    notifications  not configured (run glue job init)
 ok    task image     ghcr.io/erain/glue-task@sha256:309f…58cc (ghcr.io/erain/glue-task:main, published image)
 ok    repo           https://github.com/erain/glue-sandbox @ main
 ok    github token   from gh auth token, can push to erain/glue-sandbox
 ok    provider key   gemini from env GEMINI_API_KEY
 ```
 
-Every line that is not `ok` says how to fix it.
+Every line that is not `ok` says how to fix it. Scan the printed QR code in the [ntfy](https://ntfy.sh) app once; `glue` saves your secret topic in `~/.config/glue/config.yaml` (`0600`) so every future job and resumed AX task uses it automatically.
 
 ## 2. Start a job, with the work you have not pushed yet
 

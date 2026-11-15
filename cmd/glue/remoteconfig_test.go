@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erain/glue/cmd/glue/tui"
 	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/jobs"
 )
@@ -21,7 +22,8 @@ type configFakeAPI struct {
 	spec *jobs.Spec
 }
 
-func (configFakeAPI) Close() error { return nil }
+func (configFakeAPI) Close() error                                          { return nil }
+func (configFakeAPI) List(context.Context, jobs.Filter) ([]jobs.Job, error) { return nil, nil }
 func (f configFakeAPI) Submit(_ context.Context, spec jobs.Spec, _ bool) (jobs.Job, error) {
 	*f.spec = spec
 	return jobs.Job{ID: "job-0123456789ab", Spec: spec}, nil
@@ -140,4 +142,67 @@ func TestSplitCommand(t *testing.T) {
 	if _, err := splitCommand("sh -c 'unterminated"); err == nil {
 		t.Fatal("unterminated quote accepted")
 	}
+}
+
+func TestUserConfigPrecedence(t *testing.T) {
+	clearJobTestEnv(t)
+	const sec = "0123456789abcdef0123456789abcdef"
+	const uYAML = "ax: {context: user-ctx, kubeconfig: /user/kc, atespace: user-ns}\npublic_url: https://glue.example.com\nnotify: [https://ntfy.sh/glue-" + sec + "]\ndeliver: none\nprovider: gemini\nmodel: gemini-3.1-pro-preview\nthinking: high\n"
+	repo, xdg, orig, origKube := pushedCheckout(t), t.TempDir(), newAXJobAPI, resolveKubeTarget
+	t.Cleanup(func() { newAXJobAPI, resolveKubeTarget = orig, origKube })
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	cfgFile, remoteFile := filepath.Join(xdg, "glue", "config.yaml"), filepath.Join(repo, ".glue", "remote.yaml")
+	must(0, os.MkdirAll(filepath.Dir(cfgFile), 0o700))
+	must(0, os.MkdirAll(filepath.Dir(remoteFile), 0o755))
+	var opts axbackend.Options
+	var spec jobs.Spec
+	newAXJobAPI = func(_ context.Context, o axbackend.Options) (jobAPI, error) {
+		opts = o
+		return configFakeAPI{spec: &spec}, nil
+	}
+	resolveKubeTarget = func(kc, kctx string) (string, string, error) { return kc, kctx, nil }
+	envs := map[string]string{"GLUE_DELIVER": "branch", "GLUE_MODEL": "gemini-3-flash-preview", "GLUE_THINKING": "low", "GLUE_NOTIFY_URL": "https://hooks.env.example/sec12345", "GLUE_AX_ATESPACE": "env-ns", "GLUE_AX_CONTEXT": "env-ctx"}
+	for _, tc := range []struct {
+		name, user, repo, want string
+		env                    map[string]string
+		flags                  []string
+	}{
+		{"defaults", "", "", "|||default||", nil, nil},
+		{"unknown_key", "provider: gemini\nbad_field: 1\n", "", "ERR", nil, nil},
+		{"repo>user", uYAML, "deliver: pr\n", "draft_pr|gemini-3.1-pro-preview|high|user-ns|user-ctx|https://ntfy.sh/glue-" + sec, nil, nil},
+		{"env>repo", uYAML, "deliver: pr\n", "branch|gemini-3-flash-preview|low|env-ns||https://hooks.env.example/sec12345", envs, nil},
+		{"flag>env", uYAML, "deliver: pr\n", "none|gemini-3.1-pro-preview|medium|flag-ns|flag-ctx|https://hooks.flag.example/sec99999", envs, []string{"--deliver", "none", "--model", "gemini-3.1-pro-preview", "--thinking", "medium", "--notify", "https://hooks.flag.example/sec99999", "--atespace", "flag-ns", "--context", "flag-ctx"}},
+		{"user", uYAML, "", "none|gemini-3.1-pro-preview|high|user-ns|user-ctx|https://ntfy.sh/glue-" + sec, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			must(0, os.WriteFile(cfgFile, []byte(tc.user), 0o600))
+			must(0, os.WriteFile(remoteFile, []byte(tc.repo), 0o644))
+			var out, errBuf bytes.Buffer
+			err := jobCommand(context.Background(), append([]string{"submit", "--ax", "--repo", repo, "Add Shout"}, tc.flags...), strings.NewReader(""), &out, &errBuf, nil)
+			got := strings.Join([]string{spec.Delivery, spec.Model, spec.Thinking, opts.Connect.Atespace, opts.Connect.KubeContext, strings.Join(opts.Credentials.NotifyURLs, ",")}, "|")
+			checkAX(t, (tc.want == "ERR" && err != nil && strings.Contains(err.Error(), "line 2") && strings.Contains(err.Error(), "bad_field")) || (err == nil && got == tc.want && !strings.Contains(errBuf.String(), sec)), "%s: got=%q err=%v", tc.name, got, err)
+		})
+	}
+	_, err := submitRemoteFromTUI(context.Background(), repo, tui.RemoteRequest{Objective: "TUI check"}, nil)
+	var doc bytes.Buffer
+	_ = jobCommand(context.Background(), []string{"doctor", "--repo", "https://github.com/erain/glue-sandbox"}, strings.NewReader(""), &doc, &doc, nil)
+	checkAX(t, err == nil && spec.Delivery == "none" && spec.Model == "gemini-3.1-pro-preview" && slices.Contains(opts.EgressHosts, "ntfy.sh") && strings.Contains(doc.String(), "https://ntfy.sh/glue-0123…") && !strings.Contains(doc.String(), sec), "tui/doctor: %+v %v\n%s", spec, err, doc.String())
+}
+
+func TestUserConfigPermissions0600(t *testing.T) {
+	clearJobTestEnv(t)
+	dir := filepath.Join(t.TempDir(), "glue")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(dir))
+	none, _, err := loadUserConfig()
+	must(0, os.MkdirAll(dir, 0o755))
+	must(0, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("public_url: https://glue.example.com\nprovider: gemini\n"), 0o644))
+	cfg, _, err2 := loadUserConfig()
+	checkAX(t, err == nil && none == nil && err2 == nil && cfg != nil, "load: %v / %v", err, err2)
+	cfg.Notify = []string{"https://ntfy.sh/glue-0123456789abcdef0123456789abcdef"}
+	p := must(saveUserConfig(cfg))
+	rel, _, rerr := loadUserConfig()
+	checkAX(t, rerr == nil && must(os.Stat(dir)).Mode().Perm() == 0o700 && must(os.Stat(p)).Mode().Perm() == 0o600 && rel.PublicURL == "https://glue.example.com" && rel.Provider == "gemini" && len(rel.Notify) == 1, "rerr=%v", rerr)
 }

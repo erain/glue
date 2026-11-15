@@ -50,7 +50,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <init|login|doctor|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -66,7 +66,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.BoolVar(&target.ax, "ax", false, "force direct AX execution")
 	fs.StringVar(&target.kubeconfig, "kubeconfig", "", "kubeconfig path")
 	fs.StringVar(&target.kubectx, "context", "", "Kubernetes context")
-	fs.StringVar(&target.atespace, "atespace", "default", "AX atespace")
+	fs.StringVar(&target.atespace, "atespace", "", "AX atespace")
 	fs.StringVar(&target.image, "image", "", "AX task image")
 	fs.Var(&envs, "env", "env file path; repeatable")
 	repo, objective, baseRef, backend := fs.String("repo", "", "repo"), fs.String("objective", "", "objective"), fs.String("base", "", "base ref"), fs.String("backend", "", "backend")
@@ -104,6 +104,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	fs.DurationVar(&target.startTimeout, "start-timeout", 0, "remote jobs: how long to wait for an AX worker before reporting the job as queued (default 2m)")
 	var notify repeatedStrings
 	fs.Var(&notify, "notify", "remote jobs: URL to POST to when the job waits for input or finishes; repeatable (default GLUE_NOTIFY_URL)")
+	_ = fs.Bool("non-interactive", false, "init: run without interactive prompts")
 	onQuestion := fs.String("on-question", "", "remote jobs: wait (default) for answers to the agent's questions, or assume at once")
 	questionTimeout := fs.Duration("question-timeout", 0, "how long a job waits for an answer before it assumes (default 30m)")
 	questionID := fs.String("question", "", "answer: the question ID, when several are open")
@@ -145,9 +146,16 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	if sub == "pr" && len(pos) == 0 {
 		pos = []string{"latest"}
 	}
-	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && len(pos) == 0 {
+	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && sub != "init" && len(pos) == 0 {
 		return fmt.Errorf("usage: glue job %s <id>", sub)
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	ucfg, _, uerr := loadUserConfig()
+	if uerr != nil && sub != "doctor" {
+		return uerr
+	}
+	applyUserConfig(ucfg, set, &target, provider, model, thinking, deliver)
 	if sub == "submit" && *selectFlag {
 		if !jobIsTTY(stdin) || !jobIsTTY(stderr) {
 			return errors.New("--select requires terminal stdin and stderr; use glue models and --provider/--model/--thinking for scripts")
@@ -164,8 +172,6 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 	var cfgNote string
 	if sub == "submit" {
-		set := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		cfgDir := cmp.Or(strings.TrimSpace(*repo), ".")
 		if isRemoteRepoRef(cfgDir) {
 			cfgDir = ""
@@ -198,6 +204,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 	if sub == "doctor" {
 		return jobDoctor(ctx, target, *repo, *baseRef, *provider, *model, target.image, *asJSON, stdout, httpClient)
+	}
+	if sub == "init" {
+		return jobInit(ctx, target, *repo, *baseRef, *provider, *model, stdout, httpClient)
 	}
 	c, directAX, err := resolveJobAPI(ctx, target, httpClient)
 	if err != nil {
@@ -305,6 +314,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 				}
 			}
 			printSubmitSummary(stderr, job.ID, directAX, *start, summary)
+			if urls := notifyURLs(target.notify); len(urls) > 0 {
+				fmt.Fprintf(stderr, "  %-9s %s\n", "notify", redactNotify(urls...))
+			}
 			if directAX && len(target.egress) > 0 {
 				fmt.Fprintf(stderr, "  %-9s defaults + %s\n", "egress", strings.Join(target.egress, ", "))
 			}

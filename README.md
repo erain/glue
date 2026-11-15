@@ -26,9 +26,9 @@ build your own tool-calling agents on the same provider-agnostic loop.
 **Remote jobs in five minutes → [docs/remote-quickstart.md](docs/remote-quickstart.md).**
 
 ```sh
-glue job doctor                       # cluster, image, repo, tokens: what to fix, if anything
+glue job init                         # doctor checks + one-time QR phone pairing (~/.config/glue/config.yaml)
 glue --remote "Add Sub(a, b int) next to Add, with a table-driven test" \
-  --snapshot --verify "go test ./..." --notify https://ntfy.sh/<your-topic>
+  --snapshot --verify "go test ./..."
 glue job attach latest                # live transcript; Ctrl-C detaches, the job keeps going
 glue job pull latest --apply          # the result, on top of the work you sent
 ```

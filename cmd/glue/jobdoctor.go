@@ -82,6 +82,14 @@ func jobDoctor(ctx context.Context, t jobTargetOpts, repo, base, provider, model
 			add(doctorCheck{Name: name, OK: true, Detail: fmt.Sprintf("reachable, %d job(s)", len(list))})
 		}
 	}
+	ucfg, ucfgPath, uerr := loadUserConfig()
+	if uerr != nil {
+		add(doctorCheck{Name: "user config", Detail: oneLine(uerr.Error()), Fix: "fix or remove " + ucfgPath})
+	} else {
+		add(doctorCheck{Name: "user config", OK: true, Detail: ucfgPath + map[bool]string{true: " (not set; optional)"}[ucfg == nil]})
+	}
+	nURLs, nSrc := notifyURLs(t.notify), cmp.Or(map[bool]string{true: "--notify"}[len(t.notify) > 0], map[bool]string{true: "env GLUE_NOTIFY_URL"}[envSet("GLUE_NOTIFY_URL")], ucfgPath)
+	add(doctorCheck{Name: "notifications", OK: true, Detail: map[bool]string{true: "not configured (run glue job init)", false: redactNotify(nURLs...) + " (" + nSrc + ")"}[len(nURLs) == 0]})
 	if !directAX {
 		return writeDoctor(stdout, checks, asJSON)
 	}
