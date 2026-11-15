@@ -96,7 +96,7 @@ func (m *Model) runSlashRemote(arg string) (tea.Model, tea.Cmd) {
 	}
 	m.appendSystem("/remote: submitting to a remote sandbox…")
 	m.rerender()
-	submit, parent, send := m.cfg.SubmitRemote, m.ctx, m.send
+	submit, pub, parent, send := m.cfg.SubmitRemote, strings.TrimRight(strings.TrimSpace(m.cfg.PublicURL), "/"), m.ctx, m.send
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
 		defer cancel()
@@ -113,6 +113,7 @@ func (m *Model) runSlashRemote(arg string) (tea.Model, tea.Cmd) {
 			}
 			return systemMsg(text)
 		}
-		return systemMsg("remote job " + id + " is running · watch: glue job attach " + id + " · result: glue job result " + id)
+		browser := pick(pub != "", " · browser: "+pub+"/#/jobs/"+id, "")
+		return systemMsg("remote job " + id + " is running" + browser + " · watch: glue job attach " + id + " · result: glue job result " + id)
 	}
 }

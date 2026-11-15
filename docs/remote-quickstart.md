@@ -93,7 +93,7 @@ next: review with git diff, then commit
 ok  	example.com/sandbox	0.002s
 ```
 
-`--apply` puts the changes in your working tree on top of the uncommitted work you sent. `glue job pull latest --checkout` switches to the job's branch instead. To open a draft pull request from a branch-delivered job after reviewing its diff, run `glue job pr` (or submit upfront with `--deliver pr`). For review comments on that PR, run `glue job continue latest --from-pr`.
+`--apply` puts the changes in your working tree on top of the uncommitted work you sent. `glue job pull latest --checkout` switches to the job's branch instead, and `glue job teleport` (or `/teleport` / pressing `t` in `/jobs`) pulls both the changes and a structured session briefing directly into the local coding TUI so your next prompt has full context. To open a draft pull request from a branch-delivered job after reviewing its diff, run `glue job pr` (or submit upfront with `--deliver pr`). For review comments on that PR, run `glue job continue latest --from-pr`.
 
 ## 5. Clean up
 

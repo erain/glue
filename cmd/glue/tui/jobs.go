@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/erain/glue"
 )
 
 // JobRow is one remote job in the /jobs panel.
@@ -31,6 +32,8 @@ type JobDetail struct {
 	Permissions                           []JobPermission
 }
 
+type TeleportResult struct{ SessionID, Notice string }
+
 // JobsBridge gives the TUI access to remote jobs. cmd/glue implements it
 // with the glue job commands.
 type JobsBridge interface {
@@ -49,6 +52,7 @@ type JobsBridge interface {
 	// Pull brings the job's result into the workspace (glue job pull) and
 	// describes what it did.
 	Pull(ctx context.Context, id string, apply bool) (string, error)
+	Teleport(ctx context.Context, id string) (TeleportResult, error)
 }
 
 const (
@@ -345,6 +349,8 @@ func (m *Model) handleJobsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.prompt, p.target, p.qid, p.input = "answer", id, p.detail.Question.ID, ""
 	case id != "" && !term && ((key == "s" && !hasPerm) || key == "i"):
 		p.prompt, p.target, p.input = pick(key == "i", "interrupt", "say"), id, ""
+	case key == "t" && id != "":
+		return m.runSlashTeleport(id)
 	case (key == "p" || key == "A") && id != "":
 		apply, lbl := key == "A", pick(key == "A", "apply ", "pull ")+id
 		m.appendSystem(pick(apply, "applying ", "pulling ") + id + "…")
@@ -443,7 +449,7 @@ func renderJobsPanel(p *jobsPanel, width int, now time.Time) string {
 	if p.notice != "" {
 		b.WriteString("\n" + pickerRow.Render("  "+truncateRunes(p.notice, w-6)))
 	}
-	act := pick(term, "p pull · A apply · o open PR", pick(hasPerm, "", "s say · ")+"i interrupt · c cancel")
+	act := pick(term, "t teleport · p pull · A apply · o open PR", pick(hasPerm, "", "s say · ")+"t teleport · i interrupt · c cancel")
 	hint := pick(len(p.rows) == 0, "  Esc close", "  ↑/↓ navigate · Enter open · "+act+" · Esc close")
 	if p.viewing != "" {
 		h := []string{"↑/↓/g/G scroll", pick(p.diffMode, "d transcript", "d diff")}
@@ -468,6 +474,40 @@ func renderJobsPanel(p *jobsPanel, width int, now time.Time) string {
 		return lipgloss.PlaceHorizontal(width, lipgloss.Center, rendered)
 	}
 	return rendered
+}
+
+func (m *Model) runSlashTeleport(arg string) (tea.Model, tea.Cmd) {
+	if m.cfg.Jobs == nil || m.turn != nil {
+		m.appendSystem(pick(m.cfg.Jobs == nil, "/teleport unavailable: remote jobs are not wired into this TUI", "/teleport: a turn is running; Esc to cancel first."))
+		m.rerender()
+		return m, nil
+	}
+	id := cmp.Or(strings.TrimSpace(arg), "latest")
+	if m.jobs != nil {
+		m.jobs.notice = "teleporting " + id + "…"
+	}
+	m.appendSystem("teleporting " + id + "…")
+	m.rerender()
+	cfg, parent := m.cfg, m.ctx
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+		defer cancel()
+		res, err := cfg.Jobs.Teleport(ctx, id)
+		if err != nil {
+			return jobsTranscriptMsg{id: id, notice: "error: " + err.Error(), sys: "/teleport failed: " + err.Error()}
+		}
+		var msgs []glue.Message
+		if cfg.Agent != nil {
+			if s, err := cfg.Agent.Session(ctx, res.SessionID); err == nil {
+				msgs = s.Messages()
+			}
+		} else if cfg.Store != nil {
+			if st, ok, _ := cfg.Store.Load(ctx, res.SessionID); ok {
+				msgs = st.Messages
+			}
+		}
+		return sessionSwitchedMsg{ID: res.SessionID, Note: "teleported " + id, Messages: msgs}
+	}
 }
 
 func truncateRunes(s string, n int) string {

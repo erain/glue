@@ -63,7 +63,8 @@ type Config struct {
 	SubmitRemote func(ctx context.Context, req RemoteRequest, progress func(string)) (string, error)
 
 	// Jobs lists remote jobs for /jobs and the status bar. Nil disables both.
-	Jobs JobsBridge
+	Jobs      JobsBridge
+	PublicURL string
 
 	// Pricing enables dollar estimates in /usage and the status bar.
 	// The zero value keeps the display token-only.
@@ -264,6 +265,11 @@ func newModel(ctx context.Context, cfg Config) *Model {
 
 func (m *Model) Init() tea.Cmd {
 	m.appendWelcome()
+	if m.cfg.Agent != nil && m.cfg.SessionID != "" {
+		if sess, err := m.cfg.Agent.Session(m.ctx, m.cfg.SessionID); err == nil && len(sess.Messages()) > 0 {
+			m.transcript = append(m.transcript, transcriptFromMessages(sess.Messages())...)
+		}
+	}
 	return tea.Batch(textarea.Blink, m.jobsCountTick(time.Second))
 }
 
@@ -403,6 +409,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionSwitchedMsg:
+		m.jobs = nil
 		m.cfg.SessionID = msg.ID
 		m.transcript = nil
 		m.detachGoalCard()
@@ -1072,6 +1079,8 @@ func (m *Model) handleSlash(cmd slashCommand) (tea.Model, tea.Cmd) {
 		return m.runSlashRemote(cmd.Arg)
 	case "jobs":
 		return m.runSlashJobs()
+	case "teleport":
+		return m.runSlashTeleport(cmd.Arg)
 	default:
 		m.appendSystem("unknown command: /" + cmd.Name + " (try /help)")
 		m.rerender()
