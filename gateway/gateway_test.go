@@ -209,6 +209,9 @@ func verifyJobRun(t *testing.T, cli *jobclient.Client, jobID string, stopOnDone 
 	if res := must(cli.Result(t.Context(), jobID)); res.JobID != jobID || res.Status != jobs.Achieved || res.Summary != "created hello.txt" {
 		t.Fatalf("Result: %+v", res)
 	}
+	if patch := must(cli.Patch(t.Context(), jobID)); !strings.Contains(string(patch), "+hi") || !strings.Contains(string(patch), "hello.txt") {
+		t.Fatalf("Patch: %q", patch)
+	}
 }
 
 func TestLocalBackendEndToEnd(t *testing.T) {
@@ -479,6 +482,10 @@ func TestReadOnlyViewsDoNotResume(t *testing.T) {
 		if resp := must(ts.Client().Do(req)); resp.Body.Close() != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET events%s: %d", p, resp.StatusCode)
 		}
+	}
+	var se *jobclient.StatusError
+	if _, err := cli.Patch(t.Context(), job.ID); !errors.As(err, &se) || se.Code != http.StatusConflict {
+		t.Fatalf("GET patch while suspended = %v, want 409", err)
 	}
 	if hits, r := h.routerHits.Load(), h.resumes.Load()-resumesBefore; hits != 0 || r != 0 {
 		t.Fatalf("routerHits=%d resumes=%d, want 0/0", hits, r)

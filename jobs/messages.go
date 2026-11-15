@@ -131,6 +131,9 @@ func (m *Manager) guidance(ctx context.Context, id string, iteration int) (strin
 // current model request or tool call, so its next turn starts with the text
 // instead of waiting for the current step to finish.
 func (m *Manager) Interrupt(ctx context.Context, id, text string) error {
+	if strings.TrimSpace(text) == "" {
+		text = "Interrupt current step."
+	}
 	m.mu.Lock()
 	wasRunning := m.active[id] != nil
 	m.mu.Unlock()

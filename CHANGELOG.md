@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `webui` adds a safe DOM unified diff viewer (`GET /v1/jobs/{id}/patch` on both `glue serve` and `glue-gateway`, supporting live `running`/`waiting_for_input` working-tree diffs and terminal patches without waking suspended AX tasks), concise 1-line tool call summaries with duration and auto-expand on failure, live header `activity` (`phase · turn N · last tool`), an **Interrupt** steering button (`POST /v1/jobs/{id}/messages?interrupt=true`), and a one-click **Open Draft PR** button (`POST /v1/jobs/{id}/pr`) in the result panel.
+
 - Opt-in in-cluster gateway lifecycle (`glue remote setup`, `glue remote status`, `glue remote down [--purge-pvc]`, `deploy/gateway/Dockerfile`, in-cluster `internal/axbackend` discovery, `GET /v1/me`, and `ADR-0021`) deploying a 1-pod `glue-gateway` + optional `cloudflared` sidecar in namespace `glue-gateway` (0 AX worker slots while idle) protected by Cloudflare Access or `--dev-token`.
 
 - Running bare `glue` on a terminal now launches the interactive coding TUI directly (honoring `~/.config/glue/config.yaml` and `GLUE_PROVIDER`/`GLUE_MODEL`/`GLUE_THINKING`; non-TTY invocations still print usage and exit `0`), `glue code [flags]` enables coding tools and coding model defaults without `--coding`, and `glue --help` / `glue help [command]` replace the 135-line flag dump with a concise task-grouped guide while keeping per-command flags in `glue <command> --help`.

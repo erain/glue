@@ -50,6 +50,7 @@ func (noopHost) Session(context.Context, string, ...glue.SessionOption) (*glue.S
 type scriptedE2EProvider struct {
 	mu            sync.Mutex
 	calls         int
+	pauseCall     int
 	turns         [][]glue.ProviderEvent
 	midJobOnce    sync.Once
 	midJobReached chan struct{}
@@ -74,7 +75,11 @@ func (p *scriptedE2EProvider) Stream(ctx context.Context, _ glue.ProviderRequest
 	}
 	p.mu.Unlock()
 
-	if call == 4 { // after ask_user and write_file
+	pauseAt := p.pauseCall
+	if pauseAt == 0 {
+		pauseAt = 4
+	}
+	if call == pauseAt { // after ask_user and write_file
 		p.midJobOnce.Do(func() { close(p.midJobReached) })
 		select {
 		case <-p.releaseFinish:
@@ -117,7 +122,7 @@ func renderableTranscriptSeqs(events []eventlog.Envelope) (allSeqs []int64, item
 				currentTextKey = key
 				itemSeqs = append(itemSeqs, ev.Seq)
 			}
-		case "tool_start", "permission_request", "plan", "iteration_start", "verdict", "operator_message", "run_interrupted", "job_resumed", "job_done":
+		case "tool_start", "permission_request", "plan", "iteration_start", "verdict", "operator_message", "turn_interrupted", "run_interrupted", "job_resumed", "job_done":
 			currentTextKey = ""
 			itemSeqs = append(itemSeqs, ev.Seq)
 		default:
@@ -316,7 +321,8 @@ func TestE2EJobBrowserWorkflow(t *testing.T) {
 	waitJS(t, bctx, "step 4 status returns to running", `Boolean(
 		document.querySelector('[data-testid="permission-state"]')?.textContent === "allowed" &&
 		document.querySelector('[data-testid="detail-status"]')?.textContent === "running" &&
-		document.querySelector('[data-testid="tool-status"]')?.textContent === "done"
+		document.querySelector('[data-tool-name="write_file"] [data-testid="tool-name"]')?.textContent === "write_file hello.txt" &&
+		document.querySelector('[data-testid="tool-status"]')?.textContent === "✓"
 	)`)
 
 	// 5. Reload the page mid-job; rendered transcript items match distinct seqs in the event log (no duplicates, no gaps).
@@ -426,4 +432,129 @@ func TestE2EJobBrowserWorkflow(t *testing.T) {
 		}
 		waitJS(t, cfCtx, "cf notice", `Boolean(document.querySelector('[data-testid="cf-access-notice"]') && !document.querySelector('[data-testid="login-token"]'))`)
 	})
+}
+
+func mustNoErr(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func startE2EBrowser(t *testing.T, p glue.Provider, wrap func(http.Handler) http.Handler) (context.Context, context.Context, *jobs.Manager, *httptest.Server) {
+	t.Helper()
+	if os.Getenv("GLUE_E2E_BROWSER") != "1" {
+		t.Skip("skipping browser E2E test; set GLUE_E2E_BROWSER=1 to run")
+	}
+	chromeBin, err := findChromeBinary()
+	if err != nil {
+		if browserRequired() {
+			t.Fatalf("Chrome/Chromium binary is required when CI=true and GLUE_E2E_BROWSER=1 (%v); install google-chrome-stable / chromium or set GLUE_CHROME_BIN", err)
+		}
+		t.Skipf("Chrome/Chromium binary not found (%v); install Chrome or set CI=true to require it", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	stateDir := t.TempDir()
+	mgr, err := jobs.New(jobs.Options{StateDir: stateDir, ProviderFactory: func(string) (glue.Provider, error) { return p, nil }})
+	mustNoErr(t, err)
+	const tok = "e2e-daemon-token"
+	srv, err := daemon.New(daemon.Options{Host: noopHost{}, Token: tok, StateDir: stateDir, Jobs: mgr, KeepaliveInterval: 50 * time.Millisecond})
+	mustNoErr(t, err)
+	var h http.Handler = srv
+	if wrap != nil {
+		h = wrap(srv)
+	}
+	ts := httptest.NewServer(h)
+	t.Cleanup(func() { ts.Close(); _ = srv.Close(); _ = mgr.Close() })
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chromeBin), chromedp.NoSandbox, chromedp.DisableGPU, chromedp.WindowSize(1280, 900))...)
+	bctx, cancelBrowser := chromedp.NewContext(allocCtx)
+	t.Cleanup(func() { cancelBrowser(); cancelAlloc() })
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Navigate(ts.URL)))
+	waitJS(t, bctx, "login form", `Boolean(document.querySelector('[data-testid="login-token"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.SendKeys(`[data-testid="login-token"]`, tok), chromedp.Click(`[data-testid="login-submit"]`)))
+	waitJS(t, bctx, "jobs view", `Boolean(document.querySelector('[data-testid="jobs-view"]'))`)
+	return ctx, bctx, mgr, ts
+}
+
+func initE2ERepo(t *testing.T, withOrigin bool) string {
+	t.Helper()
+	repo := t.TempDir()
+	mustNoErr(t, os.WriteFile(filepath.Join(repo, "app.txt"), []byte("old line\nkeep\n"), 0o644))
+	script := "git -C " + repo + " init -qb main && git -C " + repo + " -c user.name=e2e -c user.email=e2e@example.com add app.txt && git -C " + repo + " -c user.name=e2e -c user.email=e2e@example.com commit -qm base"
+	if withOrigin {
+		bare := filepath.Join(t.TempDir(), "erain", "sandbox.git")
+		mustNoErr(t, os.MkdirAll(bare, 0o755))
+		script += " && git -C " + bare + " init --bare -q && git -C " + repo + " remote add origin " + bare + " && git -C " + repo + " push -q origin main"
+	}
+	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v (%s)", err, out)
+	}
+	return repo
+}
+
+func TestE2EDiffViewerAndOpenPR(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]string{"GET /repos/erain/sandbox": `{"default_branch":"main"}`, "GET /repos/erain/sandbox/pulls": `[]`}[r.Method+" "+r.URL.Path]
+		if body == "" {
+			body = `{"html_url":"https://github.com/erain/sandbox/pull/42"}`
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	t.Setenv("GLUE_GITHUB_TOKEN", "gh-tok")
+	p := &scriptedE2EProvider{midJobReached: make(chan struct{}), releaseFinish: make(chan struct{}), turns: [][]glue.ProviderEvent{
+		textEvents(`{"items":[{"title":"Update files"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "e1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"app.txt","old_string":"old line","new_string":"new line ` + strings.Repeat("x", 220) + `"}`)}}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w1", Name: "write_file", Arguments: json.RawMessage(`{"path":"xss.html","content":"<script>window.__xss=1</script>\n"}`)}}, {Type: glue.ProviderEventDone}},
+		textEvents("Updated files."),
+		textEvents(`{"done":true,"items":[{"title":"Update files","done":true}],"summary":"Updated app and xss"}`),
+	}}
+	close(p.releaseFinish)
+	ctx, bctx, mgr, ts := startE2EBrowser(t, p, nil)
+	job, err := mgr.Create(ctx, jobs.Spec{Objective: "Update files safely", Repo: jobs.RepoSpec{Path: initE2ERepo(t, true), BaseRef: "main"}, Policy: "yolo", Delivery: "branch"})
+	mustNoErr(t, err)
+	mustNoErr(t, mgr.Start(ctx, job.ID))
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Navigate(ts.URL+"/#/jobs/"+job.ID)))
+	waitJS(t, bctx, "diff & open PR button", `document.querySelectorAll('[data-testid="diff-file"]').length === 2 && document.querySelector('[data-testid="diff-summary"]')?.textContent?.includes("2 files") && [...document.querySelectorAll('[data-testid="diff-line-add"]')].some((e) => e.textContent.includes("<script>window.__xss=1</script>")) && [...document.querySelectorAll('[data-testid="diff-line-del"]')].some((e) => e.textContent === "-old line") && document.querySelector('[data-testid="diff-line-hunk"]')?.textContent?.startsWith("@@") && window.__xss === undefined && Boolean(document.querySelector('[data-testid="result-open-pr-btn"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.EmulateViewport(390, 844, chromedp.EmulateMobile)))
+	waitJS(t, bctx, "mobile 390x844 layout", `(() => { const pr = document.querySelector('[data-testid="result-open-pr-btn"]')?.getBoundingClientRect(), ld = document.querySelector('[data-testid="load-diff-btn"]')?.getBoundingClientRect(), hk = document.querySelector('[data-testid="diff-hunks"]'); return Boolean(pr && ld && hk && document.documentElement.scrollWidth <= 390 && pr.left >= 0 && pr.right <= 390 && ld.left >= 0 && ld.right <= 390 && hk.scrollWidth > hk.clientWidth); })()`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="result-open-pr-btn"]`)))
+	waitJS(t, bctx, "pr link swapped in", `!document.querySelector('[data-testid="result-open-pr-btn"]') && document.querySelector('[data-testid="result-pr-link"]')?.getAttribute("href") === "https://github.com/erain/sandbox/pull/42"`)
+}
+
+func TestE2EInterruptSteeringAndToolSummary(t *testing.T) {
+	var interrupts atomic.Int32
+	p := &scriptedE2EProvider{pauseCall: 3, midJobReached: make(chan struct{}), releaseFinish: make(chan struct{}), turns: [][]glue.ProviderEvent{
+		textEvents(`{"items":[{"title":"Edit and verify"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "e1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"app.txt","old_string":"old line","new_string":"live edited"}`)}}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "s1", Name: "shell_exec", Arguments: json.RawMessage(`{"argv":["git","rev-parse","--verify","missing-ref"]}`)}}, {Type: glue.ProviderEventDone}},
+		textEvents("blocked"),
+		textEvents("Interrupted cleanly."),
+		textEvents(`{"done":true,"items":[{"title":"Edit and verify","done":true}],"summary":"Done"}`),
+	}}
+	ctx, bctx, mgr, ts := startE2EBrowser(t, p, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/messages") && r.URL.Query().Get("interrupt") == "true" {
+				interrupts.Add(1)
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	job, err := mgr.Create(ctx, jobs.Spec{Objective: "Edit and verify", Repo: jobs.RepoSpec{Path: initE2ERepo(t, false)}, Policy: "yolo"})
+	mustNoErr(t, err)
+	mustNoErr(t, mgr.Start(ctx, job.ID))
+	select {
+	case <-p.midJobReached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("job did not reach blocking turn")
+	}
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Navigate(ts.URL+"/#/jobs/"+job.ID)))
+	waitJS(t, bctx, "tool summaries & activity", `(() => { const edit = document.querySelector('[data-testid="tool-call"][data-tool-name="edit_file"]'), sh = document.querySelector('[data-testid="tool-call"][data-tool-name="shell_exec"]'), act = document.querySelector('[data-testid="job-activity"]'); return Boolean(edit && !edit.open && edit.querySelector('[data-testid="tool-name"]')?.textContent === "edit_file app.txt" && edit.querySelector('[data-testid="tool-status"]')?.textContent === "✓" && sh && sh.open && sh.querySelector('[data-testid="tool-name"]')?.textContent === "shell_exec git rev-parse --verify missing-ref" && sh.querySelector('[data-testid="tool-status"]')?.textContent === "✗" && act && !act.hidden && act.textContent.includes("maker") && act.textContent.includes("shell_exec")); })()`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="load-diff-btn"]`)))
+	waitJS(t, bctx, "live diff while running", `[...document.querySelectorAll('[data-testid="diff-line-add"]')].some((e) => e.textContent === "+live edited")`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.SendKeys(`[data-testid="steer-input"]`, "stop and finish"), chromedp.Click(`[data-testid="interrupt-btn"]`)))
+	waitJS(t, bctx, "interrupted & finished", `Boolean(document.querySelector('[data-testid="goal-divider"][data-event-type="turn_interrupted"]') && document.querySelector('[data-testid="result-status"]')?.textContent === "achieved")`)
+	if interrupts.Load() != 1 {
+		t.Fatalf("interrupt POST count = %d, want 1", interrupts.Load())
+	}
 }

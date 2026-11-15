@@ -805,12 +805,36 @@ func (b *Backend) removePatches(id string) {
 	}
 }
 
+// CachedPatch returns a locally cached terminal patch without contacting or waking the AX task.
+func (b *Backend) CachedPatch(id string) ([]byte, bool) {
+	c := b.loadCache(id)
+	if c == nil || c.Result == nil {
+		return nil, false
+	}
+	if c.Result.BaseSHA == "" || c.Result.HeadSHA == "" || c.Result.BaseSHA == c.Result.HeadSHA {
+		return []byte{}, true
+	}
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	data, err := os.ReadFile(b.patchPath(id, strings.TrimSpace(c.Result.HeadSHA)))
+	return data, err == nil
+}
+
+// LivePatch fetches a job patch only if the AX task is already awake.
+func (b *Backend) LivePatch(ctx context.Context, id string) ([]byte, error) {
+	if t, err := b.getTask(ctx, id); err != nil || !isWorkspaceReady(t) {
+		return nil, cmp.Or(err, fmt.Errorf("%w: task is suspended", jobs.ErrConflict))
+	}
+	_ = b.EnsureCredentials(ctx, id)
+	return b.jobClient(id).Patch(ctx, id)
+}
+
 // Patch returns the job's patch, from the local cache when this run's patch
 // was fetched before, so repeated calls do not wake the task.
 func (b *Backend) Patch(ctx context.Context, id string) ([]byte, error) {
 	res, err := b.Result(ctx, id)
 	if err != nil {
-		return nil, err
+		return b.LivePatch(ctx, id)
 	}
 	head := strings.TrimSpace(res.HeadSHA)
 	if head != "" {

@@ -45,7 +45,7 @@ var gatewayRoutes = []Route{
 	{http.MethodGet, "/v1/backends", false}, {http.MethodGet, "/v1/diagnostics", false}, {http.MethodGet, "/v1/jobs", false}, {http.MethodPost, "/v1/jobs", false},
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
 	{http.MethodGet, "/v1/jobs/{id}/permissions", false}, {http.MethodPost, "/v1/jobs/{id}/permissions/{permID}/decision", false},
-	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodPost, "/v1/jobs/{id}/pr", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
+	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodGet, "/v1/jobs/{id}/patch", false}, {http.MethodPost, "/v1/jobs/{id}/pr", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
 	{http.MethodPost, "/v1/jobs/{id}/answers", false}, {http.MethodPost, "/v1/jobs/{id}/goal", false},
 }
 
@@ -300,6 +300,12 @@ func (s *Server) ensureWatcher(jobID string, b Backend) {
 				if ev.Type == "job_done" {
 					if res, err := b.Result(s.ctx, rec.BackendRef); err == nil {
 						_ = s.reg.SaveResult(bg, jobID, res)
+						if p, ok := b.(Patcher); ok {
+							if data, perr := p.Patch(s.ctx, rec.BackendRef); perr == nil {
+								_ = os.MkdirAll(filepath.Join(s.cfg.StateDir, "patches"), 0o700)
+								_ = os.WriteFile(filepath.Join(s.cfg.StateDir, "patches", jobID+".patch"), data, 0o600)
+							}
+						}
 					}
 				}
 				_, err := s.reg.AppendEvent(bg, jobID, ev)
@@ -740,6 +746,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			_ = os.Remove(filepath.Join(s.cfg.StateDir, "patches", id+".patch"))
 			respond(w, http.StatusOK, map[string]any{"job_id": id, "deleted": true}, s.reg.PurgeJob(r.Context(), id))
 			return
 		}
@@ -769,6 +776,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = s.reg.SaveResult(r.Context(), id, res)
 		}
 		respond(w, http.StatusOK, res, err)
+	case "GET patch":
+		patch, err := os.ReadFile(filepath.Join(s.cfg.StateDir, "patches", id+".patch"))
+		if err != nil {
+			if axb, ok := b.(*axbackend.Backend); ok {
+				if data, ok := axb.CachedPatch(rec.BackendRef); ok {
+					patch, err = data, nil
+				} else if rec.Status != jobs.Suspended && !rec.TaskDeleted {
+					patch, err = axb.LivePatch(r.Context(), rec.BackendRef)
+				} else {
+					err = fmt.Errorf("%w: task is suspended", jobs.ErrConflict)
+				}
+			} else if p, ok := b.(Patcher); ok && rec.Status != jobs.Suspended && !rec.TaskDeleted && !(isTerminal(rec.Status) && rec.StatusReason == "finished") {
+				patch, err = p.Patch(r.Context(), rec.BackendRef)
+			} else {
+				err = fmt.Errorf("%w: patch is not available", jobs.ErrConflict)
+			}
+		}
+		if err != nil {
+			respond(w, 0, nil, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-patch; charset=utf-8")
+		_, _ = w.Write(patch)
 	case "POST pr":
 		var body struct {
 			GitHubToken string `json:"github_token"`
@@ -873,6 +903,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				sub += "?interrupt=true"
 			}
 			if code, respBody, err := b.Do(r.Context(), r.Method, rec.BackendRef+"/"+sub, body); err == nil {
+				if sub == "continue" && code < 300 {
+					_ = os.Remove(filepath.Join(s.cfg.StateDir, "patches", id+".patch"))
+				}
 				if sub == "goal" && code < 300 {
 					var out struct{ Job jobs.Job }
 					_ = json.Unmarshal(respBody, &out)

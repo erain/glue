@@ -41,6 +41,11 @@ type TaskLister interface {
 	ListTasks(ctx context.Context) ([]string, error)
 }
 
+// Patcher is implemented by backends that can return a job's unified diff.
+type Patcher interface {
+	Patch(ctx context.Context, id string) ([]byte, error)
+}
+
 // LocalBackend proxies job operations to a local or HTTP-reachable glue serve instance.
 type LocalBackend struct{ *jobclient.Client }
 

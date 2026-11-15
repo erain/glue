@@ -257,14 +257,17 @@ var MaxPatchBytes int64 = 5 << 20
 // ErrPatchTooLarge reports a job patch over MaxPatchBytes.
 var ErrPatchTooLarge = errors.New("jobs: patch is too large")
 
-// Patch returns the binary git diff from the job's base to its final commit.
+// Patch returns the binary git diff from the job's base to its final commit or live workspace.
 func (m *Manager) Patch(ctx context.Context, id string) ([]byte, error) {
 	res, err := m.Result(ctx, id)
 	if err != nil {
-		if j, jerr := m.Get(ctx, id); jerr == nil && j.Spec.isInteractive() && j.Status == WaitingForInput {
-			res.BaseSHA, res.Branch, err = j.BaseSHA, "glue/"+id, nil
-			if j.BaseSHA != "" && j.Workspace != "" {
-				res.HeadSHA, err = worktreeTree(ctx, j.Workspace)
+		if j, jerr := m.Get(ctx, id); jerr == nil && (j.Status == Running || j.Status == WaitingForInput) && j.Workspace != "" {
+			base := j.BaseSHA
+			if base == "" {
+				base, _ = workspaceGit(ctx, j.Workspace, nil, "rev-parse", "HEAD")
+			}
+			if head, terr := worktreeTree(ctx, j.Workspace); base != "" && terr == nil {
+				res.BaseSHA, res.HeadSHA, res.Branch, err = base, head, "glue/"+id, nil
 			}
 		}
 	}
