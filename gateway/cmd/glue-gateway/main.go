@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -12,11 +13,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/gateway"
+	"github.com/erain/glue/internal/axbackend"
+	"github.com/erain/glue/internal/jobclient"
+	"github.com/erain/glue/internal/redact"
 )
 
 func main() {
@@ -35,25 +41,33 @@ func run(ctx context.Context, args []string, stderr io.Writer, onReady func(addr
 	var insecureDev bool
 	fs.StringVar(&cfgPath, "config", "", "path to gateway YAML configuration file")
 	fs.BoolVar(&insecureDev, "insecure-dev", false, "allow dev-token auth mode when public_url is https://")
+	stateDir, listenAddr, tunnelToken, quick, tunnel := fs.String("state-dir", "", "gateway state directory"), fs.String("listen", "", "TCP listen address"), fs.String("tunnel-token", "", "Cloudflare Tunnel token"), fs.Bool("quick", false, "start with zero YAML, #token magic link, and QR code"), fs.Bool("tunnel", false, "expose gateway over cloudflared HTTPS tunnel")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfgPath) == "" {
+	cfg, err := gateway.Config{}, error(nil)
+	if *quick {
+		cfg, err = buildQuickConfig(*stateDir, *listenAddr)
+	} else if strings.TrimSpace(cfgPath) == "" {
 		return errors.New("--config is required")
+	} else if raw, rerr := os.ReadFile(cfgPath); rerr != nil {
+		return fmt.Errorf("gateway: read config %s: %w", cfgPath, rerr)
+	} else {
+		cfg, err = gateway.DecodeConfig(raw)
 	}
-	raw, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return fmt.Errorf("gateway: read config %s: %w", cfgPath, err)
-	}
-	cfg, err := gateway.DecodeConfig(raw)
 	if err != nil {
 		return err
 	}
-	cfg.Auth.InsecureDev = cfg.Auth.InsecureDev || insecureDev
+	cfg.Listen, cfg.StateDir = cmp.Or(strings.TrimSpace(*listenAddr), cfg.Listen), cmp.Or(strings.TrimSpace(*stateDir), cfg.StateDir)
+	cfg.TrustForwardedProto, cfg.Auth.InsecureDev = cfg.TrustForwardedProto || *tunnel, cfg.Auth.InsecureDev || insecureDev || *quick || *tunnel
 	if cfg, err = cfg.Validate(); err != nil {
 		return err
 	}
 	srv, err := gateway.NewServer(cfg)
+	if err != nil && *quick && len(cfg.Backends) > 1 {
+		cfg.Backends, cfg.DefaultBackend = cfg.Backends[1:], "local"
+		srv, err = gateway.NewServer(cfg)
+	}
 	if err != nil {
 		return err
 	}
@@ -63,6 +77,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, onReady func(addr
 	if err != nil {
 		return err
 	}
+	_, stopTunnel, err := axbackend.Expose(ctx, ln.Addr(), cfg.Auth.Token, *tunnel, *tunnelToken, *quick || *tunnel, true, stderr)
+	if err != nil {
+		return errors.Join(err, ln.Close())
+	}
+	defer stopTunnel()
 	httpSrv := gateway.NewHTTPServer(cfg.Listen, srv)
 	errCh := make(chan error, 1)
 	go func() {
@@ -86,4 +105,25 @@ func run(ctx context.Context, args []string, stderr io.Writer, onReady func(addr
 		_ = httpSrv.Shutdown(shutCtx)
 		return <-errCh
 	}
+}
+
+func buildQuickConfig(stateDir, listenAddr string) (gateway.Config, error) {
+	stateDir = cmp.Or(strings.TrimSpace(stateDir), filepath.Join(jobclient.ConfigDir(), "gateway"))
+	tokPath := filepath.Join(stateDir, "token")
+	rawTok, _ := os.ReadFile(tokPath)
+	tok := strings.TrimSpace(string(rawTok))
+	if tok == "" {
+		tok, _ = daemon.RandomToken()
+		if err := errors.Join(os.MkdirAll(stateDir, 0o700), os.WriteFile(tokPath, []byte(tok+"\n"), 0o600)); err != nil {
+			return gateway.Config{}, err
+		}
+	}
+	_ = os.Chmod(tokPath, 0o600)
+	redact.Register(tok)
+	lcfg, _ := jobclient.ResolveConfig(jobclient.Config{})
+	backs, def := []gateway.BackendConfig{{Name: "local", Type: "local", URL: cmp.Or(lcfg.ServerURL, "http://127.0.0.1:8787"), Token: cmp.Or(lcfg.Token, tok)}}, "local"
+	if kc, kctx, kerr := axbackend.ResolveKubeTarget("", ""); kerr == nil || cmp.Or(strings.TrimSpace(os.Getenv("GLUE_AX_SERVER")), strings.TrimSpace(os.Getenv("AX_SERVER_ADDR"))) != "" {
+		backs, def = append([]gateway.BackendConfig{{Name: "ax", Type: "ax", KubeConfig: kc, KubeContext: kctx, Atespace: "default"}}, backs...), "ax"
+	}
+	return gateway.Config{Listen: cmp.Or(strings.TrimSpace(listenAddr), "127.0.0.1:0"), StateDir: stateDir, Auth: gateway.AuthConfig{Mode: "dev-token", Token: tok, InsecureDev: true}, Backends: backs, DefaultBackend: def}, nil
 }

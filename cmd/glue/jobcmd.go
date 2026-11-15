@@ -11,13 +11,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os/exec"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/erain/glue/daemon"
 	"github.com/erain/glue/internal/axbackend"
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
+	"github.com/erain/glue/internal/redact"
 	"github.com/erain/glue/jobs"
 )
 
@@ -48,7 +57,7 @@ var (
 	errJobDetached           = errors.New("job attach detached")
 )
 
-const jobUsage = "Usage:\n  glue job <init|login|doctor|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]"
+const jobUsage = "Usage:\n  glue job <init|login|doctor|ui|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]"
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -112,6 +121,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	setupTimeout := fs.Duration("setup-timeout", 0, "timeout for each --setup command (default 10m)")
 	var verifyRaw repeatedStrings
 	fs.Var(&verifyRaw, "verify", "verification command")
+	uiListen, uiOpen, uiTunnel, uiTunnelToken := fs.String("listen", "127.0.0.1:0", "ui: TCP listen address"), fs.Bool("open", false, "ui: open magic link in default browser"), fs.Bool("tunnel", false, "ui: expose UI over cloudflared HTTPS tunnel with QR code"), fs.String("tunnel-token", "", "ui: Cloudflare Tunnel token")
 	if len(args) == 0 || args[0] == "-h" || args[0] == "-help" || args[0] == "--help" || args[0] == "help" {
 		printFlagSetUsage(fs, stdout, jobUsage)
 		return nil
@@ -153,7 +163,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	if sub == "pr" && len(pos) == 0 {
 		pos = []string{"latest"}
 	}
-	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && sub != "init" && len(pos) == 0 {
+	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && sub != "init" && sub != "ui" && len(pos) == 0 {
 		return fmt.Errorf("usage: glue job %s <id>", sub)
 	}
 	set := map[string]bool{}
@@ -220,6 +230,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return err
 	}
 	defer c.Close()
+	if sub == "ui" {
+		return jobUI(ctx, c, *uiListen, *uiOpen, *uiTunnel, *uiTunnelToken, stdout)
+	}
 	if len(pos) > 0 && sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && !strings.HasPrefix(pos[0], "grp-") {
 		if pos[0], err = resolveJobID(ctx, c, pos[0]); err != nil {
 			return err
@@ -902,4 +915,160 @@ func queuedError(err error, id string) error {
 		return nil
 	}
 	return &exitError{code: exitQueued, err: fmt.Errorf("queued: %w. The job %s is created but not started; start it later with: glue job start %s", err, id, id)}
+}
+
+var openBrowserURL = func(u string) error {
+	return exec.Command(map[bool]string{true: "open", false: "xdg-open"}[runtime.GOOS == "darwin"], u).Start()
+}
+
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func jobUI(ctx context.Context, c jobAPI, listenAddr string, openBrowser, tunnel bool, tunnelToken string, stdout io.Writer) error {
+	tok, _ := daemon.RandomToken()
+	redact.Register(tok)
+	ln, err := net.Listen("tcp", cmp.Or(strings.TrimSpace(listenAddr), "127.0.0.1:0"))
+	if err != nil {
+		return err
+	}
+	magicURL, stop, err := axbackend.Expose(ctx, ln.Addr(), tok, tunnel, tunnelToken, true, tunnel, stdout)
+	if err != nil {
+		return errors.Join(err, ln.Close())
+	}
+	defer stop()
+	ghTok, _ := githubToken(ctx)
+	dSrv, _ := daemon.New(daemon.Options{Token: tok, JobsHandler: newJobUIJobsHandler(c, ghTok)})
+	defer dSrv.Close()
+	if openBrowser {
+		_ = openBrowserURL(magicURL)
+	}
+	srv, done := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tunnel {
+			r.Header.Set("X-Forwarded-Proto", "https")
+		}
+		dSrv.ServeHTTP(w, r)
+	})}, make(chan struct{})
+	defer context.AfterFunc(ctx, func() { _ = srv.Shutdown(context.Background()); close(done) })()
+	if err = srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-done
+	return nil
+}
+
+func newJobUIJobsHandler(c jobAPI, ghTok string) http.Handler {
+	if hc, ok := c.(httpJobAPI); ok {
+		target, _ := url.Parse(hc.BaseURL)
+		return &httputil.ReverseProxy{FlushInterval: -1, Transport: rtFunc(hc.HTTP.Do), Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Header.Set("Authorization", "Bearer "+hc.Token)
+			pr.Out.Header.Del("Cookie")
+		}}
+	}
+	ax := c.(*axJobAPI)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, p := r.Context(), strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/jobs"), "/")
+		id, sub, _ := strings.Cut(p, "/")
+		sub = map[bool]string{true: "/", false: sub}[p == ""]
+		code, val, err := http.StatusOK, any(nil), error(nil)
+		switch r.Method + " " + sub {
+		case "GET /":
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			list, lerr := ax.List(ctx, jobs.Filter{Status: jobs.Status(r.URL.Query().Get("status")), Limit: cmp.Or(limit, 50), Before: r.URL.Query().Get("before")})
+			val, err = map[string]any{"jobs": append([]jobs.Job{}, list...)}, lerr
+		case "POST /":
+			var spec jobs.Spec
+			var job jobs.Job
+			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+			dec.DisallowUnknownFields()
+			if dec.Decode(&spec) != nil || dec.Decode(&struct{}{}) != io.EOF {
+				err = fmt.Errorf("%w: invalid JSON body", jobs.ErrInvalid)
+			} else if spec, err = jobs.ResolveIssue(ctx, spec, ghTok); err == nil {
+				spec.Delivery, spec.Budgets = map[bool]string{true: "draft_pr", false: spec.Delivery}[spec.Delivery == "pr"], remoteBudgets(spec.Budgets, false)
+				if err = jobs.ValidateSpec(spec, true); err == nil {
+					job, err = ax.Submit(ctx, spec, r.URL.Query().Get("start") == "true" || r.URL.Query().Get("start") == "1")
+				}
+			}
+			code, val = http.StatusCreated, map[string]any{"job": job}
+		case "GET ":
+			val, err = ax.Show(ctx, id)
+		case "DELETE ":
+			if purge, _ := strconv.ParseBool(r.URL.Query().Get("purge")); purge {
+				val, err = map[string]any{"job_id": id, "deleted": true}, ax.Delete(ctx, id)
+			} else {
+				code, val, err = http.StatusAccepted, map[string]any{"job_id": id, "canceled": true}, ax.Cancel(ctx, id)
+			}
+		case "POST start":
+			job, serr := ax.Start(ctx, id)
+			val, err = map[string]any{"job": job}, serr
+		case "GET permissions":
+			perms, perr := ax.Permissions(ctx, id, r.URL.Query().Get("state"))
+			val, err = map[string]any{"permissions": append([]jobs.PermissionInfo{}, perms...)}, perr
+		case "GET result":
+			val, err = ax.ReadResult(ctx, id)
+		case "GET patch":
+			patch, ok := ax.CachedPatch(id)
+			if !ok {
+				patch, err = ax.LivePatch(ctx, id)
+			}
+			val = patch
+		case "POST pr":
+			var body map[string]string
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+			val, err = ax.OpenPR(ctx, id, cmp.Or(strings.TrimSpace(body["github_token"]), ghTok))
+		case "GET events":
+			susp, serr := ax.IsSuspended(ctx, id)
+			if err = serr; err == nil {
+				w.Header().Set("Content-Type", "text/event-stream")
+				rc := http.NewResponseController(w)
+				_ = rc.Flush()
+				emit := func(ev eventlog.Envelope) error {
+					b, _ := json.Marshal(ev)
+					_, werr := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.Seq, ev.Type, b)
+					return errors.Join(werr, rc.Flush())
+				}
+				if cached, _ := strconv.ParseBool(r.URL.Query().Get("cached")); susp {
+					if d, _ := ax.Show(ctx, id); cached || axbackend.IsTerminal(d.Status) {
+						if axbackend.IsTerminal(d.Status) {
+							_ = emit(eventlog.Envelope{Seq: max(d.LastSeq, 1), Type: "job_done", Payload: map[string]any{"status": d.Status}})
+						}
+						return
+					}
+				}
+				after, _ := strconv.ParseInt(cmp.Or(r.URL.Query().Get("after"), r.Header.Get("Last-Event-ID")), 10, 64)
+				_ = ax.StreamEvents(ctx, id, after, emit)
+				return
+			}
+		default:
+			if p == "" || r.Method != http.MethodPost || sub == "" {
+				w.WriteHeader(map[bool]int{true: http.StatusMethodNotAllowed, false: http.StatusNotFound}[p == ""])
+				return
+			}
+			if err = ax.EnsureRunning(ctx, id); err == nil {
+				body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+				code, val, err = ax.Do(ctx, http.MethodPost, id+"/"+sub+map[bool]string{true: "?" + r.URL.RawQuery}[r.URL.RawQuery != ""], body)
+			}
+		}
+		if err != nil {
+			code, val = http.StatusInternalServerError, "internal"
+			msg := err.Error()
+			if strings.Contains(msg, "NotFound") || strings.Contains(msg, "not found") {
+				code, val, msg = http.StatusNotFound, "not_found", "job not found"
+			} else if errors.Is(err, jobs.ErrInvalid) {
+				code, val = http.StatusBadRequest, "invalid_request"
+			} else if errors.Is(err, jobs.ErrConflict) {
+				code, val = http.StatusConflict, "conflict"
+			} else if errors.Is(err, jobs.ErrPatchTooLarge) {
+				code, val = http.StatusRequestEntityTooLarge, "too_large"
+			}
+			val = map[string]any{"error": map[string]any{"code": val, "message": redact.String(msg)}}
+		}
+		raw, ok := val.([]byte)
+		if !ok {
+			raw, _ = json.Marshal(val)
+		}
+		w.Header().Set("Content-Type", map[bool]string{true: "text/x-diff; charset=utf-8", false: "application/json"}[sub == "patch" && err == nil])
+		w.WriteHeader(code)
+		_, _ = w.Write(raw)
+	})
 }

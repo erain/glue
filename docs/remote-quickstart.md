@@ -60,6 +60,7 @@ Want two tries, or two models, at once? Add `--attempts 2` (and `--model a --mod
 
 ```sh
 glue job attach latest      # live transcript; Ctrl-C detaches, the job keeps going
+glue job ui --open          # or open the browser UI (--tunnel prints a phone QR magic link)
 ```
 ```
 [00:03] planning

@@ -3,6 +3,7 @@
 package axbackend
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -33,6 +34,8 @@ import (
 	"time"
 
 	"github.com/erain/glue/internal/jobclient"
+	"github.com/erain/glue/internal/qr"
+	"github.com/erain/glue/internal/redact"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"gopkg.in/yaml.v3"
@@ -525,4 +528,64 @@ func mintPodCert(ctx context.Context, kubeCfg, kubeCtx, namespace string) (strin
 		}
 	}
 	return "", "", fmt.Errorf("axbackend: timed out waiting for PodCertificateRequest %s/%s", namespace, name)
+}
+
+func Expose(ctx context.Context, addr net.Addr, token string, tunnel bool, tunnelToken string, printBanner, withQR bool, out io.Writer) (string, func(), error) {
+	h, p, _ := net.SplitHostPort(addr.String())
+	baseURL, stop, err := "http://"+net.JoinHostPort(map[bool]string{true: "127.0.0.1", false: h}[h == "" || h == "0.0.0.0" || h == "::"], p), func() {}, error(nil)
+	if tunnel {
+		if baseURL, stop, err = StartTunnel(ctx, baseURL, tunnelToken); err != nil {
+			return "", nil, err
+		}
+	}
+	magicURL := strings.TrimRight(baseURL, "/") + "/#token=" + token
+	if printBanner && token != "" {
+		code, qerr := qr.Render(magicURL)
+		_, _ = io.WriteString(out, magicURL+"\n"+map[bool]string{true: code}[withQR && qerr == nil])
+	}
+	return magicURL, stop, nil
+}
+
+func StartTunnel(ctx context.Context, localURL, tunnelToken string) (string, func(), error) {
+	bin, err := exec.LookPath("cloudflared")
+	if err != nil {
+		return "", nil, errors.New("cloudflared not found in PATH; install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+	}
+	args := []string{"--protocol", "http2", "tunnel", "--url", localURL}
+	if tok := cmp.Or(strings.TrimSpace(tunnelToken), strings.TrimSpace(os.Getenv("CLOUDFLARE_TUNNEL_TOKEN"))); tok != "" {
+		redact.Register(tok)
+		args = []string{"--protocol", "http2", "tunnel", "run", "--token", tok}
+	}
+	pr, pw := io.Pipe()
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout, cmd.Stderr, cmd.SysProcAttr = pw, pw, &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		_, _ = pw.Close(), pr.Close()
+		return "", nil, fmt.Errorf("start cloudflared: %w", err)
+	}
+	var waitErr error
+	waitDone := make(chan struct{})
+	go func() { waitErr = cmd.Wait(); _ = pw.Close(); close(waitDone) }()
+	stop := sync.OnceFunc(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		tm := time.AfterFunc(time.Second, func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+		<-waitDone
+		tm.Stop()
+	})
+	tctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	stopTimer := context.AfterFunc(tctx, stop)
+	defer func() { stopTimer(); cancel() }()
+	for sc := bufio.NewScanner(pr); sc.Scan(); {
+		for f := range strings.FieldsSeq(sc.Text()) {
+			rest, ok := strings.CutPrefix(strings.Trim(f, "\"'()[]{}|,;"), "https://")
+			if host, _, _ := strings.Cut(rest, "/"); ok && host != "" && !strings.EqualFold(host, "cloudflare.com") && !strings.HasSuffix(strings.ToLower(host), ".cloudflare.com") {
+				context.AfterFunc(ctx, stop)
+				go func() { _, _ = io.Copy(io.Discard, pr); _ = pr.Close() }()
+				return "https://" + host, stop, nil
+			}
+		}
+	}
+	_ = pr.Close()
+	stop()
+	return "", nil, fmt.Errorf("cloudflared tunnel failed: %w", cmp.Or(tctx.Err(), waitErr, errors.New("unexpected EOF")))
 }

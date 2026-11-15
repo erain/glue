@@ -418,6 +418,7 @@ type Options struct {
 	// PermissionTimeout caps how long a side-effecting tool waits for an
 	// HTTP decision. Zero uses a conservative default.
 	PermissionTimeout time.Duration
+	JobsHandler       http.Handler
 }
 
 // PermissionPolicy optionally decides side-effecting tool permission requests
@@ -485,6 +486,7 @@ func NewPermissionPolicy(policy jobs.Policy, workDir string) PermissionPolicy {
 type Server struct {
 	jobs *jobs.Manager
 
+	jobsHandler          http.Handler
 	retainRuns           time.Duration
 	sweepStop, sweepDone chan struct{}
 	closeOnce            sync.Once
@@ -607,7 +609,7 @@ type toolCatalogEntry struct {
 
 // New constructs a daemon Server.
 func New(opts Options) (*Server, error) {
-	if opts.Host == nil {
+	if opts.Host == nil && opts.JobsHandler == nil {
 		return nil, errors.New("daemon: Host is required")
 	}
 	token := strings.TrimSpace(opts.Token)
@@ -663,6 +665,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		jobs:       opts.Jobs,
 		retainRuns: retain, sweepStop: make(chan struct{}), sweepDone: make(chan struct{}),
+		jobsHandler:       opts.JobsHandler,
 		log:               log,
 		keepaliveInterval: interval,
 		host:              opts.Host,
@@ -697,6 +700,9 @@ func New(opts Options) (*Server, error) {
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" || strings.HasPrefix(r.URL.Path, "/static/") {
 		webui.Handler().ServeHTTP(w, r)
 		return
@@ -716,7 +722,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r) {
 		return
 	}
-	if r.URL.Path == "/v1/session" {
+	if r.URL.Path == "/v1/session" || r.URL.Path == "/v1/session/logout" {
 		s.handleSession(w, r)
 		return
 	}
@@ -726,6 +732,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/v1/jobs" || strings.HasPrefix(r.URL.Path, "/v1/jobs/") {
+		if s.jobsHandler != nil {
+			s.jobsHandler.ServeHTTP(w, r)
+			return
+		}
 		s.handleJobs(w, r)
 		return
 	}

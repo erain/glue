@@ -84,6 +84,13 @@ func (s *Server) handleSessionLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/session/logout" {
+		if jobMethod(w, r, http.MethodPost) {
+			http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		}
+		return
+	}
 	if !jobMethod(w, r, http.MethodGet) {
 		return
 	}
@@ -91,6 +98,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Query().Has("token") {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "query token authentication is not supported", false)
+		return false
+	}
 	if got := r.Header.Get("Authorization"); got != "" {
 		if tok, ok := strings.CutPrefix(got, "Bearer "); ok && s.tokenMatches(tok) {
 			return true

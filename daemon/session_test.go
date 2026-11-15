@@ -229,3 +229,14 @@ func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+func TestQueryTokenRejected(t *testing.T) {
+	s, _, _ := jobHTTPFixture(t, nil)
+	for _, hdr := range []string{"", "Bearer token"} {
+		r, w := httptest.NewRequest(http.MethodGet, "/v1/jobs?token=token", nil), httptest.NewRecorder()
+		r.Header.Set("Authorization", hdr)
+		if s.ServeHTTP(w, r); w.Code != http.StatusUnauthorized {
+			t.Fatalf("GET /v1/jobs?token=token (auth=%q) = %d, want 401", hdr, w.Code)
+		}
+	}
+}

@@ -959,9 +959,23 @@ async function renderNewJobView(root) {
   ));
 }
 
+export function consumeHashToken() {
+  const raw = window.location.hash.replace(/^#/, ""), sep = raw.startsWith("/") ? raw.search(/[?&]/) : 0;
+  if (!raw.includes("token=") || sep < 0) return "";
+  const routePart = sep > 0 ? raw.slice(0, sep) : "", params = new URLSearchParams(sep > 0 ? raw.slice(sep + 1) : raw);
+  const tok = (params.get("token") || "").trim(), next = (params.get("next") || "").trim().replace(/^#/, "");
+  if (!tok) return "";
+  params.delete("token"); params.delete("next");
+  const base = next ? (next.startsWith("/") ? next : `/${next}`) : (routePart || "/"), rest = params.toString();
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${base}${rest ? (base.includes("?") ? "&" : "?") + rest : ""}`);
+  return tok;
+}
+
 async function route() {
+  const magicToken = consumeHashToken();
   const root = document.getElementById("app");
   if (!root) return;
+  if (magicToken) try { await login(magicToken); } catch { renderLogin(); return; }
   const session = getCSRFToken() ? { authenticated: true } : await fetchSession();
   if (!session) { renderLogin(); return; }
   if (session.login) sessionLogin = session.login;
