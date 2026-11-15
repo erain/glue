@@ -178,7 +178,7 @@ func TestResolveKubeTargetAndTunnelCredCache(t *testing.T) {
 	for k, v := range map[string]string{
 		"HOME": home, "XDG_CACHE_HOME": filepath.Join(home, ".cache"), "GLUE_CONFIG_DIR": cfgDir,
 		"KUBECONFIG": "", "KUBE_CONTEXT": "", "KUBECONTEXT": "", "GLUE_AX_CONTEXT": "", "GLUE_AX_KUBECONFIG": "",
-		"AX_SERVER": "", "GLUE_TEST_FAKE_KUBECTL": "1", "GLUE_TEST_FAKE_K8S_DIR": k8sDir,
+		"AX_SERVER": "", "KUBERNETES_SERVICE_HOST": "", "GLUE_TEST_FAKE_KUBECTL": "1", "GLUE_TEST_FAKE_K8S_DIR": k8sDir,
 		"PATH": binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 	} {
 		t.Setenv(k, v)

@@ -7,6 +7,8 @@ supersedes its in-cluster gateway requirement (`glue-system`) and
 interactive-first job policy default. Tracked in
 [#526](https://github.com/erain/glue/issues/526) under
 [#392](https://github.com/erain/glue/issues/392).
+Amended by [ADR-0021](0021-opt-in-cluster-gateway-cloudflare-access.md) for
+opt-in in-cluster `glue-gateway` deployment (`glue remote setup`).
 
 ## Context
 

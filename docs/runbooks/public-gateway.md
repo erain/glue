@@ -1,6 +1,6 @@
 # Runbook: Public `glue-gateway` via Cloudflare Tunnel (`deploy/cloudflared`)
 
-CLI users run coding jobs directly on AX via `glue --remote "<objective>"` without deploying a gateway ([ADR-0020](../adr/0020-ax-first-direct-execution.md)). Deploy `glue-gateway` out-of-cluster on a host or VM when you want the mobile/desktop browser UI (`webui`), zero-prompt **Cloudflare Access** Zero Trust sign-in, personal API tokens, or background idle-wait AX task suspension exposed at `https://<your-host>` through a named [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — with HSTS, request body size limits, server timeouts, redacted access logs, zero open inbound host ports, and zero `glue-system` Kubernetes manifests.
+CLI users run coding jobs directly on AX via `glue --remote "<objective>"` without deploying a gateway ([ADR-0020](../adr/0020-ax-first-direct-execution.md)). Deploy `glue-gateway` when you want the mobile/desktop browser UI (`webui`), zero-prompt **Cloudflare Access** Zero Trust sign-in, personal API tokens, or background idle-wait AX task suspension exposed at `https://<your-host>` through a named [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — either as an opt-in 1-pod `Deployment` in `glue-gateway` via `glue remote setup` ([ADR-0021](../adr/0021-opt-in-cluster-gateway-cloudflare-access.md), 0 AX worker slots consumed while idle) or out-of-cluster on a host/VM.
 
 ## 1. Create the Cloudflare Tunnel and DNS Record
 
@@ -16,7 +16,12 @@ export TUNNEL_TOKEN="$(cloudflared tunnel token glue-gateway)"
 
 In **Cloudflare Zero Trust -> Access -> Applications -> Add an application -> Self-hosted**, protect `glue.example.com` with an **Allow** policy restricted to your email or identity provider group (Google, GitHub, or Passkey SSO), and record your **Team domain** (`<team>.cloudflareaccess.com` -> `GLUE_CF_ACCESS_TEAM_DOMAIN`) and **Application Audience (AUD) Tag** (`GLUE_CF_ACCESS_AUD`).
 
-## 3. Configure and Start on a Host or VM (`systemd` + Pure `type: ax`)
+## 3a. One-Command In-Cluster Deployment (`glue remote setup`, Recommended)
+```sh
+glue remote setup --public-url "https://${GLUE_PUBLIC_HOST}" --cf-team myteam.cloudflareaccess.com --cf-aud "${GLUE_CF_ACCESS_AUD}" --allow-email you@example.com --tunnel-token "${TUNNEL_TOKEN}"
+glue remote status && glue remote down --purge-pvc   # inspect health or tear down cleanly
+```
+## 3b. Alternative: Host or VM Deployment (`systemd` + Pure `type: ax`)
 
 1. Write `/etc/glue-gateway/gateway.yaml` (`KnownFields(true)` strict YAML; omit `kube_config`/`kube_context` to use ambient host configuration, or add a `type: local` entry when fronting a local `glue serve` daemon):
    ```yaml

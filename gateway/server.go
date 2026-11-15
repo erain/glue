@@ -40,7 +40,7 @@ type Route struct {
 var gatewayRoutes = []Route{
 	{http.MethodGet, "/", true}, {http.MethodGet, "/index.html", true}, {http.MethodGet, "/static/app.js", true}, {http.MethodGet, "/static/api.js", true}, {http.MethodGet, "/static/app.css", true},
 	{http.MethodGet, "/healthz", true}, {http.MethodGet, "/auth/github/login", true}, {http.MethodGet, "/auth/github/callback", true},
-	{http.MethodGet, "/v1/health", false}, {http.MethodGet, "/v1/session", false}, {http.MethodPost, "/v1/session/login", false}, {http.MethodPost, "/v1/session/logout", false},
+	{http.MethodGet, "/v1/health", false}, {http.MethodGet, "/v1/session", false}, {http.MethodGet, "/v1/me", false}, {http.MethodPost, "/v1/session/login", false}, {http.MethodPost, "/v1/session/logout", false},
 	{http.MethodGet, "/v1/tokens", false}, {http.MethodPost, "/v1/tokens", false}, {http.MethodDelete, "/v1/tokens/{id}", false},
 	{http.MethodGet, "/v1/backends", false}, {http.MethodGet, "/v1/diagnostics", false}, {http.MethodGet, "/v1/jobs", false}, {http.MethodPost, "/v1/jobs", false},
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
@@ -634,7 +634,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(WithOwner(r.Context(), sess.Login))
 	switch r.Method + " " + r.URL.Path {
-	case "GET /v1/session":
+	case "GET /v1/session", "GET /v1/me":
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "auth_mode": s.cfg.Auth.Mode, "login": sess.Login, "github_id": sess.GitHubID, "csrf_token": sess.CSRFToken})
 		return
 	case "POST /v1/session/logout":

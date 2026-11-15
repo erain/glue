@@ -414,6 +414,7 @@ func TestSubcommandHelpFlags(t *testing.T) {
 		{"connect", []string{"glue connect", "--mcp-resources-json", "--forget-permission-json", "--inspect"}},
 		{"serve", []string{"glue serve", "--coding", "--jobs", "--job-from-ax", "--token-file"}},
 		{"job", []string{"glue job", "--snapshot", "--verify"}},
+		{"remote", []string{"glue remote", "--public-url", "--cf-team", "--build-local"}},
 		{"goal", []string{"glue goal", "--worktree", "--resume"}},
 		{"models", []string{"glue models", "--provider", "--json"}},
 	} {

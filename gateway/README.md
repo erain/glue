@@ -1,8 +1,8 @@
 # `glue-gateway`
 
-`gateway/` is an optional host/VM HTTP portal (`github.com/erain/glue/gateway`) for Glue coding jobs. Laptop and CLI users can run jobs directly on AX via `glue --remote "<objective>"` and `glue job ...` without deploying a gateway; run `glue-gateway` on a host or VM when you want the mobile/desktop browser UI (`webui`), GitHub OAuth allowlist sign-in, personal API tokens, idle AX task suspension while waiting on human input, or public HTTPS access behind a [Cloudflare Tunnel](../deploy/cloudflared/README.md).
+`gateway/` is an optional HTTP portal (`github.com/erain/glue/gateway`) for Glue coding jobs. Laptop and CLI users run jobs directly on AX via `glue --remote "<objective>"` and `glue job ...` without deploying a gateway; deploy `glue-gateway` when you want the mobile/desktop browser UI (`webui`), Cloudflare Access or GitHub OAuth sign-in, personal API tokens, idle AX task suspension, or public HTTPS access behind a [Cloudflare Tunnel](../deploy/cloudflared/README.md).
 
-`glue-gateway` runs entirely outside Kubernetes with zero `glue-system` cluster manifests, delegating `type: ax` backends to `internal/axbackend` with pure AX configuration.
+Deploy in-cluster with one command via `glue remote setup` (`glue-gateway` namespace, 0 AX worker slots while idle; [ADR-0021](../docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md)) or run out-of-cluster on a host/VM, delegating `type: ax` backends to `internal/axbackend`.
 
 ## Building and Running
 

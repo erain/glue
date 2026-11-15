@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/erain/glue/internal/axbackend"
+	"github.com/erain/glue/internal/redact"
 	"github.com/erain/glue/jobs"
 	"gopkg.in/yaml.v3"
 )
@@ -177,6 +178,14 @@ func (cfg Config) Validate() (Config, error) {
 			delete(cfg.Credentials.ProviderKeys, p)
 		}
 	}
+	for u := range strings.SplitSeq(map[bool]string{true: os.Getenv("GLUE_NOTIFY_URL")}[len(cfg.Credentials.NotifyURLs) == 0], ",") {
+		if u = strings.TrimSpace(u); u != "" && jobs.ValidNotifyURL(u) != nil {
+			return Config{}, errors.New("gateway: invalid GLUE_NOTIFY_URL")
+		} else if u != "" {
+			redact.Register(u)
+			cfg.Credentials.NotifyURLs = append(cfg.Credentials.NotifyURLs, u)
+		}
+	}
 	if envSA := strings.TrimSpace(os.Getenv("GLUE_SUSPEND_AFTER")); cfg.SuspendAfter == 0 && envSA != "" {
 		if d, err := time.ParseDuration(envSA); err == nil && d > 0 {
 			cfg.SuspendAfter = d
@@ -211,6 +220,11 @@ func (cfg Config) Validate() (Config, error) {
 			return Config{}, fmt.Errorf("gateway: invalid backend %q (duplicate=%v, type=%q)", b.Name, seen[b.Name], b.Type)
 		}
 		if b.Type == "ax" {
+			for _, u := range cfg.Credentials.NotifyURLs {
+				if p, err := url.Parse(u); err == nil && p.Hostname() != "" && !slices.Contains(b.EgressHosts, p.Hostname()) {
+					b.EgressHosts = append(b.EgressHosts, p.Hostname())
+				}
+			}
 			b.SuspendAfter, b.ResumeTimeout, b.RetainTasks = cmp.Or(b.SuspendAfter, cfg.SuspendAfter), cmp.Or(b.ResumeTimeout, cfg.ResumeTimeout), cmp.Or(b.RetainTasks, cfg.RetainTasks)
 			if b.SuspendOnFinish == nil {
 				b.SuspendOnFinish = cfg.SuspendOnFinish

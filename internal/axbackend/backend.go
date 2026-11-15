@@ -210,7 +210,7 @@ func resolveTaskSecret(ctx context.Context, opts Options, conn *Connection) (str
 	var rnd [32]byte
 	_, _ = rand.Read(rnd[:])
 	gen := hex.EncodeToString(rnd[:])
-	if opts.Connect.AXClient != nil || (conn.KubeConfig == "" && conn.KubeContext == "") {
+	if opts.Connect.AXClient != nil || (conn.KubeConfig == "" && conn.KubeContext == "" && !inKubePod(false)) {
 		return gen, nil
 	}
 	axNS := cmp.Or(strings.TrimSpace(opts.Connect.AXNamespace), envOr("AX_SYSTEM_NAMESPACE"), DefaultAXNamespace)
