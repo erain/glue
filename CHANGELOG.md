@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `webui` upgrades `#/jobs/<id>` with conversational workspace turn rendering (user turn bubbles, safe DOM fenced code blocks and inline `<code>` formatting on streaming assistant replies, compact collapsible tool-call pills, and `planner`/`maker`/`checker` goal-phase badges), interactive workspace status pills (`Ready for your message`, `Suspended (wakes on message)`, and `Waking workspace…`), a responsive sticky bottom chat composer (`Enter` to send, `Shift+Enter` for newline), and a one-click **Run Autonomously** inline goal escalation bar (`POST /v1/jobs/{id}/goal`).
+
 - `webui` adds a responsive `#/new` launcher for interactive workspaces, autonomous coding goals, and GitHub `--issue` runs (with recent-repository quick-fill chips and `verify` / `delivery` / `provider` / `model` / `thinking` options from `GET /v1/models`), paired with shared server-side `POST /v1/jobs` GitHub `issue` resolution and `GET /v1/models` parity on `glue-gateway`.
 
 - `webui` adds a safe DOM unified diff viewer (`GET /v1/jobs/{id}/patch` on both `glue serve` and `glue-gateway`, supporting live `running`/`waiting_for_input` working-tree diffs and terminal patches without waking suspended AX tasks), concise 1-line tool call summaries with duration and auto-expand on failure, live header `activity` (`phase · turn N · last tool`), an **Interrupt** steering button (`POST /v1/jobs/{id}/messages?interrupt=true`), and a one-click **Open Draft PR** button (`POST /v1/jobs/{id}/pr`) in the result panel.
