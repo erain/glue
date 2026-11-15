@@ -138,6 +138,7 @@ func TestUIAssetsViewsAndSafety(t *testing.T) {
 		"job-result-panel", "/result", "result-open-pr-btn", "/pr", "result-pr-link", "result-diffstat", "verify-exit-code", "result-cost",
 		"job-diff", "/patch", "load-diff-btn", "parseUnifiedDiff", "formatToolSummary", "job-activity", "tool-duration",
 		"/auth/github/login", "/v1/tokens", "tokens-view", "token-created-value", "token-revoke-btn", "/v1/session/logout",
+		"new-job-btn", "new-job-view", "new-job-mode", "recent-repo-chip", "/v1/models", "splitCommand",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("JS assets missing %q", want)

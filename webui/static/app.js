@@ -160,11 +160,12 @@ async function renderJobsList(root) {
     className: "select", "data-testid": "status-filter",
     onchange: (e) => { statusFilter = e.target.value; load(); },
   }, STATUSES.map((st) => el("option", { value: st, ...(st === statusFilter ? { selected: "selected" } : {}) }, st || "All statuses")));
-  const refreshBtn = el("button", { className: "btn", type: "button", "data-testid": "refresh-jobs", onclick: () => load() }, "Refresh");
+  const newJobBtn = el("a", { className: "btn", href: "#/new", "data-testid": "new-job-btn" }, "New job");
+  const refreshBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "refresh-jobs", onclick: () => load() }, "Refresh");
   const tokensLink = el("a", { className: "btn btn-secondary", href: "#/tokens", "data-testid": "tokens-link" }, "Tokens");
   const logoutBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "logout-btn", onclick: async () => { await logout(); renderLogin(); } }, "Sign out");
   root.replaceChildren(el("section", { "data-testid": "jobs-view" },
-    el("div", { className: "toolbar" }, el("h2", {}, "Jobs"), el("div", { className: "toolbar-controls" }, select, refreshBtn, tokensLink, logoutBtn, el("span", { className: "muted", "data-testid": "auto-refresh-label" }, "Auto-refresh: 10s"))),
+    el("div", { className: "toolbar" }, el("h2", {}, "Jobs"), el("div", { className: "toolbar-controls" }, newJobBtn, select, refreshBtn, tokensLink, logoutBtn, el("span", { className: "muted", "data-testid": "auto-refresh-label" }, "Auto-refresh: 10s"))),
     listEl
   ));
 
@@ -739,6 +740,112 @@ async function renderJobDetail(root, jobId) {
   openSSE(false);
 }
 
+export function splitCommand(line) {
+  const args = [];
+  let cur = "", inArg = false, q = "";
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q === "'") { if (c === "'") q = ""; else cur += c; }
+    else if (q === '"') {
+      if (c === '"') q = "";
+      else if (c === "\\" && i + 1 < line.length && (line[i + 1] === '"' || line[i + 1] === "\\")) cur += line[++i];
+      else cur += c;
+    } else if (c === "'" || c === '"') { q = c; inArg = true; }
+    else if (c === "\\" && i + 1 < line.length) { cur += line[++i]; inArg = true; }
+    else if (/\s/.test(c)) { if (inArg) { args.push(cur); cur = ""; inArg = false; } }
+    else { cur += c; inArg = true; }
+  }
+  if (q) throw new Error(`Unterminated ${q} quote in verify command`);
+  if (inArg) args.push(cur);
+  return args;
+}
+
+async function renderNewJobView(root) {
+  stopBackground();
+  const [jobsResp, catalog] = await Promise.all([apiRequest("/v1/jobs").catch(() => ({ jobs: [] })), apiRequest("/v1/models").catch(() => ({}))]);
+  const recentRepos = [...new Set((jobsResp.jobs || []).map((j) => j.spec?.repo?.url || j.spec?.repo?.path || "").filter(Boolean))].slice(0, 8);
+  const providers = catalog.providers || [], codingDef = catalog.defaults?.coding || {};
+  let mode = "goal", deliveryTouched = false;
+  const repoInput = el("input", { className: "input", type: "text", list: "recent-repos-list", "data-testid": "new-job-repo" });
+  const baseInput = el("input", { className: "input", type: "text", placeholder: "Base branch (optional, defaults to repo default)", "data-testid": "new-job-base" });
+  const promptLabel = el("label", { className: "tool-label", "data-testid": "new-job-prompt-label" });
+  const objectiveInput = el("textarea", { className: "input", rows: 4, "data-testid": "new-job-objective" });
+  const issueInput = el("input", { className: "input", type: "text", placeholder: "#42, owner/repo#42, or GitHub issue URL", "data-testid": "new-job-issue", hidden: true });
+  const verifyInput = el("textarea", { className: "input", rows: 2, placeholder: "One command per line (e.g. go test ./...)", "data-testid": "new-job-verify" });
+  const deliverySelect = el("select", { className: "select", "data-testid": "new-job-delivery", onchange: () => { deliveryTouched = true; } },
+    el("option", { value: "branch" }, "Push branch"), el("option", { value: "pr" }, "Open draft PR"), el("option", { value: "none" }, "Workspace only"));
+  const providerSelect = el("select", { className: "select", "data-testid": "new-job-provider", onchange: () => syncModels("") },
+    el("option", { value: "" }, "Default"), ...providers.map((p) => el("option", { value: p.provider }, p.provider)));
+  const modelSelect = el("select", { className: "select", "data-testid": "new-job-model", onchange: () => syncThinking() });
+  const thinkingSelect = el("select", { className: "select", "data-testid": "new-job-thinking" });
+  function syncThinking() {
+    const p = providers.find((x) => x.provider === providerSelect.value);
+    const m = (p?.models || []).find((x) => x.id === modelSelect.value);
+    thinkingSelect.replaceChildren(el("option", { value: "" }, "Default"), ...(m?.thinking_levels || []).map((lv) => el("option", { value: lv }, lv)));
+  }
+  function syncModels(preferred) {
+    const p = providers.find((x) => x.provider === providerSelect.value);
+    const models = p?.models || [], target = preferred || p?.default_model || "";
+    modelSelect.replaceChildren(el("option", { value: "" }, "Default"), ...models.map((m) => el("option", { value: m.id }, m.id)));
+    if (models.some((m) => m.id === target)) modelSelect.value = target;
+    syncThinking();
+  }
+  if (codingDef.provider && providers.some((p) => p.provider === codingDef.provider)) providerSelect.value = codingDef.provider;
+  syncModels(codingDef.model || "");
+  const modeBtns = [["interactive", "Interactive Chat"], ["goal", "Autonomous Goal"], ["issue", "GitHub Issue"]].map(([id, label]) =>
+    el("button", { type: "button", "data-mode": id, "data-testid": `mode-${id}`, onclick: () => setMode(id) }, label));
+  function setMode(next) {
+    mode = next;
+    for (const b of modeBtns) {
+      const active = b.getAttribute("data-mode") === mode;
+      b.className = active ? "btn mode-btn" : "btn btn-secondary mode-btn";
+      b.setAttribute("aria-pressed", String(active));
+    }
+    promptLabel.textContent = mode === "issue" ? "GitHub Issue" : mode === "interactive" ? "Initial prompt" : "Objective";
+    objectiveInput.hidden = mode === "issue";
+    issueInput.hidden = mode !== "issue";
+    objectiveInput.placeholder = mode === "interactive" ? "Ask a question or describe what to explore or change…" : "Describe the goal to implement and verify…";
+    repoInput.placeholder = mode === "issue" ? "https://github.com/owner/repo (optional for owner/repo#N)" : "https://github.com/owner/repo";
+    if (!deliveryTouched) deliverySelect.value = mode === "issue" ? "pr" : "branch";
+  }
+  setMode("goal");
+  const field = (lbl, ...kids) => el("div", { className: "field-group" }, typeof lbl === "string" ? el("label", { className: "tool-label" }, lbl) : lbl, ...kids);
+  const errEl = el("p", { className: "error-text", "data-testid": "new-job-error", hidden: true });
+  const submitBtn = el("button", { className: "btn", type: "submit", "data-testid": "new-job-submit" }, "Start workspace");
+  const form = el("form", { className: "new-job-form", "data-testid": "new-job-form", onsubmit: async (e) => {
+    e.preventDefault();
+    errEl.hidden = submitBtn.disabled = true;
+    try {
+      const verify = verifyInput.value.split("\n").map((ln) => ln.trim()).filter(Boolean).map(splitCommand).filter((a) => a.length);
+      const rawRepo = repoInput.value.trim(), baseRef = baseInput.value.trim(), repo = {};
+      if (rawRepo) { if (rawRepo.startsWith("/")) repo.path = rawRepo; else repo.url = rawRepo; }
+      if (baseRef) repo.base_ref = baseRef;
+      const spec = mode === "issue" ? { mode: "goal", issue: issueInput.value.trim(), repo, delivery: deliverySelect.value } : { mode, objective: objectiveInput.value.trim(), repo, delivery: deliverySelect.value };
+      if (verify.length) spec.verify = verify;
+      if (providerSelect.value) spec.provider = providerSelect.value;
+      if (modelSelect.value) spec.model = modelSelect.value;
+      if (thinkingSelect.value) spec.thinking = thinkingSelect.value;
+      window.location.hash = `#/jobs/${encodeURIComponent((await apiPost("/v1/jobs?start=true", spec)).job.id)}`;
+    } catch (err) { errEl.textContent = err.message || "Failed to submit job"; errEl.hidden = false; }
+    finally { submitBtn.disabled = false; }
+  } },
+    field("Workspace mode", el("div", { className: "mode-tabs", "data-testid": "new-job-mode" }, ...modeBtns)),
+    field("Repository", repoInput, el("datalist", { id: "recent-repos-list" }, ...recentRepos.map((r) => el("option", { value: r }))),
+      recentRepos.length ? el("div", { className: "repo-chips", "data-testid": "recent-repo-chips" }, ...recentRepos.map((r) => el("button", { className: "btn-link repo-chip", type: "button", "data-testid": "recent-repo-chip", onclick: () => { repoInput.value = r; } }, r))) : null),
+    field("Base branch", baseInput),
+    field(promptLabel, objectiveInput, issueInput),
+    el("details", { className: "verify-item", "data-testid": "new-job-options" },
+      el("summary", { className: "tool-summary", "data-testid": "new-job-options-summary" }, "Options"),
+      el("div", { className: "tool-body" }, field("Verify commands", verifyInput),
+        el("div", { className: "options-grid" }, field("Delivery", deliverySelect), field("Provider", providerSelect), field("Model", modelSelect), field("Thinking", thinkingSelect)))),
+    errEl, submitBtn
+  );
+  root.replaceChildren(el("section", { "data-testid": "new-job-view" },
+    el("a", { className: "back-link", href: "#/", "data-testid": "back-to-jobs" }, "← All jobs"),
+    el("div", { className: "card" }, el("h2", {}, "New Workspace"), form)
+  ));
+}
+
 async function route() {
   const root = document.getElementById("app");
   if (!root) return;
@@ -746,6 +853,10 @@ async function route() {
   if (!session) { renderLogin(); return; }
   if (session.login) sessionLogin = session.login;
   setSessionBanner(sessionLogin && sessionLogin !== "dev-token" ? `Signed in as ${sessionLogin}` : "Authenticated");
+  if (window.location.hash === "#/new") {
+    await renderNewJobView(root);
+    return;
+  }
   if (window.location.hash === "#/tokens") {
     await renderTokensView(root);
     return;

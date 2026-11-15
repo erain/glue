@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -122,6 +123,47 @@ func cmpOr(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// ResolveIssue fetches Spec.Issue when Spec.Objective is empty, populating
+// Repo.URL (when omitted), Objective, Context, Issue, and default Delivery.
+func ResolveIssue(ctx context.Context, s Spec, token string) (Spec, error) {
+	if s.Issue, s.Objective = strings.TrimSpace(s.Issue), strings.TrimSpace(s.Objective); s.Issue == "" || s.Objective != "" {
+		return s, nil
+	}
+	if strings.TrimSpace(s.Mode) == ModeInteractive {
+		return s, invalid("mode", "issue requires goal mode")
+	}
+	owner, repo, number, err := ParseIssueRef(s.Issue)
+	if err != nil {
+		return s, invalid("issue", err.Error())
+	}
+	s.Repo.URL, s.Repo.Path = strings.TrimSpace(s.Repo.URL), strings.TrimSpace(s.Repo.Path)
+	if owner == "" {
+		src := s.Repo.URL
+		if src == "" && s.Repo.Path != "" {
+			src, _ = workspaceGit(ctx, s.Repo.Path, nil, "remote", "get-url", "origin")
+		}
+		if owner, repo, err = GitHubRepoOf(src); err != nil {
+			return s, invalid("repo.url", "repository URL or owner/repo#N is required")
+		}
+	} else if s.Repo.URL == "" && s.Repo.Path == "" {
+		s.Repo.URL = fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	}
+	tok := cmpOr(strings.TrimSpace(token), cmpOr(strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))))
+	issue, err := FetchIssue(ctx, owner, repo, number, tok)
+	if err != nil {
+		return s, invalid("issue", err.Error())
+	}
+	if issue.State != "open" || issue.Title == "" {
+		return s, invalid("issue", fmt.Sprintf("issue %s is %s; reopen it or give the objective directly", issue.Ref(), cmpOr(issue.State, "untitled")))
+	}
+	s.Objective, s.Issue = issue.Title, issue.Ref()
+	if s.Context = strings.TrimSpace(issue.Context() + "\n\n" + s.Context); len(s.Context) > MaxContextBytes {
+		s.Context = strings.ToValidUTF8(s.Context[:MaxContextBytes], "")
+	}
+	s.Delivery = cmpOr(strings.TrimSpace(s.Delivery), "draft_pr")
+	return s, nil
 }
 
 // prBody is the draft PR body for a job whose branch is in prOwner/prRepo. It

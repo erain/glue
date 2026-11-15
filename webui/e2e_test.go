@@ -558,3 +558,93 @@ func TestE2EInterruptSteeringAndToolSummary(t *testing.T) {
 		t.Fatalf("interrupt POST count = %d, want 1", interrupts.Load())
 	}
 }
+
+func TestE2ENewJobSubmitFromBrowser(t *testing.T) {
+	p := &scriptedE2EProvider{midJobReached: make(chan struct{}), releaseFinish: make(chan struct{}), turns: [][]glue.ProviderEvent{
+		textEvents(`{"items":[{"title":"Update app.txt"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "e1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"app.txt","old_string":"old line","new_string":"mobile new job"}`)}}, {Type: glue.ProviderEventDone}},
+		textEvents("Updated app.txt."),
+		textEvents(`{"done":true,"items":[{"title":"Update app.txt","done":true}],"summary":"Updated app.txt from #/new"}`),
+		textEvents("Interactive workspace ready."),
+	}}
+	close(p.releaseFinish)
+	ctx, bctx, mgr, _ := startE2EBrowser(t, p, nil)
+	repo := initE2ERepo(t, true)
+	_, err := mgr.Create(ctx, jobs.Spec{Objective: "Seed recent repo", Repo: jobs.RepoSpec{Path: repo, BaseRef: "main"}})
+	mustNoErr(t, err)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.EmulateViewport(390, 844, chromedp.EmulateMobile), chromedp.Reload()))
+	waitJS(t, bctx, "new-job-btn on mobile", `Boolean(document.querySelector('[data-testid="new-job-btn"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="new-job-btn"]`)))
+	waitJS(t, bctx, "new-job-view & chip & models", `Boolean(document.querySelector('[data-testid="new-job-view"]') && document.documentElement.scrollWidth <= 390 && document.querySelector('[data-testid="recent-repo-chip"]') && [...document.querySelectorAll('[data-testid="new-job-model"] option')].some((o) => o.value === "gemini-3-flash-preview"))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="recent-repo-chip"]`), chromedp.Click(`[data-testid="new-job-options-summary"]`), chromedp.SendKeys(`[data-testid="new-job-verify"]`, "git status --short"), chromedp.SendKeys(`[data-testid="new-job-objective"]`, "Ship mobile goal from #/new"), chromedp.Click(`[data-testid="new-job-submit"]`)))
+	waitJS(t, bctx, "goal achieved & diff rendered", `window.location.hash.startsWith("#/jobs/job-") && document.querySelector('[data-testid="result-status"]')?.textContent === "achieved" && document.querySelector('[data-testid="verify-exit-code"]')?.textContent === "exit 0" && [...document.querySelectorAll('[data-testid="diff-line-add"]')].some((e) => e.textContent === "+mobile new job")`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="back-to-jobs"]`)))
+	waitJS(t, bctx, "back on jobs list", `Boolean(document.querySelector('[data-testid="new-job-btn"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="new-job-btn"]`)))
+	waitJS(t, bctx, "new-job-view for interactive", `Boolean(document.querySelector('[data-testid="mode-interactive"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="mode-interactive"]`), chromedp.Click(`[data-testid="recent-repo-chip"]`), chromedp.SendKeys(`[data-testid="new-job-objective"]`, "Explore the repo interactively"), chromedp.Click(`[data-testid="new-job-submit"]`)))
+	waitJS(t, bctx, "interactive parked waiting_for_input", `document.querySelector('[data-testid="detail-status"]')?.textContent === "waiting_for_input" && [...document.querySelectorAll('[data-testid="assistant-text"]')].some((e) => e.textContent.includes("Interactive workspace ready."))`)
+	if list, err := mgr.List(ctx); err != nil || len(list) != 3 || !slices.ContainsFunc(list, func(j jobs.Job) bool { return j.Spec.Mode == jobs.ModeInteractive && j.Status == jobs.WaitingForInput }) {
+		t.Fatalf("expected parked interactive job in %+v (err=%v)", list, err)
+	}
+}
+
+func TestE2ENewJobFromGitHubIssue(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "owner", "repo.git")
+	mustNoErr(t, os.MkdirAll(bare, 0o755))
+	seed := initE2ERepo(t, false)
+	if out, err := exec.Command("sh", "-c", "git -C "+bare+" init --bare -q && git -C "+seed+" remote add origin "+bare+" && git -C "+seed+" push -q origin main").CombinedOutput(); err != nil {
+		t.Fatalf("bare init: %v (%s)", err, out)
+	}
+	gitcfg := filepath.Join(t.TempDir(), "gitconfig")
+	mustNoErr(t, os.WriteFile(gitcfg, []byte("[url \""+bare+"\"]\n\tinsteadOf = https://github.com/owner/repo\n"), 0o644))
+	t.Setenv("GIT_CONFIG_GLOBAL", gitcfg)
+	var prMu sync.Mutex
+	var prReq map[string]any
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /repos/owner/repo":
+			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+		case "GET /repos/owner/repo/issues/7":
+			_, _ = w.Write([]byte(`{"number":7,"title":"PR","state":"open","pull_request":{}}`))
+		case "GET /repos/owner/repo/issues/8":
+			_, _ = w.Write([]byte(`{"number":8,"title":"Closed bug","state":"closed"}`))
+		case "GET /repos/owner/repo/issues/42":
+			_, _ = w.Write([]byte(`{"number":42,"title":"Add badge.txt from issue 42","body":"Create badge.txt","state":"open"}`))
+		case "GET /repos/owner/repo/issues/42/comments", "GET /repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		case "POST /repos/owner/repo/pulls":
+			prMu.Lock()
+			_ = json.NewDecoder(r.Body).Decode(&prReq)
+			prMu.Unlock()
+			_, _ = w.Write([]byte(`{"html_url":"https://github.com/owner/repo/pull/99"}`))
+		}
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	t.Setenv("GLUE_GITHUB_TOKEN", "gh-tok")
+	p := &scriptedE2EProvider{midJobReached: make(chan struct{}), releaseFinish: make(chan struct{}), turns: [][]glue.ProviderEvent{
+		textEvents(`{"items":[{"title":"Create badge.txt"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w1", Name: "write_file", Arguments: json.RawMessage(`{"path":"badge.txt","content":"ok\n"}`)}}, {Type: glue.ProviderEventDone}},
+		textEvents("Created badge.txt."),
+		textEvents(`{"done":true,"items":[{"title":"Create badge.txt","done":true}],"summary":"Created badge.txt"}`),
+	}}
+	close(p.releaseFinish)
+	ctx, bctx, mgr, ts := startE2EBrowser(t, p, nil)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Navigate(ts.URL+"/#/new")))
+	waitJS(t, bctx, "issue mode button", `Boolean(document.querySelector('[data-testid="mode-issue"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="mode-issue"]`), chromedp.SetValue(`[data-testid="new-job-issue"]`, "owner/repo#7"), chromedp.Click(`[data-testid="new-job-submit"]`)))
+	waitJS(t, bctx, "PR rejected inline", `!document.querySelector('[data-testid="new-job-error"]')?.hidden && document.querySelector('[data-testid="new-job-error"]')?.textContent?.includes("pull request") && document.querySelector('[data-testid="new-job-issue"]')?.value === "owner/repo#7"`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.SetValue(`[data-testid="new-job-issue"]`, "owner/repo#8"), chromedp.Click(`[data-testid="new-job-submit"]`)))
+	waitJS(t, bctx, "closed issue rejected inline", `document.querySelector('[data-testid="new-job-error"]')?.textContent?.includes("closed")`)
+	if list, err := mgr.List(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("jobs after rejected issues = %d (err=%v), want 0", len(list), err)
+	}
+	mustNoErr(t, chromedp.Do(bctx, chromedp.SetValue(`[data-testid="new-job-issue"]`, "owner/repo#42"), chromedp.Click(`[data-testid="new-job-submit"]`)))
+	waitJS(t, bctx, "issue 42 achieved & draft PR linked", `document.querySelector('[data-testid="detail-objective"]')?.textContent === "Add badge.txt from issue 42" && document.querySelector('[data-testid="result-status"]')?.textContent === "achieved" && document.querySelector('[data-testid="result-pr-link"]')?.getAttribute("href") === "https://github.com/owner/repo/pull/99"`)
+	prMu.Lock()
+	defer prMu.Unlock()
+	if body, _ := prReq["body"].(string); prReq["draft"] != true || !strings.HasPrefix(body, "Closes #42\n") {
+		t.Fatalf("unexpected draft PR request: %#v", prReq)
+	}
+}

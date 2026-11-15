@@ -26,7 +26,8 @@ type modelCatalog struct {
 	Defaults  map[string]modelChoice `json:"defaults"`
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+// ModelCatalog returns the registered providers, curated models, and activity defaults.
+func ModelCatalog() any {
 	catalog := modelCatalog{Providers: []modelProvider{}, Defaults: map[string]modelChoice{}}
 	for _, name := range providers.Known() {
 		factory, _ := providers.Lookup(name)
@@ -36,5 +37,9 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		provider, model := modelselection.Default(coding)
 		catalog.Defaults[mode] = modelChoice{Provider: provider, Model: model}
 	}
-	writeJSON(w, http.StatusOK, catalog)
+	return catalog
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, ModelCatalog())
 }

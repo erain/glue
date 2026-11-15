@@ -261,10 +261,7 @@ func (m *Manager) githubToken() string {
 	m.credsMu.RLock()
 	tok := m.creds.GitHubToken
 	m.credsMu.RUnlock()
-	if tok != "" {
-		return tok
-	}
-	return strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN"))
+	return cmpOr(tok, cmpOr(strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))))
 }
 func (m *Manager) providerKey(name string) string {
 	name = strings.TrimSpace(name)
@@ -279,7 +276,7 @@ func (m *Manager) providerKey(name string) string {
 
 func (m *Manager) policyFor(name string, allowedBinaries ...string) (Policy, error) {
 	name = strings.TrimSpace(name)
-	if m.options.Policy != nil {
+	if m != nil && m.options.Policy != nil {
 		cfgName := strings.TrimSpace(m.options.Policy.Name)
 		if cfgName == "" {
 			cfgName = "custom"
@@ -290,7 +287,7 @@ func (m *Manager) policyFor(name string, allowedBinaries ...string) (Policy, err
 			return p, nil
 		}
 	}
-	if len(allowedBinaries) == 0 {
+	if len(allowedBinaries) == 0 && m != nil {
 		allowedBinaries = m.options.AllowedBinaries
 	}
 	return BuiltInPolicy(name, allowedBinaries...)
@@ -332,6 +329,8 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 	}
 	if s.Delivery == "" {
 		s.Delivery = "none"
+	} else if s.Delivery == "pr" {
+		s.Delivery = "draft_pr"
 	}
 	switch s.Delivery {
 	case "none", "branch", "draft_pr":
@@ -394,10 +393,25 @@ func NewID() (string, error) {
 	return "job-" + hex.EncodeToString(random[:]), err
 }
 
+// ValidateSpec validates s and, when remoteOnly is true, requires an https:// Repo.URL.
+func ValidateSpec(s Spec, remoteOnly bool) error {
+	if !remoteOnly {
+		s.Policy = ""
+	}
+	out, err := (*Manager)(nil).validate(s)
+	if err == nil && remoteOnly && (out.Repo.Path != "" || !strings.HasPrefix(strings.ToLower(out.Repo.URL), "https://")) {
+		return invalid("repo.url", "https:// repository URL is required")
+	}
+	return err
+}
+
 // Create atomically writes a validated specification and its first event.
 func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 	var job Job
-	spec, err := m.validate(spec)
+	spec, err := ResolveIssue(ctx, spec, m.githubToken())
+	if err == nil {
+		spec, err = m.validate(spec)
+	}
 	if err != nil {
 		return job, err
 	}

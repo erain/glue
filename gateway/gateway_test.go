@@ -1158,3 +1158,57 @@ func TestClusterGatewaySetupConfigShapesParse(t *testing.T) {
 		t.Fatalf("cf=%+v dev=%+v", cf, dev)
 	}
 }
+
+func TestPostJobsResolvesGitHubIssue(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/erain/glue-sandbox/issues/42":
+			_, _ = w.Write([]byte(`{"title":"Gateway issue 42","body":"Issue body","state":"open","comments":0}`))
+		case "/repos/erain/glue-sandbox/issues/7":
+			_, _ = w.Write([]byte(`{"title":"PR","state":"open","pull_request":{}}`))
+		case "/repos/erain/glue-sandbox/issues/8":
+			_, _ = w.Write([]byte(`{"title":"Closed","state":"closed"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	h := &fakeAXHarness{}
+	h.now.Store(time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC).UnixNano())
+	gw := must(NewServer(Config{StateDir: t.TempDir(), Auth: AuthConfig{Mode: "dev-token", Token: "gw-token"}, Credentials: jobs.Credentials{GitHubToken: "gw-gh-tok"}, Now: h.Now, Backends: []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}}, CustomBackends: map[string]Backend{"ax": h}}))
+	ts := httptest.NewServer(gw)
+	t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+	loginResp := must(ts.Client().Post(ts.URL+"/v1/session/login", "application/json", strings.NewReader(`{"token":"gw-token"}`)))
+	ck := loginResp.Cookies()[0]
+	var sess struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	_ = json.NewDecoder(loginResp.Body).Decode(&sess)
+	loginResp.Body.Close()
+	mresp := doCookie(t, ts.Client(), http.MethodGet, ts.URL+"/v1/models", ck, "", "")
+	var cat struct {
+		Providers []any                        `json:"providers"`
+		Defaults  map[string]map[string]string `json:"defaults"`
+	}
+	_ = json.NewDecoder(mresp.Body).Decode(&cat)
+	mresp.Body.Close()
+	if mresp.StatusCode != http.StatusOK || len(cat.Providers) == 0 || cat.Defaults["coding"]["model"] != "gemini-3-flash-preview" || doCookieStatus(t, ts.Client(), http.MethodPost, ts.URL+"/v1/models", ck, sess.CSRFToken, "{}") != http.StatusMethodNotAllowed {
+		t.Fatalf("models status=%d cat=%+v", mresp.StatusCode, cat)
+	}
+	if doCookieStatus(t, ts.Client(), http.MethodPost, ts.URL+"/v1/jobs", ck, "", `{"issue":"erain/glue-sandbox#42"}`) != http.StatusForbidden {
+		t.Fatal("expected 403 without CSRF on POST /v1/jobs")
+	}
+	for _, bad := range []string{`{}`, `{"issue":"erain/glue-sandbox#7"}`, `{"issue":"erain/glue-sandbox#8"}`, `{"objective":"x","repo":{"path":"/tmp"}}`, `{"objective":"x","repo":{"url":"http://insecure/r"}}`} {
+		if st := doCookieStatus(t, ts.Client(), http.MethodPost, ts.URL+"/v1/jobs", ck, sess.CSRFToken, bad); st != http.StatusBadRequest {
+			t.Fatalf("bad=%s got status=%d, want 400", bad, st)
+		}
+	}
+	cresp := doCookie(t, ts.Client(), http.MethodPost, ts.URL+"/v1/jobs", ck, sess.CSRFToken, `{"issue":"erain/glue-sandbox#42"}`)
+	var created struct{ Job jobs.Job }
+	_ = json.NewDecoder(cresp.Body).Decode(&created)
+	cresp.Body.Close()
+	if cresp.StatusCode != http.StatusCreated || created.Job.Spec.Objective != "Gateway issue 42" || created.Job.Spec.Issue != "erain/glue-sandbox#42" || created.Job.Spec.Delivery != "draft_pr" || created.Job.Spec.Repo.URL != "https://github.com/erain/glue-sandbox" {
+		t.Fatalf("created=%+v status=%d", created.Job, cresp.StatusCode)
+	}
+}
