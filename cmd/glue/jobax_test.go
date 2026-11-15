@@ -1072,5 +1072,8 @@ func TestJobUITunnelQRAndCleanup(t *testing.T) {
 	banner, stopUI := startJobUI(t, "█", "--tunnel")
 	pid := must(strconv.Atoi(strings.TrimSpace(string(must(os.ReadFile(pidFile))))))
 	stopUI()
+	for i := 0; i < 50 && syscall.Kill(pid, 0) == nil; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
 	checkAX(t, errMissing != nil && strings.Contains(errMissing.Error(), "cloudflared not found") && !strings.Contains(strings.TrimSpace(errMissing.Error()), "\n") && strings.HasPrefix(banner, "https://example.trycloudflare.com/#token=") && syscall.Kill(pid, 0) != nil, "missing=%v banner=%s pid=%d", errMissing, banner, pid)
 }

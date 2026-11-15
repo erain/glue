@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/erain/glue/cmd/glue/tui"
+	"github.com/erain/glue/internal/axbackend"
+	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/jobs"
 )
 
@@ -102,6 +104,56 @@ func (t tuiJobs) Transcript(ctx context.Context, id string) (string, error) {
 	return t.run(ctx, "logs", id)
 }
 
-func (t tuiJobs) Pull(ctx context.Context, id string) (string, error) {
-	return t.run(ctx, "pull", id, "--repo", cmp.Or(t.workDir, "."))
+func (t tuiJobs) Detail(ctx context.Context, id string) (out tui.JobDetail, err error) {
+	c, _, err := resolveJobAPI(ctx, jobTargetOpts{conn: jobclient.Config{MetadataPath: defaultMetadataPath()}}, nil)
+	if err != nil {
+		return out, err
+	}
+	defer c.Close()
+	d, err := c.Show(ctx, id)
+	if err != nil {
+		return out, err
+	}
+	out = tui.JobDetail{ID: d.ID, Status: string(d.Status), Objective: d.Spec.Objective, PRURL: d.PRURL}
+	if d.Question != nil {
+		out.Question = &tui.JobQuestion{ID: d.Question.ID, Question: d.Question.Question, Options: d.Question.Options}
+	}
+	if d.PendingPermissionCount > 0 || d.Status == jobs.WaitingForInput {
+		perms, _ := c.Permissions(ctx, d.ID, "pending")
+		for _, p := range perms {
+			out.Permissions = append(out.Permissions, tui.JobPermission{ID: p.ID, Tool: p.Request.Tool, Action: p.Request.Action, Target: p.Request.Target})
+		}
+	}
+	if axbackend.IsTerminal(d.Status) {
+		if res, rerr := c.Result(ctx, d.ID); rerr == nil {
+			out.Summary, out.PRURL = res.Summary, cmp.Or(out.PRURL, res.PRURL)
+		}
+	}
+	return out, nil
+}
+
+func (t tuiJobs) exec(ctx context.Context, a ...string) error         { _, err := t.run(ctx, a...); return err }
+func (t tuiJobs) Diff(ctx context.Context, id string) (string, error) { return t.run(ctx, "diff", id) }
+func (t tuiJobs) Cancel(ctx context.Context, id string) error         { return t.exec(ctx, "cancel", id) }
+func (t tuiJobs) OpenPR(ctx context.Context, id string) (string, error) {
+	out, err := t.run(ctx, "pr", id)
+	return strings.TrimSpace(strings.TrimPrefix(out, "draft PR:")), err
+}
+func (t tuiJobs) Answer(ctx context.Context, id, q, s string) error {
+	return t.exec(ctx, "answer", "--question", q, "--", id, s)
+}
+func (t tuiJobs) DecidePermission(ctx context.Context, id, p string, ok bool, r string) error {
+	if !ok {
+		return t.exec(ctx, "deny", "--", id, p)
+	}
+	return t.exec(ctx, "approve", "--remember", r, "--", id, p)
+}
+func (t tuiJobs) Say(ctx context.Context, id, s string, intr bool) error {
+	if intr {
+		s = cmp.Or(strings.TrimSpace(s), "Interrupt current step.")
+	}
+	return t.exec(ctx, "say", fmt.Sprintf("--interrupt=%t", intr), "--", id, s)
+}
+func (t tuiJobs) Pull(ctx context.Context, id string, apply bool) (string, error) {
+	return t.run(ctx, "pull", fmt.Sprintf("--apply=%t", apply), id, "--repo", cmp.Or(t.workDir, "."))
 }

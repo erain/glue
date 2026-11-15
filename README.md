@@ -561,9 +561,7 @@ transcript), **`/fork [N]`** (branch from message N — defaults to
 original intact), **`/clone`** (full duplicate of the current
 session), **`/tree`** (visualize the session lineage with
 `├─ / └─` glyphs, current node marked `◉`; pick one to switch — see
-[ADR-0015](docs/adr/0015-session-tree.md)), **`/jobs`** (remote jobs with status and age, refreshed every 10 s; Enter
-shows a job's live transcript, `p` pulls its result into the workspace as
-`glue job pull` does; the status bar shows `⧗ N remote jobs · M waiting`
+[ADR-0015](docs/adr/0015-session-tree.md)), **`/jobs`** (remote jobs with status and age, refreshed every 10 s without waking suspended AX tasks; Enter opens a scrollable live transcript with `d` unified diff toggle, `1`–`9`/`a` question answers, `y`/`s`/`n` permission decisions, `s` say and `i` interrupt steering, `c` cancel confirmation, `o` draft PR creation, `p` branch pull, and `A` `--apply` working-tree pull; the status bar shows `⧗ N remote jobs · M waiting`
 while any run), **`/remote [--snapshot] <objective>`**
 (hand the task to a remote AX job with this session's latest compaction
 summary, or its last 4,000 characters, as background; the same local-state
