@@ -5,10 +5,13 @@ it up later from any terminal or a browser. Jobs execute directly as isolated
 tasks on [AX](https://github.com/google/ax) — with AX as Glue's sole external
 platform dependency — or locally under `glue serve`. Phase 1 MVP
 ([#402](https://github.com/erain/glue/issues/402),
-[ADR-0019](adr/0019-remote-jobs-architecture.md)) and Phase 2 AX-first
-refinement ([#526](https://github.com/erain/glue/issues/526),
-[ADR-0020](adr/0020-ax-first-direct-execution.md)) track the architecture and
-milestones below. **To use remote jobs, start with the
+[ADR-0019](adr/0019-remote-jobs-architecture.md)), Phase 2 AX-first refinement
+([#526](https://github.com/erain/glue/issues/526),
+[ADR-0020](adr/0020-ax-first-direct-execution.md)), Phase 3 developer-journey
+trust ([remote-mode-phase3-design.md](remote-mode-phase3-design.md)), and
+Phase 4 logged-in browser & continuity ([#623](https://github.com/erain/glue/issues/623),
+[ADR-0021](adr/0021-opt-in-cluster-gateway-cloudflare-access.md)) track the
+architecture and shipped milestones below. **To use remote jobs, start with the
 [quickstart](remote-quickstart.md)**; this page is the design record.
 
 > Using remote jobs? Start with [remote-quickstart.md](remote-quickstart.md). This page is the design and roadmap.
@@ -26,10 +29,12 @@ milestones below. **To use remote jobs, start with the
    `glue job result <id>` from any authorized laptop inspect status without
    waking suspended tasks, replay missed SSE events via `Last-Event-ID`, steer
    in-flight runs (`say` / `continue`), and read cached terminal results.
-4. Optional human approval & mobile browser portal: pass `--policy workspace-auto`
-   (or `ask-all`) for interactive approval on sensitive commands, and optionally
-   run `glue-gateway` on a host or VM behind Cloudflare Tunnel (`GitHub OAuth`)
-   to watch, approve, and auto-suspend idle tasks from a phone browser.
+4. Optional human approval, phone actions & browser workspace: answer questions
+   or approve `--policy workspace-auto` / `ask-all` commands from `ntfy`
+   lock-screen HTTP actions, run `glue remote setup` once for an in-cluster
+   Cloudflare Access `glue-gateway` (`0` idle AX workers, `#/new` interactive +
+   goal escalation, unified diff, 1-tap Draft PRs), or `glue job teleport <id>`
+   back into your local checkout and TUI.
 
 ## Components
 
@@ -99,9 +104,12 @@ Milestones K–P are Phase 3, designed in
 2026-11-13); its exit gate is `scripts/demo/aha.sh`, which runs the
 [quickstart](remote-quickstart.md) on the standing cluster. Milestone Q is
 Phase 4, designed in [remote-mode-phase4-ux.md](remote-mode-phase4-ux.md)
-([#623](https://github.com/erain/glue/issues/623)) under
-[#402](https://github.com/erain/glue/issues/402) with exit gate
-`scripts/demo/anywhere.sh`.
+([#623](https://github.com/erain/glue/issues/623),
+[ADR-0021](adr/0021-opt-in-cluster-gateway-cloudflare-access.md)) and shipped
+in [#402](https://github.com/erain/glue/issues/402) (2026-11-15);
+its exit gate is `scripts/demo/anywhere.sh`, which runs the Cloudflare Access
+browser workspace, interactive-to-goal escalation, Draft PR, `ntfy` tap-back,
+and `glue job teleport` flow on the standing cluster.
 
 ## How each step is verified
 

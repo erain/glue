@@ -524,6 +524,8 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Session, boo
 	if wantLogin != "" {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 			writeErr(w, http.StatusForbidden, "forbidden", "missing or invalid CSRF token")
+		} else if r.URL.Path != "/v1/session" && r.URL.Path != "/v1/me" {
+			return Session{Login: wantLogin}, true
 		} else if sess, err := s.reg.CreateSession(r.Context(), wantLogin, 0, s.cfg.Auth.SessionAbsoluteTTL); err != nil {
 			writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
 		} else {
@@ -633,6 +635,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.setCookie(w, r, "glue_session", sess.ID, int(s.cfg.Auth.SessionAbsoluteTTL.Seconds()))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "authenticated": true, "auth_mode": s.cfg.Auth.Mode, "login": sess.Login, "csrf_token": sess.CSRFToken})
+		return
+	}
+	if !strings.HasPrefix(r.URL.Path, "/v1/") {
+		writeErr(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	}
 	sess, ok := s.authorize(w, r)

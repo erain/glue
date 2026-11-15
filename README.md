@@ -9,14 +9,14 @@ Start a coding job from your laptop in one command, close your lid, and come
 back to verified commits and a draft pull request — or import Glue's Go SDK to
 build your own tool-calling agents on the same provider-agnostic loop.
 
-- **Remote-first coding agent (`glue --remote` / `glue job`):** Dispatch
-  autonomous coding jobs directly from a git checkout into isolated
-  [AX](https://github.com/google/ax) sandboxes with zero gateway deployment or
-  custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)).
-  Inspect, stream, or steer anytime (`glue job list|show|attach|ui|say|result`),
-  run offline locally (`glue`, `glue code`, `glue run`, `glue goal`, `glue serve`), or add the
-  optional host-mode [`glue-gateway`](gateway/README.md) (`--quick` for zero-YAML QR startup) for mobile browser UI
-  and GitHub OAuth.
+- **Remote-first coding agent (`glue --remote` / `glue job` / `glue remote`):** Dispatch
+  interactive (`-i`) or autonomous coding jobs directly from a git checkout into isolated
+  [AX](https://github.com/google/ax) sandboxes with zero mandatory gateway deployment
+  ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)). Inspect, steer, answer from
+  phone lock-screen `ntfy` action buttons, open a local/QR browser UI (`glue job ui`),
+  `glue job teleport` code + context into your local TUI, run offline (`glue`, `glue code`,
+  `glue run`, `glue goal`, `glue serve`), or run `glue remote setup` for a bookmarkable
+  Cloudflare Access browser workspace (`0` idle AX workers; [ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md)).
 - **Composable Go agent framework (`github.com/erain/glue`):** A small,
   code-first `Agent` / `Session` API, typed tools, five model providers,
   context compaction, and optional SQLite FTS5 persistence — inspired by
@@ -33,14 +33,17 @@ glue job attach latest                # live transcript; Ctrl-C detaches, the jo
 glue job pull latest --apply          # the result, on top of the work you sent (or `glue job teleport` to open TUI with context)
 ```
 
-The job ID comes back in about 3 seconds; your phone hears when the job is done
-or needs an answer from you (`glue job answer`). `--snapshot` sends uncommitted
-work; without it, glue refuses to start from unpushed changes rather than work
-on different code. More: `--attempts N` with `glue job compare`/`pick`,
-`--issue <n>` to start from a GitHub issue, `--deliver pr` and
-`glue job continue --from-pr` for review rounds, `glue job say --interrupt` to
-redirect a running job, `/remote` and `/jobs` in the TUI, and per-repo settings
-in `.glue/remote.yaml` ([docs/jobs.md](docs/jobs.md)).
+The job ID comes back in about 3 seconds; your phone hears when the job finishes
+or needs a decision — with native `ntfy` lock-screen action buttons (`glue job answer`
+also works from any terminal). `--snapshot` sends uncommitted work; without it,
+glue refuses to start from unpushed changes rather than work on different code.
+Run `glue remote setup` once to add a permanent Cloudflare Access browser
+workspace (`#/new` interactive chat → **Run Autonomously** → unified diff &
+**Open Draft PR**), and `glue job teleport <id>` (or `/teleport` / `/jobs` in the
+TUI) to pull remote code and context into your local session. More: `--attempts N`
+with `glue job compare`/`pick`, `--issue <n>`, `--deliver pr` / `glue job pr` and
+`glue job continue --from-pr`, `glue job say --interrupt`, and `.glue/remote.yaml`
+([docs/jobs.md](docs/jobs.md)).
 
 ```go
 agent := glue.NewAgent(glue.AgentOptions{
@@ -53,7 +56,7 @@ result, _ := session.Prompt(ctx, "What's the weather in Toronto?")
 fmt.Println(result.Text)
 ```
 
-- **Run remote coding jobs on AX:** → [Quickstart](docs/remote-quickstart.md) · [Jobs reference](docs/jobs.md) · [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) · [Showcase](docs/demo-ax-develops-ax.md)
+- **Run remote coding jobs on AX:** → [Quickstart](docs/remote-quickstart.md) · [Jobs reference](docs/jobs.md) · [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) · [ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md) · [Showcase](docs/demo-ax-develops-ax.md)
 - **Build an agent with the Go SDK:** → [docs/building-agents.md](docs/building-agents.md) · [Quickstart](#quickstart)
 - **Architecture & roadmap:** → [Concepts](#concepts) · [docs/design.md](docs/design.md) · [Project plan](docs/project-plan.md) · [Remote roadmap](docs/remote-mode-roadmap.md)
 
@@ -659,14 +662,15 @@ GEMINI_API_KEY=... go test ./providers/gemini -run Live
 ## Project status & contributing
 
 Glue focuses on two surfaces: the **AX-first, remote-first coding agent**
-(`glue --remote`, `glue job`, interactive TUI, local goals, and optional
-host-mode `glue-gateway` + `webui`) and the **Go agent framework**
+(`glue --remote`, `glue job`, `glue remote`, interactive TUI, local goals, and
+opt-in `glue-gateway` + `webui`) and the **Go agent framework**
 (`github.com/erain/glue`). Remote jobs execute directly on
-[AX](https://github.com/google/ax) with `auto` policy by default and zero
-custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md));
-remote mode Phases 1–3 are shipped, and `scripts/demo/aha.sh` proves the
-[five-minute quickstart](docs/remote-quickstart.md) end to end on a live
-cluster. Execution mode is independent of model/provider selection. The
+[AX](https://github.com/google/ax) with `auto` policy by default
+([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)) and an optional
+Cloudflare Access browser gateway ([ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md));
+remote mode Phases 1–4 are shipped, with `scripts/demo/aha.sh` and
+`scripts/demo/anywhere.sh` proving the [quickstart](docs/remote-quickstart.md)
+end to end on a live cluster. Execution mode is independent of model/provider selection. The
 [project plan](docs/project-plan.md) and
 [remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
 [tracker #392](https://github.com/erain/glue/issues/392) and

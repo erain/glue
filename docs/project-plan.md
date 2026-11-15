@@ -27,7 +27,7 @@ backend. Local execution can still call a hosted model API.
 
 | Mode | Intended experience | Status |
 |------|---------------------|--------|
-| Remote (`AX-first`) | Dispatch a coding job directly from your laptop to AX (`glue --remote`), close the lid, inspect/attach/steer later (`glue job`), and get verified commits and a draft PR — plus optional host `glue-gateway` for browser UI. | Shipped ([#402](https://github.com/erain/glue/issues/402), [#526](https://github.com/erain/glue/issues/526), [ADR-0019](adr/0019-remote-jobs-architecture.md), [ADR-0020](adr/0020-ax-first-direct-execution.md)). |
+| Remote (`AX-first`) | Dispatch interactive or autonomous coding jobs to AX (`glue --remote`), inspect/steer/answer from terminal or phone (`glue job`, `ntfy`), use an optional Cloudflare Access browser workspace (`glue remote setup`), and `teleport` or open verified Draft PRs. | Shipped ([#402](https://github.com/erain/glue/issues/402), [#526](https://github.com/erain/glue/issues/526), [#623](https://github.com/erain/glue/issues/623), [ADR-0019](adr/0019-remote-jobs-architecture.md)–[ADR-0021](adr/0021-opt-in-cluster-gateway-cloudflare-access.md)). |
 | Local | Code interactively or run a goal in a workspace on this machine without AX or a cluster. | Shipped (`run`, TUI, `goal`, and `serve --coding`). |
 
 Glue owns agent behavior and the coding-job contract; [AX](https://github.com/google/ax)
@@ -47,9 +47,10 @@ and Phase 2 ([ADR-0020](adr/0020-ax-first-direct-execution.md),
 Phase 3 ([remote-mode-phase3-design.md](remote-mode-phase3-design.md),
 2026-11-13), whose result is the [remote quickstart](remote-quickstart.md).
 Phase 4 ([remote-mode-phase4-ux.md](remote-mode-phase4-ux.md),
-[#623](https://github.com/erain/glue/issues/623)) plans the logged-in browser
-workspace, Cloudflare Access cluster gateway, and bidirectional local/remote
-continuity under [#402](https://github.com/erain/glue/issues/402). The
+[ADR-0021](adr/0021-opt-in-cluster-gateway-cloudflare-access.md),
+[#623](https://github.com/erain/glue/issues/623), 2026-11-15) is also shipped
+under [#402](https://github.com/erain/glue/issues/402), verified end to end on
+`kind-glue-ax` by `scripts/demo/anywhere.sh`. The
 2026-11-07 planning steps below record how the initial roadmap was produced:
 
 This is the plan for producing that roadmap, not an implementation backlog.
