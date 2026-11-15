@@ -228,8 +228,15 @@ func resolveAXCredentials(ctx context.Context) jobs.Credentials {
 			pks[p] = v
 		}
 	}
+	var pub string
+	if ucfg, _, _ := loadUserConfig(); ucfg != nil {
+		pub = ucfg.PublicURL
+	}
+	if pub = strings.TrimRight(cmp.Or(strings.TrimSpace(os.Getenv("GLUE_PUBLIC_URL")), strings.TrimSpace(pub)), "/"); jobs.ValidNotifyURL(pub) != nil {
+		pub = ""
+	}
 	ghTok, _ := githubToken(ctx)
-	creds := jobs.Credentials{GitHubToken: ghTok, NotifyURLs: notifyURLs(nil)}
+	creds := jobs.Credentials{GitHubToken: ghTok, NotifyURLs: notifyURLs(nil), PublicURL: pub}
 	if len(pks) > 0 {
 		creds.ProviderKeys = pks
 	}

@@ -94,6 +94,7 @@ func (m *Manager) ask(ctx context.Context, id string, run *execution, question s
 	}
 	run.mu.Lock()
 	info := QuestionInfo{ID: fmt.Sprintf("%s:question:%d", id, job.LastSeq+1), Question: question, Options: options, AskedAt: m.options.Now().UTC()}
+	defer m.trackWait(info.ID, ctx)()
 	pending := &pendingQuestion{info: info, done: make(chan string, 1)}
 	if run.questions == nil {
 		run.questions = map[string]*pendingQuestion{}
@@ -139,6 +140,10 @@ func (m *Manager) activeStatus(run *execution) Status {
 // be empty when exactly one question is open. The answer is durable: if the
 // job restarts and asks the same question again, it gets this answer.
 func (m *Manager) Answer(ctx context.Context, id, questionID, text string) error {
+	return m.answerFrom(ctx, id, questionID, text, "")
+}
+
+func (m *Manager) answerFrom(ctx context.Context, id, questionID, text, source string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return invalid("text", "required")
@@ -162,17 +167,21 @@ func (m *Manager) Answer(ctx context.Context, id, questionID, text string) error
 	if q == nil {
 		return fmt.Errorf("%w: no open question", ErrConflict)
 	}
+	payload := map[string]any{"question_id": q.ID, "question": q.Question, "text": text}
+	if source != "" {
+		payload["source"] = source
+	}
 	m.mu.Lock()
 	run := m.active[id]
 	m.mu.Unlock()
 	if run == nil {
-		return m.record(id, "answer", map[string]any{"question_id": q.ID, "question": q.Question, "text": text}, "", nil, "")
+		return m.record(id, "answer", payload, "", nil, "")
 	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
 	pending := run.questions[q.ID]
 	delete(run.questions, q.ID)
-	if err := m.record(id, "answer", map[string]any{"question_id": q.ID, "question": q.Question, "text": text}, "", nil, m.activeStatus(run)); err != nil {
+	if err := m.record(id, "answer", payload, "", nil, m.activeStatus(run)); err != nil {
 		return err
 	}
 	if pending != nil {

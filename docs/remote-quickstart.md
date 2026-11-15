@@ -74,7 +74,7 @@ glue job attach latest      # live transcript; Ctrl-C detaches, the job keeps go
   branch       glue/job-f8a57d276fb8
 ```
 
-Your phone gets "job-f8a57d276fb8 achieved …" when it finishes. If the agent needs a decision only you can make, it asks: you get a notification, and you answer with `glue job answer latest "<text>"` or from the web UI. To redirect it mid-run: `glue job say --interrupt latest "<text>"`.
+Your phone gets "job-f8a57d276fb8 achieved …" when it finishes. If the agent needs a decision or permission only you can grant, it asks: your phone gets an `ntfy` notification with one-tap action buttons (and a reply topic for free-text answers, plus a `Click` link to `<public_url>/#/jobs/<id>` when `public_url` is set), or you can answer with `glue job answer latest "<text>"` or from the web UI. To redirect it mid-run: `glue job say --interrupt latest "<text>"`.
 
 ## 4. Bring the result home
 

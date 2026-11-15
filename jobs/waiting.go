@@ -55,6 +55,7 @@ func (p jobPermission) Decide(ctx context.Context, request glue.PermissionReques
 		}
 	}
 	id := fmt.Sprintf("%s:permission:%d", p.id, job.LastSeq+1)
+	defer m.trackWait(id, ctx)()
 	pending := &pendingDecision{req: request, done: make(chan glue.PermissionDecision, 1)}
 	if r.pending == nil {
 		r.pending = map[string]*pendingDecision{}
@@ -111,6 +112,10 @@ func (p jobPermission) expire(id string, pending *pendingDecision, cause error) 
 
 // Decide durably records a pending permission decision before releasing its tool.
 func (m *Manager) Decide(ctx context.Context, id, permissionID string, decision glue.PermissionDecision) error {
+	return m.decideFrom(ctx, id, permissionID, decision, "")
+}
+
+func (m *Manager) decideFrom(ctx context.Context, id, permissionID string, decision glue.PermissionDecision, source string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -127,10 +132,14 @@ func (m *Manager) Decide(ctx context.Context, id, permissionID string, decision 
 		return ErrConflict
 	}
 	status := Running
-	if len(r.pending) > 1 {
+	if len(r.pending) > 1 || len(r.questions) > 0 {
 		status = WaitingForInput
 	}
-	if err := m.record(id, "permission_decision", map[string]any{"permission_id": permissionID, "decision": decision}, "", nil, status); err != nil {
+	payload := map[string]any{"permission_id": permissionID, "decision": decision}
+	if source != "" {
+		payload["source"] = source
+	}
+	if err := m.record(id, "permission_decision", payload, "", nil, status); err != nil {
 		return err
 	}
 	if decision.Allow && decision.RememberFor != glue.RememberNever {

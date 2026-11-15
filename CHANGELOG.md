@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Two-way `ntfy` phone notifications and browser `Click` deep-links: `waiting_for_input` notifications on `ntfy` attach native lock-screen HTTP action buttons (`ask_user` options or free-text capability reply topic, plus `Allow once` / `Allow session` / `Deny` for permissions) answered over outbound HTTPS (`GET <origin>/glue-reply-<32-hex>/json`) with `source: "ntfy"` metadata, full secret redaction, a `✓` confirmation push, and `Click: <public_url>/#/jobs/<id>` fallback from `Credentials.PublicURL` / `GLUE_PUBLIC_URL` when no PR URL exists.
+
 - `webui` upgrades `#/jobs/<id>` with conversational workspace turn rendering (user turn bubbles, safe DOM fenced code blocks and inline `<code>` formatting on streaming assistant replies, compact collapsible tool-call pills, and `planner`/`maker`/`checker` goal-phase badges), interactive workspace status pills (`Ready for your message`, `Suspended (wakes on message)`, and `Waking workspace…`), a responsive sticky bottom chat composer (`Enter` to send, `Shift+Enter` for newline), and a one-click **Run Autonomously** inline goal escalation bar (`POST /v1/jobs/{id}/goal`).
 
 - `webui` adds a responsive `#/new` launcher for interactive workspaces, autonomous coding goals, and GitHub `--issue` runs (with recent-repository quick-fill chips and `verify` / `delivery` / `provider` / `model` / `thinking` options from `GET /v1/models`), paired with shared server-side `POST /v1/jobs` GitHub `issue` resolution and `GET /v1/models` parity on `glue-gateway`.
