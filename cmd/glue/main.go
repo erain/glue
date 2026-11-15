@@ -307,6 +307,7 @@ Run remotely on AX:
   glue --remote -i "<prompt>" [flags] Start an interactive multi-turn remote workspace
 
 Manage remote jobs:
+  glue job ui [--tunnel] [--open]     Open local browser UI with #token magic link / QR
   glue job list | show <id>           List jobs or inspect status, questions, and permissions
   glue job attach [<id>]              Stream live job events (Ctrl-C detaches cleanly)
   glue job say | answer <id> "<text>" Steer a running job (--interrupt) or answer a question

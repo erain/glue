@@ -26,8 +26,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,6 +76,7 @@ type fakeAXRig struct {
 	managers     map[string]*jobs.Manager
 	restarts     map[string]func() *jobs.Manager
 	lastOpts     axbackend.Options
+	resumes      int
 }
 
 func newFakeAXRig(t *testing.T, makeProvider func() glue.Provider) *fakeAXRig {
@@ -206,6 +209,7 @@ func (r *fakeAXRig) CreateActorEgressPolicy(_ context.Context, req *ateapipb.Cre
 }
 func (r *fakeAXRig) ResumeTask(_ context.Context, req *v1alpha1.ResumeTaskRequest) (*v1alpha1.Task, error) {
 	defer r.lock()()
+	r.resumes++
 	if t, ok := r.tasks[req.GetName()]; ok && r.egress[req.GetName()] {
 		t.Status = &v1alpha1.TaskStatus{Phase: "Running", Conditions: []*v1alpha1.Condition{{Type: "WorkspaceReady", Status: "True"}}}
 		return t, nil
@@ -994,4 +998,79 @@ func TestE2EClusterGatewaySetupAndCloudflareAccess(t *testing.T) {
 	stDel, _, _ := doReq(http.MethodDelete, "/v1/jobs/"+jobID+"?purge=true", jwt, sess, csrf, "")
 	checkAX(t, st401 == http.StatusUnauthorized && st403 == http.StatusForbidden && meBody["login"] == "alice@example.com" && stList == http.StatusOK && stCreate == http.StatusCreated && strings.HasPrefix(jobID, "job-") && slices.ContainsFunc(after.GetTasks(), func(tk *v1alpha1.Task) bool { return tk.GetMetadata().GetName() == "glue-"+jobID }) && stDel == http.StatusOK, "http: 401=%d 403=%d list=%d create=%d(%q) del=%d", st401, st403, stList, stCreate, jobID, stDel)
 	checkAX(t, remoteCommand(ctx, []string{"status"}, &statusOut, &statusOut, http.DefaultClient) == nil && strings.Contains(statusOut.String(), "ready: 1/1") && strings.Contains(statusOut.String(), "healthz: ok") && remoteCommand(ctx, []string{"down", "--purge-pvc"}, io.Discard, io.Discard, http.DefaultClient) == nil && exec.CommandContext(ctx, "kubectl", "--kubeconfig", kc, "--context", kctx, "get", "ns", remoteGatewayNS).Run() != nil, "status=%s", statusOut.String())
+}
+
+func startJobUI(t *testing.T, want string, args ...string) (string, func()) {
+	ctx, cancel := context.WithCancel(t.Context())
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- jobCommand(ctx, append([]string{"ui", "--ax"}, args...), strings.NewReader(""), pw, io.Discard, http.DefaultClient)
+	}()
+	var out strings.Builder
+	for buf := make([]byte, 4096); !strings.Contains(out.String(), want); {
+		n, err := pr.Read(buf)
+		out.Write(buf[:n])
+		checkAX(t, err == nil, "read banner: %v", err)
+	}
+	go io.Copy(io.Discard, pr)
+	return out.String(), func() { cancel(); checkAX(t, <-done == nil, "ui shutdown"); _ = pw.Close() }
+}
+
+func TestJobUIServesAXJobsWithoutWakeup(t *testing.T) {
+	clearJobTestEnv(t)
+	t.Setenv("GLUE_GITHUB_TOKEN", "ghp_fake")
+	origOpen, opened := openBrowserURL, false
+	t.Cleanup(func() { openBrowserURL = origOpen })
+	openBrowserURL = func(string) error { opened = true; return nil }
+	rig := newFakeAXRig(t, func() glue.Provider {
+		return &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("Interactive ready."), textTurn("Woken and replied.")}}
+	})
+	activeID := strings.TrimSpace(mustJobCLI(t, "submit", "Active workspace", "--repo", "https://github.com/erain/glue-sandbox.git", "--interactive", "--ax"))
+	suspID := strings.TrimSpace(mustJobCLI(t, "submit", "Suspended workspace", "--repo", "https://github.com/erain/glue-sandbox.git", "--interactive", "--ax"))
+	resumes := func() int { defer rig.lock()(); return rig.resumes }
+	for _, id := range []string{activeID, suspID} {
+		waitJob(t, func() *jobs.Manager { defer rig.lock()(); return rig.managers[id] }(), id, jobs.WaitingForInput)
+	}
+	must(rig.SuspendTask(t.Context(), &v1alpha1.SuspendTaskRequest{Name: axbackend.TaskName(suspID)}))
+	banner, stopUI := startJobUI(t, "\n")
+	baseURL, tok, ok := strings.Cut(strings.TrimSpace(strings.Split(banner, "\n")[0]), "/#token=")
+	qResp, loginResp := must(http.Get(baseURL+"/v1/jobs?token="+tok)), must(http.Post(baseURL+"/v1/session/login", "application/json", strings.NewReader(`{"token":"`+tok+`"}`)))
+	var sess map[string]string
+	_, _, _ = json.NewDecoder(loginResp.Body).Decode(&sess), qResp.Body.Close(), loginResp.Body.Close()
+	cks, before := loginResp.Cookies(), resumes()
+	checkAX(t, ok && len(tok) == 64 && !opened && qResp.StatusCode == http.StatusUnauthorized && loginResp.StatusCode == http.StatusOK && len(cks) == 1 && cks[0].HttpOnly && cks[0].SameSite == http.SameSiteStrictMode && sess["csrf_token"] != "", "login=%d q=%d", loginResp.StatusCode, qResp.StatusCode)
+	doUI := func(method, path, body string) (int, string) {
+		req, _ := http.NewRequestWithContext(t.Context(), method, baseURL+path, strings.NewReader(body))
+		req.AddCookie(cks[0])
+		req.Header.Set("X-Glue-CSRF", sess["csrf_token"])
+		resp := must(http.DefaultClient.Do(req))
+		defer resp.Body.Close()
+		return resp.StatusCode, string(must(io.ReadAll(resp.Body)))
+	}
+	var bodies strings.Builder
+	for p, want := range map[string]int{"/v1/jobs": 200, "/v1/jobs/" + suspID: 200, "/v1/jobs/" + suspID + "/permissions?state=pending": 200, "/v1/jobs/" + suspID + "/result": 409, "/v1/jobs/" + suspID + "/patch": 409, "/v1/jobs/" + suspID + "/events?cached=1": 200, "/v1/models": 200} {
+		st, b := doUI(http.MethodGet, p, "")
+		checkAX(t, st == want, "GET %s = %d, want %d", p, st, want)
+		bodies.WriteString(b)
+	}
+	checkAX(t, strings.Contains(bodies.String(), activeID) && strings.Contains(bodies.String(), `"status":"suspended"`) && resumes() == before, "read-only woke task: %d->%d", before, resumes())
+	stMsg, _ := doUI(http.MethodPost, "/v1/jobs/"+suspID+"/messages", `{"text":"wake up"}`)
+	stopUI()
+	checkAX(t, stMsg == http.StatusAccepted && resumes() == before+1, "steer=%d resumes=%d->%d", stMsg, before, resumes())
+}
+
+func TestJobUITunnelQRAndCleanup(t *testing.T) {
+	clearJobTestEnv(t)
+	_, binDir, pidFile := newFakeAXRig(t, func() glue.Provider { return &scriptedProvider{} }), t.TempDir(), filepath.Join(t.TempDir(), "child.pid")
+	for k, v := range map[string]string{"GLUE_GITHUB_TOKEN": "ghp_fake", "PATH": t.TempDir()} {
+		t.Setenv(k, v)
+	}
+	errMissing := jobCommand(t.Context(), []string{"ui", "--ax", "--tunnel"}, strings.NewReader(""), io.Discard, io.Discard, http.DefaultClient)
+	must(0, os.WriteFile(filepath.Join(binDir, "cloudflared"), []byte("#!/bin/sh\nsleep 60 &\necho $! > "+pidFile+"\necho 'INF https://www.cloudflare.com/website-terms/'\necho 'INF | https://example.trycloudflare.com |'\nwait\n"), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/bin:/usr/bin")
+	banner, stopUI := startJobUI(t, "█", "--tunnel")
+	pid := must(strconv.Atoi(strings.TrimSpace(string(must(os.ReadFile(pidFile))))))
+	stopUI()
+	checkAX(t, errMissing != nil && strings.Contains(errMissing.Error(), "cloudflared not found") && !strings.Contains(strings.TrimSpace(errMissing.Error()), "\n") && strings.HasPrefix(banner, "https://example.trycloudflare.com/#token=") && syscall.Kill(pid, 0) != nil, "missing=%v banner=%s pid=%d", errMissing, banner, pid)
 }

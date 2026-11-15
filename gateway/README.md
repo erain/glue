@@ -9,7 +9,8 @@ Deploy in-cluster with one command via `glue remote setup` (`glue-gateway` names
 ```sh
 cd gateway
 go build -o /tmp/glue-gateway ./cmd/glue-gateway
-/tmp/glue-gateway --config /path/to/gateway.yaml
+/tmp/glue-gateway --quick [--tunnel]                # zero-YAML mode (~/.config/glue/gateway/token 0600, #token magic link + QR)
+/tmp/glue-gateway --config /path/to/gateway.yaml    # full YAML configuration
 ```
 
 `glue-gateway` listens on the configured TCP address and shuts down cleanly on `SIGINT` or `SIGTERM`.

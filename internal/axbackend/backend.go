@@ -742,6 +742,16 @@ func (b *Backend) withTempWake(ctx context.Context, id string, fn func(*jobclien
 	return err
 }
 
+func (b *Backend) ReadResult(ctx context.Context, id string) (jobs.Result, error) {
+	if c := b.loadCache(id); c != nil && c.Result != nil && isTerminal(c.Result.Status) {
+		return *c.Result, nil
+	}
+	if t, err := b.getTask(ctx, id); err != nil || !isWorkspaceReady(t) {
+		return jobs.Result{}, cmp.Or(err, fmt.Errorf("%w: task is suspended", jobs.ErrConflict))
+	}
+	return b.Result(ctx, id)
+}
+
 // Result returns a cached terminal completion record or fetches it from the AX task (resuming and re-suspending if needed).
 func (b *Backend) Result(ctx context.Context, id string) (res jobs.Result, err error) {
 	if c := b.loadCache(id); c != nil && c.Result != nil && isTerminal(c.Result.Status) {
@@ -1006,5 +1016,11 @@ func (b *Backend) Do(ctx context.Context, method, subpath string, body []byte) (
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err == nil && method == http.MethodPost && resp.StatusCode < 300 && (strings.HasSuffix(subpath, "/continue") || strings.HasSuffix(subpath, "/goal")) {
+		b.updateCache(jobID, func(c *cachedJob) { c.Status, c.Result = jobs.Running, nil })
+		b.cacheMu.Lock()
+		b.removePatches(jobID)
+		b.cacheMu.Unlock()
+	}
 	return resp.StatusCode, data, err
 }

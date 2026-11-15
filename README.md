@@ -13,9 +13,9 @@ build your own tool-calling agents on the same provider-agnostic loop.
   autonomous coding jobs directly from a git checkout into isolated
   [AX](https://github.com/google/ax) sandboxes with zero gateway deployment or
   custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)).
-  Inspect, stream, or steer anytime (`glue job list|show|attach|say|result`),
+  Inspect, stream, or steer anytime (`glue job list|show|attach|ui|say|result`),
   run offline locally (`glue`, `glue code`, `glue run`, `glue goal`, `glue serve`), or add the
-  optional host-mode [`glue-gateway`](gateway/README.md) for mobile browser UI
+  optional host-mode [`glue-gateway`](gateway/README.md) (`--quick` for zero-YAML QR startup) for mobile browser UI
   and GitHub OAuth.
 - **Composable Go agent framework (`github.com/erain/glue`):** A small,
   code-first `Agent` / `Session` API, typed tools, five model providers,

@@ -717,3 +717,21 @@ func TestE2EInteractiveWorkspaceChatAndPromoteToGoal(t *testing.T) {
 	close(releaseWake)
 	waitJS(t, bctx, "promoted goal achieved with phase badges, diff & open PR", `["planner", "maker", "checker"].every((ph) => document.querySelector('[data-testid="phase-badge"][data-phase="' + ph + '"]')) && document.querySelector('[data-testid="result-status"]')?.textContent === "achieved" && document.querySelector('[data-testid="verify-exit-code"]')?.textContent === "exit 0" && document.querySelectorAll('[data-testid="job-diff"] [data-testid="diff-file"]').length === 2 && Boolean(document.querySelector('[data-testid="result-open-pr-btn"]')) && document.documentElement.scrollWidth <= 390`)
 }
+
+func TestE2EFragmentMagicLinkLoginAndScrub(t *testing.T) {
+	const tok = "e2e-daemon-token"
+	ctx, bctx, mgr, ts := startE2EBrowser(t, &scriptedE2EProvider{}, nil)
+	job, err := mgr.Create(ctx, jobs.Spec{Objective: "Magic link seeded job", Repo: jobs.RepoSpec{Path: initE2ERepo(t, false)}})
+	mustNoErr(t, err)
+	if qResp, err := http.Get(ts.URL + "/v1/jobs?token=" + tok); err != nil || qResp.Body.Close() != nil || qResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/jobs?token=... = %v %v, want 401", qResp, err)
+	}
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="logout-btn"]`)))
+	waitJS(t, bctx, "logged out", `Boolean(document.querySelector('[data-testid="login-token"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Navigate(ts.URL+"/?cold=1#token="+tok)))
+	waitJS(t, bctx, "magic link lands on jobs list & scrubs token", `Boolean(document.querySelector('[data-testid="jobs-view"]') && !document.querySelector('[data-testid="login-token"]') && window.location.hash === "#/" && !window.location.href.includes("`+tok+`") && document.body.textContent.includes("Magic link seeded job"))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="logout-btn"]`)))
+	waitJS(t, bctx, "logged out again", `Boolean(document.querySelector('[data-testid="login-token"]'))`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Navigate(ts.URL+"/?cold=2#/jobs/"+job.ID+"&token="+tok)))
+	waitJS(t, bctx, "deep magic link lands on job detail & scrubs token", `Boolean(document.querySelector('[data-testid="job-detail-view"]') && window.location.hash === "#/jobs/`+job.ID+`" && !window.location.href.includes("`+tok+`"))`)
+}
