@@ -1016,6 +1016,12 @@ func TestCloudflareAccessValidRS256AndES256(t *testing.T) {
 		st, _, _ := f.req(t, http.MethodPost, "/v1/jobs", rsTok, c, hdr, `{"objective":"cf","repo":{"url":"https://github.com/erain/glue-sandbox"}}`)
 		return st
 	}
+	if stFav, _, ckFav := f.req(t, http.MethodGet, "/favicon.ico", rsTok, nil, "", ""); stFav != http.StatusNotFound || ckFav != nil {
+		t.Fatalf("favicon should 404 without minting session cookie: status=%d ck=%+v", stFav, ckFav)
+	}
+	if stJobs, _, ckJobs := f.req(t, http.MethodGet, "/v1/jobs", rsTok, nil, "", ""); stJobs != http.StatusOK || ckJobs != nil {
+		t.Fatalf("stateless GET /v1/jobs should not clobber session cookie: status=%d ck=%+v", stJobs, ckJobs)
+	}
 	if st0, _, _ := f.req(t, http.MethodGet, "/v1/session", "", ck, "", ""); st0 != http.StatusUnauthorized || post(nil, csrf) != http.StatusForbidden || post(ck, "") != http.StatusForbidden || post(ck, "bad") != http.StatusForbidden || post(ck, csrf) != http.StatusCreated {
 		t.Fatalf("cookie/CSRF checks failed (no-jwt=%d)", st0)
 	}

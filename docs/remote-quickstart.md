@@ -35,11 +35,11 @@ Every line that is not `ok` says how to fix it. Scan the printed QR code in the 
 
 ## 2. Start a job, with the work you have not pushed yet
 
-`--snapshot` sends your working tree as it is, uncommitted files included. `--notify` posts to your phone: pick a hard-to-guess [ntfy.sh](https://ntfy.sh) topic and subscribe to it in the ntfy app.
+`--snapshot` sends your working tree as it is, uncommitted files included. Once `glue job init` saved your topic in `config.yaml`, notifications are sent automatically (or pass `--notify https://ntfy.sh/<your-topic>` explicitly); add `-i` when you want a multi-turn interactive sandbox instead of a single autonomous goal.
 
 ```sh
 glue --remote "Add a function Sub(a, b int) int next to Add in add.go, with a table-driven test in add_test.go." \
-  --snapshot --verify "go test ./..." --notify https://ntfy.sh/<your-topic>
+  --snapshot --verify "go test ./..."
 ```
 ```
 snapshot: 2 changed file(s), 0 KiB on top of main@bf0fbc54 -> origin glue/snapshot-job-f8a57d276fb8
@@ -103,15 +103,28 @@ glue job delete latest      # deletes the sandbox (and a --snapshot job's snapsh
 glue job prune              # deletes finished jobs older than 7 days
 ```
 
+## 6. Optional: bookmarkable browser workspace (Cloudflare Access)
+
+Deploy a permanent, zero-OAuth-App browser workspace in your cluster (`0` AX worker slots while idle; [ADR-0021](adr/0021-opt-in-cluster-gateway-cloudflare-access.md)):
+
+```sh
+glue remote setup --public-url https://glue.example.com \
+  --cf-team <team>.cloudflareaccess.com --cf-aud <aud> --allow-email you@example.com \
+  --tunnel-token "$CLOUDFLARE_TUNNEL_TOKEN"
+glue remote status
+```
+
+Bookmark `https://glue.example.com` on your phone or laptop: Cloudflare Access signs you in with no second login screen, `#/new` launches interactive multi-turn workspaces (auto-suspending between turns) or autonomous `--verify` / `--issue` goals, and `#/jobs/<id>` escalates interactive chats via **Run Autonomously**, renders the unified diff, and opens a **Draft PR** in one tap. Pull any browser workspace into your local checkout and TUI with `glue job teleport <id>`, or remove the gateway anytime with `glue remote down --purge-pvc`.
+
 ## Next
 
 - Put repo-wide settings (setup and verify commands, image, resources) in `.glue/remote.yaml`: see [jobs.md](jobs.md#per-repo-settings-glueremoteyaml).
 - Start from a GitHub issue: `glue --remote --issue 123`.
-- Start the local coding TUI with bare `glue` (or `glue code --continue`): `/remote <task>` hands the task off with your session as context, and `/jobs` shows your jobs.
+- Start the local coding TUI with bare `glue` (or `glue code --continue`): `/remote <task>` hands the task off with your session as context, `/jobs` inspects and steers remote runs, and `/teleport <id>` brings a remote workspace into your local TUI.
 
 ## Proving it on every release
 
-`scripts/demo/aha.sh` runs this story on the standing cluster against `erain/glue-sandbox`. It sends uncommitted work with `--snapshot`, runs two attempts, receives the notifications, compares, pulls, and runs the tests, and it fails on any miss, including the latency budgets (submit ≤ 5 s per job, both attempts done ≤ 240 s). A recorded run, 2026-11-13:
+`scripts/demo/aha.sh` runs the CLI story on the standing cluster against `erain/glue-sandbox`. It sends uncommitted work with `--snapshot`, runs two attempts, receives the notifications, compares, pulls, and runs the tests, failing on any miss (submit ≤ 5 s per job, both attempts done ≤ 240 s). Recorded run, 2026-11-13:
 
 ```
 submitted job-f8a57d276fb8 job-cf7e5e72a8c4 in 6.0s (3.0s per job, budget 5s)
@@ -122,4 +135,14 @@ job-cf7e5e72a8c4  default  achieved  pass    2 files +28 -0  2m58s  68290
 received 2 notification(s)
 ok  	example.com/sandbox	0.002s
 AHA OK: 2 attempts, best job-f8a57d276fb8, 183.8s from submit to tested code in your checkout
+```
+
+`scripts/demo/anywhere.sh` runs the full Phase 4 browser + phone + local teleport loop on `kind-glue-ax` and headless Chrome (`390x844` mobile viewport): `glue remote setup` with Cloudflare Access (`0` idle AX workers), zero-prompt browser login, a 2-turn interactive workspace escalated via **Run Autonomously** (`go test ./...`), unified diff and **Open Draft PR**, a closed-laptop `ntfy` HTTP action tap-back (`ntfy.sh/glue-anywhere-…`), and `glue job teleport --no-tui`. Recorded run, 2026-11-15:
+
+```
+gateway ready in 58.6s (0 running AX tasks, unauthenticated=401, CF Access=dev@anywhere.example)
+browser flow ok in 58.5s: job-2a8a9bbd551a -> https://github.com/erain/glue-sandbox/pull/15 (OPEN draft=true)
+ntfy tap-back ok in 21.9s: job-ce0c8ef7d64c achieved via lock-screen HTTP action
+teleport ok in 2.2s: verified teleport-2a8a9bbd551a.json and local go test ./...
+ANYWHERE OK: gateway 58.6s, browser job-2a8a9bbd551a -> https://github.com/erain/glue-sandbox/pull/15 (58.5s), ntfy job-ce0c8ef7d64c (21.9s), teleport 2.2s (total 144.6s)
 ```
