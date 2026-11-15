@@ -7,12 +7,18 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +44,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"gopkg.in/yaml.v3"
 )
 
 func checkAX(t *testing.T, ok bool, format string, args ...any) {
@@ -761,4 +768,166 @@ func TestE2EAXUserConfigNotifyWithoutFlag(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatalf("did not receive ntfy done message for %s", jobID)
+}
+
+func okGW(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"ok":true}`) }
+
+func stubRemoteEnv(t *testing.T, fn func([]string, []byte) ([]byte, error), h http.HandlerFunc) func(...string) (string, error) {
+	t.Helper()
+	clearJobTestEnv(t)
+	t.Setenv("GLUE_CONFIG_DIR", filepath.Join(t.TempDir(), "glue"))
+	ts := httptest.NewServer(h)
+	origExec, origFwd, origKube, origGH := remoteExec, remoteForward, resolveKubeTarget, resolveGitHubCLIToken
+	t.Cleanup(func() {
+		ts.Close()
+		remoteExec, remoteForward, resolveKubeTarget, resolveGitHubCLIToken = origExec, origFwd, origKube, origGH
+	})
+	resolveKubeTarget = func(string, string) (string, string, error) { return "/tmp/kc", "kind-test", nil }
+	resolveGitHubCLIToken = func(context.Context) string { return "" }
+	remoteForward = func(context.Context, string, string, string, string, int, string) (string, error) {
+		return strings.TrimPrefix(ts.URL, "http://"), nil
+	}
+	remoteExec = func(_ context.Context, _ string, in []byte, name string, args ...string) ([]byte, error) {
+		return fn(append([]string{name}, args...), in)
+	}
+	return func(args ...string) (string, error) {
+		var b bytes.Buffer
+		err := remoteCommand(t.Context(), args, &b, &b, ts.Client())
+		return b.String(), err
+	}
+}
+
+func TestRemoteSetupManifestsAndConfigValidate(t *testing.T) {
+	calls := 0
+	run := stubRemoteEnv(t, func([]string, []byte) ([]byte, error) { calls++; return nil, nil }, okGW)
+	_, badYAML := validateGatewayYAML([]byte("listen: 0.0.0.0:8800\nunknown_field: 1\n"), true)
+	checkAX(t, badYAML != nil && strings.Contains(badYAML.Error(), "unknown_field"), "KnownFields: %v", badYAML)
+	for _, bad := range [][]string{{"setup"}, {"setup", "--cf-team", "t.cloudflareaccess.com", "--cf-aud", "a"}, {"setup", "--public-url", "https://g.example", "--cf-team", "t.cloudflareaccess.com", "--cf-aud", "a", "--dev-token"}, {"setup", "--public-url", "https://g.example", "--cf-team", "http://evil.example", "--cf-aud", "a"}, {"setup", "--public-url", "https://g.example", "--cf-team", "t.cloudflareaccess.com", "--cf-aud", "a", "--allow-email", "@"}, {"setup", "--public-url", "https://g.example", "--dev-token"}} {
+		_, err := run(bad...)
+		checkAX(t, err != nil && calls == 0, "expected pre-apply failure for %v (calls=%d)", bad, calls)
+	}
+	dry := must(run("setup", "--dry-run", "--public-url", "https://glue.example.com/", "--cf-team", "myteam.cloudflareaccess.com", "--cf-aud", "aud-1", "--allow-email", "alice@example.com", "--cf-certs-url", "http://172.18.0.1:9000/certs", "--tunnel-token", "tun-xyz"))
+	var kinds []string
+	var parsedGW remoteGatewayYAML
+	for dec, doc := yaml.NewDecoder(strings.NewReader(dry)), map[string]any{}; dec.Decode(&doc) == nil; doc = map[string]any{} {
+		kinds = append(kinds, doc["kind"].(string))
+		if doc["kind"] == "ConfigMap" {
+			parsedGW = must(validateGatewayYAML([]byte(doc["data"].(map[string]any)["gateway.yaml"].(string)), false))
+		}
+	}
+	_, _ = must(run("setup", "--public-url", "https://glue.example.com", "--cf-team", "myteam.cloudflareaccess.com", "--cf-aud", "aud-1")), must(run("setup", "--dev-token"))
+	ucfg, _, uerr := loadUserConfig()
+	checkAX(t, uerr == nil && ucfg.PublicURL == "https://glue.example.com" && slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "PersistentVolumeClaim", "ConfigMap", "Secret", "Deployment", "Service"}) && parsedGW.Auth.TeamDomain == "https://myteam.cloudflareaccess.com" && parsedGW.Auth.CertsURL == "http://172.18.0.1:9000/certs" && strings.Contains(dry, "ate.dev/api-access") && strings.Contains(dry, "cloudflared"), "kinds=%v gw=%+v ucfg=%+v", kinds, parsedGW, ucfg)
+}
+
+func TestRemoteSetupRedactsSecrets(t *testing.T) {
+	applied, failApply := "", false
+	run := stubRemoteEnv(t, func(args []string, in []byte) ([]byte, error) {
+		if slices.Contains(args, "apply") {
+			applied = string(in)
+			return []byte("apply leaked dev-sec-555 and tun-sec-666"), map[bool]error{true: os.ErrPermission}[failApply]
+		}
+		return nil, nil
+	}, okGW)
+	for k, v := range map[string]string{"GEMINI_API_KEY": "gem-sec-999", "OPENROUTER_API_KEY": "or-sec-888", "GLUE_GITHUB_TOKEN": "ghp-sec-777", "GLUE_NOTIFY_URL": "https://ntfy.sh/glue-0123456789abcdef0123456789abcdef"} {
+		t.Setenv(k, v)
+	}
+	dry, live := must(run("setup", "--dry-run", "--tunnel-token=tun-sec-666", "--dev-token=dev-sec-555")), must(run("setup", "--tunnel-token=tun-sec-666", "--dev-token", "dev-sec-555"))
+	failApply = true
+	_, err := run("setup", "--tunnel-token=tun-sec-666", "--dev-token=dev-sec-555")
+	checkAX(t, strings.Contains(dry, "[REDACTED]") && err != nil && strings.Contains(err.Error(), "[REDACTED]"), "expected redacted output/error, got %v", err)
+	for _, s := range []string{"gem-sec-999", "or-sec-888", "ghp-sec-777", "glue-0123456789abcdef0123456789abcdef", "tun-sec-666", "dev-sec-555"} {
+		checkAX(t, strings.Contains(applied, s) && !strings.Contains(dry+live+err.Error(), s), "secret %q leaked or missing", s)
+	}
+}
+
+func TestRemoteStatusAndDown(t *testing.T) {
+	mode, seenAuth, deleted := "cloudflare-access", "", []string(nil)
+	run := stubRemoteEnv(t, func(args []string, _ []byte) ([]byte, error) {
+		cmd := strings.Join(args, " ")
+		if strings.Contains(cmd, "delete") {
+			deleted = append(deleted, cmd)
+		} else if strings.Contains(cmd, "get configmap") {
+			return []byte("public_url: https://glue.example.com\nauth:\n  mode: " + mode + "\n"), nil
+		}
+		return []byte(map[bool]string{true: "1/1", false: base64.StdEncoding.EncodeToString([]byte("tok-secret-1"))}[strings.Contains(cmd, "get deployment")]), nil
+	}, func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = map[bool]string{true: r.Header.Get("Authorization"), false: seenAuth}[r.URL.Path != "/healthz"]
+		w.WriteHeader(map[bool]int{true: http.StatusUnauthorized, false: http.StatusOK}[r.URL.Path != "/healthz" && mode == "cloudflare-access" && seenAuth == ""])
+		_, _ = io.WriteString(w, `{"ok":true,"default_backend":"ax"}`)
+	})
+	st1 := must(run("status"))
+	mode = "dev-token"
+	st2, _ := must(run("status")), must(run("down"))
+	d1 := strings.Join(deleted, "\n")
+	deleted = nil
+	_ = must(run("down", "--purge-pvc"))
+	d2 := strings.Join(deleted, "\n")
+	checkAX(t, strings.Contains(st1, "ready: 1/1") && strings.Contains(st1, "access-protected") && seenAuth == "Bearer tok-secret-1" && !strings.Contains(st2, "tok-secret-1") && strings.Contains(st2, "backends: ok (ax)") && !strings.Contains(d1, "pvc/") && !strings.Contains(d1, "namespace/glue-gateway") && strings.Contains(d2, "pvc/glue-gateway-state") && strings.Contains(d2, "namespace/glue-gateway"), "st1=%q st2=%q d1=%q d2=%q", st1, st2, d1, d2)
+}
+
+func TestE2EClusterGatewaySetupAndCloudflareAccess(t *testing.T) {
+	if os.Getenv("GLUE_E2E_AX") != "1" {
+		t.Skip("set GLUE_E2E_AX=1 to run")
+	}
+	_, derr := exec.LookPath("docker")
+	if err := errors.Join(derr, checkLiveDirectAX("", "")); err != nil {
+		checkAX(t, !axLiveStrict(), "live AX cluster and docker required when CI=true or GLUE_E2E_AX_STRICT=1 (%v); run scripts/ax-dev/up.sh", err)
+		t.Skipf("live AX cluster or docker unavailable: %v", err)
+	}
+	t.Setenv("GLUE_CONFIG_DIR", filepath.Join(t.TempDir(), "glue"))
+	kc, kctx, kerr := axbackend.ResolveKubeTarget("", "")
+	var bridgeIP string
+	for f := range strings.FieldsSeq(string(must(exec.CommandContext(t.Context(), "docker", "network", "inspect", "kind", "-f", "{{range .IPAM.Config}}{{.Gateway}} {{end}}").Output()))) {
+		bridgeIP = cmp.Or(bridgeIP, map[bool]string{true: f}[net.ParseIP(f).To4() != nil])
+	}
+	checkAX(t, kerr == nil && bridgeIP != "", "kube=%v bridge=%q", kerr, bridgeIP)
+	rsaKey := must(rsa.GenerateKey(rand.Reader, 2048))
+	jwks := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{"kid": "k1", "kty": "RSA", "alg": "RS256", "use": "sig", "n": base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaKey.E)).Bytes())}}})
+	}))
+	jwks.Listener = must(net.Listen("tcp4", "0.0.0.0:0"))
+	jwks.Start()
+	t.Cleanup(jwks.Close)
+	mintCF := func(email string) string {
+		b64 := func(v any) string { raw, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(raw) }
+		u := b64(map[string]string{"alg": "RS256", "kid": "k1"}) + "." + b64(map[string]any{"iss": "https://e2e.cloudflareaccess.com", "aud": "aud-e2e-636", "email": email, "exp": time.Now().Add(time.Hour).Unix()})
+		s := sha256.Sum256([]byte(u))
+		return u + "." + base64.RawURLEncoding.EncodeToString(must(rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, s[:])))
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	t.Cleanup(func() {
+		_ = errors.Join(remoteCommand(context.Background(), []string{"down", "--purge-pvc"}, io.Discard, io.Discard, http.DefaultClient), axbackend.StopTunnels(""))
+	})
+	var setupOut, statusOut bytes.Buffer
+	certsURL := "http://" + net.JoinHostPort(bridgeIP, strings.Split(jwks.Listener.Addr().String(), ":")[1]) + "/certs"
+	checkAX(t, remoteCommand(ctx, []string{"setup", "--build-local", "--public-url", "https://glue.e2e.example", "--cf-team", "e2e.cloudflareaccess.com", "--cf-aud", "aud-e2e-636", "--allow-email", "alice@example.com", "--cf-certs-url", certsURL}, &setupOut, &setupOut, http.DefaultClient) == nil, "remote setup failed: %s", setupOut.String())
+	axConn := must(axbackend.Connect(ctx, axbackend.ConnectOptions{KubeConfig: kc, KubeContext: kctx, Atespace: "default"}))
+	defer axConn.Close()
+	before := must(axConn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: "default"}))
+	checkAX(t, !slices.ContainsFunc(before.GetTasks(), func(tk *v1alpha1.Task) bool { return tk.GetStatus().GetPhase() == "Running" }), "idle gateway consumed running AX task: %+v", before.GetTasks())
+	baseURL := "http://" + must(axbackend.EnsureTunnel(ctx, kc, kctx, remoteGatewayNS, "glue-gateway", 8800, "/healthz"))
+	doReq := func(method, path, jwt, cookie, csrf, body string) (int, map[string]any, []*http.Cookie) {
+		req, _ := http.NewRequestWithContext(ctx, method, baseURL+path, strings.NewReader(body))
+		req.Header = map[bool]http.Header{true: {"Cf-Access-Jwt-Assertion": {jwt}, "X-Glue-CSRF": {csrf}, "Cookie": {cookie}}, false: {}}[jwt != ""]
+		resp := must(http.DefaultClient.Do(req))
+		defer resp.Body.Close()
+		var m map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m, resp.Cookies()
+	}
+	st401, _, _ := doReq(http.MethodGet, "/v1/jobs", "", "", "", "")
+	st403, _, _ := doReq(http.MethodGet, "/v1/me", mintCF("mallory@other.example"), "", "", "")
+	jwt := mintCF("alice@example.com")
+	stMe, meBody, cks := doReq(http.MethodGet, "/v1/me", jwt, "", "", "")
+	checkAX(t, stMe == http.StatusOK && len(cks) > 0, "me=%d body=%v", stMe, meBody)
+	sess, csrf := cks[0].Name+"="+cks[0].Value, meBody["csrf_token"].(string)
+	stList, _, _ := doReq(http.MethodGet, "/v1/jobs", jwt, sess, "", "")
+	stCreate, createdBody, _ := doReq(http.MethodPost, "/v1/jobs", jwt, sess, csrf, `{"objective":"E2E gateway job","repo":{"url":"https://github.com/erain/glue-sandbox","base_ref":"main"}}`)
+	jobID, _ := createdBody["job"].(map[string]any)["id"].(string)
+	after := must(axConn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: "default"}))
+	stDel, _, _ := doReq(http.MethodDelete, "/v1/jobs/"+jobID+"?purge=true", jwt, sess, csrf, "")
+	checkAX(t, st401 == http.StatusUnauthorized && st403 == http.StatusForbidden && meBody["login"] == "alice@example.com" && stList == http.StatusOK && stCreate == http.StatusCreated && strings.HasPrefix(jobID, "job-") && slices.ContainsFunc(after.GetTasks(), func(tk *v1alpha1.Task) bool { return tk.GetMetadata().GetName() == "glue-"+jobID }) && stDel == http.StatusOK, "http: 401=%d 403=%d list=%d create=%d(%q) del=%d", st401, st403, stList, stCreate, jobID, stDel)
+	checkAX(t, remoteCommand(ctx, []string{"status"}, &statusOut, &statusOut, http.DefaultClient) == nil && strings.Contains(statusOut.String(), "ready: 1/1") && strings.Contains(statusOut.String(), "healthz: ok") && remoteCommand(ctx, []string{"down", "--purge-pvc"}, io.Discard, io.Discard, http.DefaultClient) == nil && exec.CommandContext(ctx, "kubectl", "--kubeconfig", kc, "--context", kctx, "get", "ns", remoteGatewayNS).Run() != nil, "status=%s", statusOut.String())
 }

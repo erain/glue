@@ -44,6 +44,11 @@ var (
 	podCertBundlePath = DefaultPodCertBundle
 )
 
+func inKubePod(explicitKube bool) bool {
+	_, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	return !explicitKube && envOr("KUBERNETES_SERVICE_HOST") != "" && err == nil
+}
+
 // ConnectOptions configures client-side AX connectivity without exposing internal transport flags.
 type ConnectOptions struct {
 	AXServer, KubeConfig, KubeContext, Atespace, AXNamespace, RouterAddr string
@@ -208,18 +213,18 @@ func Connect(ctx context.Context, opts ConnectOptions) (*Connection, error) {
 	opts.Atespace = cmp.Or(strings.TrimSpace(opts.Atespace), "default")
 	opts.AXNamespace = cmp.Or(strings.TrimSpace(opts.AXNamespace), envOr("AX_SYSTEM_NAMESPACE"), DefaultAXNamespace)
 	explicitKube := opts.KubeConfig != "" || opts.KubeContext != "" || envOr("GLUE_AX_KUBECONFIG", "GLUE_AX_CONTEXT") != ""
-	inCluster := !explicitKube
+	inCluster, pod := !explicitKube, inKubePod(explicitKube)
 	for _, p := range []string{podCertBundlePath, DefaultServiceDNSCA, DefaultControlToken} {
 		if _, err := os.Stat(p); err != nil {
 			inCluster = false
 		}
 	}
-	axTarget, routerAddr := cmp.Or(strings.TrimSpace(opts.AXServer), envOr("GLUE_AX_SERVER", "AX_SERVER_ADDR", "AX_SERVER")), strings.TrimSpace(opts.RouterAddr)
-	needAX, needRouter := opts.AXClient == nil && axTarget == "" && !inCluster, routerAddr == "" && opts.RouterDialContext == nil && !inCluster
-	needCtrl, needCreds := opts.ControlClient == nil && !inCluster, opts.RouterTLS == nil || opts.ControlClient == nil
+	axTarget, routerAddr := cmp.Or(strings.TrimSpace(opts.AXServer), envOr("GLUE_AX_SERVER", "AX_SERVER_ADDR", "AX_SERVER"), map[bool]string{true: "ax-server." + opts.AXNamespace + ":8080"}[inCluster || pod]), strings.TrimSpace(opts.RouterAddr)
+	needAX, needRouter := opts.AXClient == nil && axTarget == "" && !inCluster && !pod, routerAddr == "" && opts.RouterDialContext == nil && !inCluster && !pod
+	needCtrl, needCreds := opts.ControlClient == nil && !inCluster && !pod, opts.RouterTLS == nil || opts.ControlClient == nil
 	var kubeCfg, kubeCtx, ctrlAddr string
 	var err error
-	if !inCluster && (needAX || needRouter || needCtrl || needCreds || explicitKube) {
+	if !inCluster && !pod && (needAX || needRouter || needCtrl || needCreds || explicitKube) {
 		if kubeCfg, kubeCtx, err = ResolveKubeTarget(opts.KubeConfig, opts.KubeContext); err != nil && (needAX || needRouter || needCtrl || needCreds) {
 			return nil, err
 		}
@@ -340,6 +345,11 @@ func StopTunnels(kubeContext string) error {
 		}
 	}
 	return nil
+}
+
+// EnsureTunnel starts or reuses a local port-forward to namespace/service.
+func EnsureTunnel(ctx context.Context, kubeCfg, kubeCtx, namespace, service string, remotePort int, httpHealthPath string) (string, error) {
+	return ensureTunnel(ctx, kubeCfg, kubeCtx, namespace, service, remotePort, httpHealthPath)
 }
 func ensureTunnel(ctx context.Context, kubeCfg, kubeCtx, namespace, service string, remotePort int, httpHealthPath string) (string, error) {
 	tunnelMu.Lock()

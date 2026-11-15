@@ -1142,3 +1142,12 @@ func TestGatewayPostJobPROpensAndPersistsWithoutWakeup(t *testing.T) {
 		t.Fatalf("res=%+v detail.PRURL=%q posts=%d resumes=%d routerHits=%d", res, detail.PRURL, posts.Load(), h.resumes.Load(), h.routerHits.Load())
 	}
 }
+
+func TestClusterGatewaySetupConfigShapesParse(t *testing.T) {
+	t.Setenv("GLUE_NOTIFY_URL", "https://ntfy.sh/glue-0123456789abcdef0123456789abcdef")
+	t.Setenv("GLUE_GATEWAY_TOKEN", "dev-tok-123")
+	cf, dev := must(ParseConfig([]byte("listen: 0.0.0.0:8800\npublic_url: https://glue.example.com\ntrust_forwarded_proto: true\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: cloudflare-access\n  team_domain: https://myteam.cloudflareaccess.com\n  aud: aud-123\n  allowed_emails: [alice@example.com]\n  certs_url: http://172.18.0.1:9000/certs\ndefault_backend: ax\nbackends:\n  - name: ax\n    type: ax\n    atespace: default\n    image: localhost:5001/glue-task@sha256:11\n"))), must(ParseConfig([]byte("listen: 0.0.0.0:8800\nstate_dir: /var/lib/glue-gateway\nauth:\n  mode: dev-token\ndefault_backend: ax\nbackends:\n  - name: ax\n    type: ax\n    atespace: default\n    image: localhost:5001/glue-task@sha256:11\n")))
+	if cf.Auth.Mode != "cloudflare-access" || cf.Auth.CertsURL != "http://172.18.0.1:9000/certs" || len(cf.Credentials.NotifyURLs) != 1 || !strings.Contains(strings.Join(cf.Backends[0].EgressHosts, ","), "ntfy.sh") || dev.Auth.Mode != "dev-token" || dev.Auth.Token != "dev-tok-123" {
+		t.Fatalf("cf=%+v dev=%+v", cf, dev)
+	}
+}

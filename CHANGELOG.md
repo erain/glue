@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Opt-in in-cluster gateway lifecycle (`glue remote setup`, `glue remote status`, `glue remote down [--purge-pvc]`, `deploy/gateway/Dockerfile`, in-cluster `internal/axbackend` discovery, `GET /v1/me`, and `ADR-0021`) deploying a 1-pod `glue-gateway` + optional `cloudflared` sidecar in namespace `glue-gateway` (0 AX worker slots while idle) protected by Cloudflare Access or `--dev-token`.
+
 - Running bare `glue` on a terminal now launches the interactive coding TUI directly (honoring `~/.config/glue/config.yaml` and `GLUE_PROVIDER`/`GLUE_MODEL`/`GLUE_THINKING`; non-TTY invocations still print usage and exit `0`), `glue code [flags]` enables coding tools and coding model defaults without `--coding`, and `glue --help` / `glue help [command]` replace the 135-line flag dump with a concise task-grouped guide while keeping per-command flags in `glue <command> --help`.
 
 - Personal remote defaults in `~/.config/glue/config.yaml` (`XDG_CONFIG_HOME`, `0600`, strict YAML `ax`, `public_url`, `notify`, `deliver`, `provider`, `model`, `thinking` with `flag > env > .glue/remote.yaml > ~/.config/glue/config.yaml > default` precedence) and `glue job init` one-scan QR phone pairing (`internal/qr`), keeping `NotifyURLs` durable across AX task restarts and redacted in `doctor`, submit summaries, and errors.

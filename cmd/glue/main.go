@@ -178,6 +178,12 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 			return exitCodeOf(err)
 		}
 		return 0
+	case "remote":
+		if err := remoteCommand(ctx, args[1:], stdout, stderr, client); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printUsage(stderr)
@@ -296,6 +302,7 @@ Code locally:
 
 Run remotely on AX:
   glue job init                       Check setup and pair phone notifications via QR code
+  glue remote setup [flags]           Deploy opt-in cluster gateway for 24/7 browser access
   glue --remote "<objective>" [flags] Submit a remote coding job (--snapshot, --verify, --attach)
   glue --remote -i "<prompt>" [flags] Start an interactive multi-turn remote workspace
 
