@@ -373,3 +373,27 @@ func TestDaemonPostJobPROpensAndPersists(t *testing.T) {
 		t.Fatalf("posts=%d or pr_url not persisted", posts.Load())
 	}
 }
+
+func TestPatchEndpointWhileRunning(t *testing.T) {
+	p := &turnProvider{turns: [][]glue.ProviderEvent{
+		textTurn(`{"items":[{"title":"write"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "w1", Name: "write_file", Arguments: []byte(`{"path":"live.txt","content":"live http\n"}`)}}, {Type: glue.ProviderEventDone}},
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "s1", Name: "shell_exec", Arguments: []byte(`{"argv":["git","push","origin","main"]}`)}}, {Type: glue.ProviderEventDone}},
+	}}
+	s, _, repo := jobHTTPFixture(t, p)
+	specData, _ := json.Marshal(jobs.Spec{Objective: "write", Repo: jobs.RepoSpec{Path: repo}, Policy: "workspace-auto"})
+	id := jobHTTP(t, s, http.MethodPost, "/v1/jobs", string(specData), 201)["job"].(map[string]any)["id"].(string)
+	jobHTTP(t, s, http.MethodGet, "/v1/jobs/"+id+"/patch", "", http.StatusConflict)
+	jobHTTP(t, s, http.MethodPost, "/v1/jobs/"+id+"/start", "", http.StatusOK)
+	for deadline := time.Now().Add(10 * time.Second); len(jobHTTP(t, s, http.MethodGet, "/v1/jobs/"+id+"/permissions?state=pending", "", 200)["permissions"].([]any)) == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for pending permission")
+		}
+	}
+	req, w := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id+"/patch", nil), httptest.NewRecorder()
+	req.Header.Set("Authorization", "Bearer token")
+	if s.ServeHTTP(w, req); w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/x-diff") || !strings.Contains(w.Body.String(), "+live http") {
+		t.Fatalf("GET patch = %d (%q): %s", w.Code, w.Header().Get("Content-Type"), w.Body.String())
+	}
+	jobHTTP(t, s, http.MethodPost, "/v1/jobs/"+id+"/messages?interrupt=true", `{}`, http.StatusAccepted)
+}

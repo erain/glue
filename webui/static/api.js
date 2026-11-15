@@ -43,9 +43,10 @@ export async function apiRequest(path, options = {}) {
     const errBody = await resp.json().catch(() => ({}));
     throw new Error(errBody?.error?.message || `HTTP ${resp.status}`);
   }
-  return resp.json();
+  return options.text ? resp.text() : resp.json();
 }
 
+export const apiText = (path) => apiRequest(path, { text: true });
 export const apiPost = (path, json) => apiRequest(path, { method: "POST", json });
 export const apiDelete = (path) => apiRequest(path, { method: "DELETE" });
 export async function logout() {

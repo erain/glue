@@ -133,9 +133,10 @@ func TestUIAssetsViewsAndSafety(t *testing.T) {
 		"task_suspended", "task_resumed", "Suspended – waiting for you", "suspended-note",
 		"permission-allow-once", "permission-allow-session", "permission-deny", "permission-reason",
 		"pending-permissions-banner", "job-pending-permissions", "permissions?state=pending",
-		"steer-form", "steer-input", "steer-submit", "/messages", "/continue",
+		"steer-form", "steer-input", "steer-submit", "interrupt-btn", "?interrupt=true", "/messages", "/continue",
 		"cancel-job-btn", "cancel-confirm-dialog", "cancel-confirm-btn",
-		"job-result-panel", "/result", "result-pr-link", "result-diffstat", "verify-exit-code", "result-cost",
+		"job-result-panel", "/result", "result-open-pr-btn", "/pr", "result-pr-link", "result-diffstat", "verify-exit-code", "result-cost",
+		"job-diff", "/patch", "load-diff-btn", "parseUnifiedDiff", "formatToolSummary", "job-activity", "tool-duration",
 		"/auth/github/login", "/v1/tokens", "tokens-view", "token-created-value", "token-revoke-btn", "/v1/session/logout",
 	} {
 		if !strings.Contains(js, want) {

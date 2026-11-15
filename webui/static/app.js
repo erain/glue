@@ -1,5 +1,5 @@
-import { fetchSession, login, logout, getCSRFToken, getAuthMode, setUnauthorizedHandler, apiRequest, apiPost, apiDelete } from "./api.js";
-export { fetchSession, login, logout, getCSRFToken, getAuthMode, apiRequest, apiPost, apiDelete };
+import { fetchSession, login, logout, getCSRFToken, getAuthMode, setUnauthorizedHandler, apiRequest, apiText, apiPost, apiDelete } from "./api.js";
+export { fetchSession, login, logout, getCSRFToken, getAuthMode, apiRequest, apiText, apiPost, apiDelete };
 
 const TRUNCATE_LIMIT = 4096;
 const REFRESH_MS = 10000;
@@ -216,8 +216,60 @@ export function renderTruncatedResult(container, fullText) {
   }
 }
 
+export function formatToolSummary(name, rawArgs) {
+  let args = rawArgs, arg = "";
+  if (typeof rawArgs === "string") { try { args = JSON.parse(rawArgs); } catch { args = null; } }
+  if (args && typeof args === "object") {
+    if (Array.isArray(args.argv) && args.argv.length) arg = args.argv.map(String).join(" ");
+    else for (const k of ["path", "pattern", "query", "command", "url", "name", "question"]) if (typeof args[k] === "string" && args[k]) { arg = args[k]; break; }
+  }
+  arg = truncate(arg.replace(/\s+/g, " ").trim(), 90);
+  return arg ? `${name} ${arg}` : name;
+}
+
+export const formatActivity = (a) => [a?.phase, a?.model_turns > 0 ? `turn ${a.model_turns}` : "", a?.last_tool].filter(Boolean).join(" · ");
+
+export function parseUnifiedDiff(raw) {
+  const files = [];
+  let cur = null, inHunk = false, inBin = false;
+  for (const line of String(raw || "").replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const m = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      files.push(cur = { path: m ? m[2] : line.slice(11), additions: 0, deletions: 0, binary: false, lines: [] });
+      inHunk = inBin = false;
+    } else if (!cur) continue;
+    else if (!inHunk && line.startsWith("--- a/") && cur.path === "/dev/null") cur.path = line.slice(6);
+    else if (!inHunk && line.startsWith("+++ b/")) cur.path = line.slice(6);
+    else if (!inHunk && (line.startsWith("+++ /dev/null") || line.startsWith("--- ") || line.startsWith("index "))) continue;
+    else if (!inHunk && (line.startsWith("GIT binary patch") || line.startsWith("Binary files "))) cur.binary = inBin = true;
+    else if (inBin) continue;
+    else if (line.startsWith("@@")) { inHunk = true; cur.lines.push({ type: "hunk", text: line }); }
+    else if (inHunk && line.startsWith("+")) { cur.additions++; cur.lines.push({ type: "add", text: line }); }
+    else if (inHunk && line.startsWith("-")) { cur.deletions++; cur.lines.push({ type: "del", text: line }); }
+    else if (inHunk) cur.lines.push({ type: line.startsWith("\\") ? "meta" : "ctx", text: line });
+    else if (line) cur.lines.push({ type: "meta", text: line });
+  }
+  return files;
+}
+
+export function renderDiffFiles(bodyEl, summaryEl, raw) {
+  const files = parseUnifiedDiff(raw);
+  if (!files.length) {
+    if (summaryEl) summaryEl.textContent = "0 files";
+    bodyEl.replaceChildren(el("p", { className: "muted", "data-testid": "diff-empty" }, "No workspace changes yet."));
+    return;
+  }
+  const addTot = files.reduce((n, f) => n + f.additions, 0), delTot = files.reduce((n, f) => n + f.deletions, 0);
+  if (summaryEl) summaryEl.textContent = `${files.length} ${files.length === 1 ? "file" : "files"} · +${addTot} -${delTot}`;
+  const sections = files.map((f, idx) => el("details", { className: "diff-file", "data-testid": "diff-file", "data-file-path": f.path, ...(idx < 10 ? { open: "open" } : {}) },
+    el("summary", { className: "tool-summary diff-file-header", "data-testid": "diff-file-summary" }, el("span", { "data-testid": "diff-file-path" }, f.path), el("span", { className: "diff-counts" }, el("span", { className: "diff-stat-add" }, `+${f.additions}`), " ", el("span", { className: "diff-stat-del" }, `-${f.deletions}`))),
+    el("div", { className: "diff-hunks", "data-testid": "diff-hunks" }, f.binary && !f.lines.length ? el("div", { className: "diff-line diff-meta" }, "Binary file changed") : f.lines.map((ln) => el("div", { className: `diff-line diff-${ln.type}`, "data-testid": `diff-line-${ln.type}` }, ln.text)))
+  ));
+  bodyEl.replaceChildren(el("div", { className: "diff-nav", "data-testid": "diff-file-nav" }, ...files.map((f, idx) => el("button", { className: "btn-link diff-chip", type: "button", "data-testid": "diff-file-chip", "data-file-path": f.path, onclick: () => { sections[idx].open = true; sections[idx].scrollIntoView({ block: "nearest" }); } }, `${f.path} (+${f.additions} -${f.deletions})`))), ...sections);
+}
+
 export function createTranscriptState(refs) {
-  return { ...refs, seenSeqs: new Set(), lastSeq: 0, finished: false, currentTextEl: null, currentTextKey: "", toolCards: new Map(), lastTool: null, permissionCards: new Map() };
+  return { activity: { phase: "", model_turns: 0, last_tool: "" }, initialLastSeq: 0, ...refs, seenSeqs: new Set(), lastSeq: 0, finished: false, currentTextEl: null, currentTextKey: "", toolCards: new Map(), lastTool: null, permissionCards: new Map() };
 }
 
 export function setPermissionCardState(state, permId, nextState) {
@@ -317,6 +369,10 @@ export function applyJobEvent(state, env) {
     }
   }
   const p = env?.payload || {};
+  if (seq === 1) { state.activity = { phase: "", model_turns: 0, last_tool: "" }; state.initialLastSeq = 0; }
+  if (env.phase) state.activity.phase = env.phase;
+  if (env.type === "turn_end" && (!seq || seq > (state.initialLastSeq || 0))) state.activity.model_turns++;
+  if (env.phase || env.type === "turn_end") state.updateActivity?.(state.activity);
   if (env.type === "question") state.onQuestion?.({ id: p.question_id, question: p.question, options: p.options });
   if (env.type === "answer" || env.type === "question_timeout") state.onQuestionClosed?.(p.question_id);
   if (env.type === "text_delta") {
@@ -338,14 +394,18 @@ export function applyJobEvent(state, env) {
     const call = p.tool_call || {};
     const name = p.tool_name || call.name || "tool";
     const id = p.tool_call_id || call.id || `${name}-${seq}`;
+    state.activity.last_tool = name;
+    state.updateActivity?.(state.activity);
+    const nameEl = el("span", { "data-testid": "tool-name" }, formatToolSummary(name, call.arguments));
+    const durEl = el("span", { className: "muted", "data-testid": "tool-duration" });
     const statusEl = el("span", { className: "badge status-running", "data-testid": "tool-status" }, "running");
     const resultEl = el("div", { className: "tool-result", "data-testid": "tool-result" });
     const details = el("details", { className: "transcript-item tool-call", "data-testid": "tool-call", "data-tool-name": name, "data-seq": seq },
-      el("summary", { className: "tool-summary", "data-testid": "tool-summary" }, el("span", { "data-testid": "tool-name" }, name), statusEl),
+      el("summary", { className: "tool-summary", "data-testid": "tool-summary" }, nameEl, el("span", { className: "tool-meta" }, durEl, statusEl)),
       el("div", { className: "tool-body" }, el("div", { className: "tool-label" }, "Arguments"), el("pre", { className: "pre-wrap tool-args", "data-testid": "tool-args" }, formatJSON(call.arguments) || "{}"), resultEl)
     );
     state.transcriptEl.appendChild(details);
-    const entry = { details, statusEl, resultEl };
+    const entry = { details, nameEl, durEl, statusEl, resultEl, rawName: name, startedAt: env.time ? Date.parse(env.time) : NaN };
     state.toolCards.set(id, entry);
     state.lastTool = entry;
     return true;
@@ -357,8 +417,12 @@ export function applyJobEvent(state, env) {
     const out = (p.tool_result?.content || []).map((c) => c.text || "").filter(Boolean).join("\n") || p.error || "";
     const isErr = Boolean(p.tool_result?.is_error || p.error);
     if (card) {
+      if (call.arguments && card.nameEl.textContent === card.rawName) card.nameEl.textContent = formatToolSummary(card.rawName, call.arguments);
+      const ms = typeof p.duration_ms === "number" ? p.duration_ms : (env.time && Number.isFinite(card.startedAt) ? Math.max(0, Date.parse(env.time) - card.startedAt) : NaN);
+      if (Number.isFinite(ms)) card.durEl.textContent = `${(ms / 1000).toFixed(1)}s`;
       card.statusEl.className = `badge ${isErr ? "status-errored" : "status-achieved"}`;
-      card.statusEl.textContent = isErr ? "error" : "done";
+      card.statusEl.textContent = isErr ? "✗" : "✓";
+      if (isErr) card.details.open = true;
       renderTruncatedResult(card.resultEl, out);
     }
     return true;
@@ -394,6 +458,7 @@ export function applyJobEvent(state, env) {
     iteration_start: () => `Iteration ${iter || 1} started`,
     verdict: () => `Verdict: ${(checklist || []).filter((i) => i.done).length}/${(checklist || []).length} ✓ — ${p.Message ?? p.message ?? ""}`,
     operator_message: () => `Operator: ${p.text || ""}`,
+    turn_interrupted: () => "Interrupted current step — starting next turn",
     run_interrupted: () => `Interrupted: ${p.reason || p.message || "run interrupted"}`,
     job_resumed: () => {
       state.finished = false;
@@ -428,8 +493,16 @@ export function applyJobEvent(state, env) {
   return true;
 }
 
-export function renderResultPanel(panelEl, res) {
+export function renderResultPanel(panelEl, res, jobId) {
+  const jid = res.job_id || jobId || "";
   const cost = formatCostUSD(res.usage, res.estimated_cost_usd ?? res.pricing);
+  const prErrEl = el("p", { className: "error-text", "data-testid": "result-pr-error", hidden: true });
+  const canOpenPR = !res.pr_url && Boolean(res.branch) && (!res.base_sha || !res.head_sha || res.head_sha !== res.base_sha);
+  const prBtn = canOpenPR ? el("button", { className: "btn", type: "button", "data-testid": "result-open-pr-btn", onclick: async () => {
+    prErrEl.hidden = prBtn.disabled = true; prBtn.textContent = "Opening PR…";
+    try { renderResultPanel(panelEl, { ...res, ...(await apiPost(`/v1/jobs/${encodeURIComponent(jid)}/pr`, {})) }, jid); }
+    catch (err) { prErrEl.textContent = err.message || "Failed to open PR"; prErrEl.hidden = prBtn.disabled = false; prBtn.textContent = "Open Draft PR"; }
+  } }, "Open Draft PR") : null;
   const verifyItems = (res.verify || []).map((v) => {
     const ok = Number(v.exit_code) === 0;
     return el("details", { className: "verify-item", "data-testid": "verify-item", ...(ok ? {} : { open: "open" }) },
@@ -445,8 +518,9 @@ export function renderResultPanel(panelEl, res) {
     el("div", { className: "detail-header-top" },
       el("h3", { className: "detail-objective" }, "Result"),
       el("span", { className: `badge status-${res.status}`, "data-testid": "result-status" }, res.status || "done"),
-      res.pr_url ? el("a", { className: "btn-link", href: res.pr_url, target: "_blank", rel: "noopener noreferrer", "data-testid": "result-pr-link" }, `Pull Request: ${res.pr_url}`) : null
+      res.pr_url ? el("a", { className: "btn-link", href: res.pr_url, target: "_blank", rel: "noopener noreferrer", "data-testid": "result-pr-link" }, `Pull Request: ${res.pr_url}`) : prBtn
     ),
+    prErrEl,
     res.summary ? el("p", { "data-testid": "result-summary" }, res.summary) : null,
     res.delivery_error ? el("p", { className: "error-text", "data-testid": "result-delivery-error" }, `Delivery error: ${res.delivery_error}`) : null,
     el("div", { className: "detail-meta result-meta" },
@@ -472,6 +546,8 @@ async function renderJobDetail(root, jobId) {
   const statusEl = el("span", { className: `badge status-${detail.status}`, "data-testid": "detail-status" }, formatStatusLabel(detail.status));
   const suspendedNoteEl = el("p", { className: "muted suspended-note", "data-testid": "suspended-note", hidden: detail.status !== "suspended" }, "Suspended – waiting for you. The first action may take a few seconds while the task resumes.");
   const iterEl = el("span", { "data-testid": "detail-iteration" }, `iter ${detail.iteration ?? 0}/${maxIter}`);
+  const activityText = formatActivity(detail.activity);
+  const activityEl = el("span", { "data-testid": "job-activity", hidden: !activityText }, activityText);
   const usageEl = el("span", { "data-testid": "detail-usage" }, formatUsage(detail.usage));
   const streamEl = el("span", { className: "muted", "data-testid": "stream-status" }, "connecting…");
   const bannerEl = el("div", { className: "card pending-banner", "data-testid": "pending-permissions-banner", hidden: true });
@@ -479,6 +555,17 @@ async function renderJobDetail(root, jobId) {
   const resultPanelEl = el("div", { className: "card", "data-testid": "job-result-panel", hidden: true });
   const checklistEl = el("ul", { className: "checklist", "data-testid": "job-checklist" });
   const transcriptEl = el("div", { className: "transcript", "data-testid": "job-transcript" });
+  const diffSummaryEl = el("span", { className: "muted", "data-testid": "diff-summary" });
+  const diffErrEl = el("p", { className: "error-text", "data-testid": "diff-error", hidden: true });
+  const diffBodyEl = el("div", { className: "diff-body", "data-testid": "diff-body" });
+  const loadDiffBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "load-diff-btn", onclick: () => loadDiff(false) }, "Load diff");
+  const diffCardEl = el("div", { className: "card", "data-testid": "job-diff" }, el("div", { className: "detail-header-top" }, el("h3", { className: "detail-objective" }, "Changes"), diffSummaryEl, loadDiffBtn), diffErrEl, diffBodyEl);
+  async function loadDiff(silent = false) {
+    diffErrEl.hidden = loadDiffBtn.disabled = true;
+    try { renderDiffFiles(diffBodyEl, diffSummaryEl, await apiText(`/v1/jobs/${encodeURIComponent(jobId)}/patch`)); loadDiffBtn.textContent = "Refresh diff"; }
+    catch (err) { if (!silent) { diffErrEl.textContent = err.message || "Failed to load diff"; diffErrEl.hidden = false; } }
+    finally { loadDiffBtn.disabled = false; }
+  }
 
   const cancelErrEl = el("p", { className: "error-text", "data-testid": "cancel-error", hidden: true });
   const confirmCancelBtn = el("button", { className: "btn btn-danger", type: "button", "data-testid": "cancel-confirm-btn", onclick: async () => {
@@ -495,19 +582,21 @@ async function renderJobDetail(root, jobId) {
   const steerHeadingEl = el("h3", { "data-testid": "steer-heading" }, "Send message");
   const steerInputEl = el("input", { className: "input steer-input", type: "text", required: "true", "data-testid": "steer-input" });
   const steerSubmitBtn = el("button", { className: "btn", type: "submit", "data-testid": "steer-submit" }, "Send message");
+  let steerInterrupt = false;
+  const interruptBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "interrupt-btn", onclick: () => { steerInterrupt = true; steerFormEl.dispatchEvent(new Event("submit", { cancelable: true })); } }, "Interrupt");
   const steerErrEl = el("p", { className: "error-text", "data-testid": "steer-error", hidden: true });
-  const steerCardEl = el("div", { className: "card", "data-testid": "steer-card" },
-    steerHeadingEl,
-    el("form", { className: "steer-form", "data-testid": "steer-form", onsubmit: async (e) => {
+  const steerFormEl = el("form", { className: "steer-form", "data-testid": "steer-form", onsubmit: async (e) => {
       e.preventDefault();
-      const text = steerInputEl.value.trim();
+      const intr = steerInterrupt;
+      steerInterrupt = false;
+      const text = steerInputEl.value.trim() || (intr ? "Interrupt current step." : "");
       if (!text) return;
       steerErrEl.hidden = true;
-      steerSubmitBtn.disabled = steerInputEl.disabled = true;
+      steerSubmitBtn.disabled = interruptBtn.disabled = steerInputEl.disabled = true;
       try {
         if (isActiveStatus(currentStatus)) {
           const wasSuspended = currentStatus === "suspended";
-          await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/messages`, { text });
+          await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/messages${intr ? "?interrupt=true" : ""}`, { text });
           steerInputEl.value = "";
           if (wasSuspended) { state.updateStatus("running"); openSSE(true, true); }
         } else {
@@ -522,17 +611,17 @@ async function renderJobDetail(root, jobId) {
         steerErrEl.textContent = err.message || "Request failed";
         steerErrEl.hidden = false;
       } finally {
-        steerSubmitBtn.disabled = steerInputEl.disabled = false;
+        steerSubmitBtn.disabled = interruptBtn.disabled = steerInputEl.disabled = false;
       }
-    } }, steerInputEl, steerSubmitBtn),
-    steerErrEl
-  );
+    } }, steerInputEl, steerSubmitBtn, interruptBtn);
+  const steerCardEl = el("div", { className: "card", "data-testid": "steer-card" }, steerHeadingEl, steerFormEl, steerErrEl);
 
   function syncControls(st) {
     currentStatus = st;
     const active = isActiveStatus(st);
     suspendedNoteEl.hidden = st !== "suspended";
     cancelBtn.hidden = !active;
+    interruptBtn.hidden = !active;
     if (!active) cancelDialogEl.hidden = true;
     steerCardEl.hidden = st === "achieved";
     const label = active ? "Send message" : "Continue with instructions";
@@ -541,11 +630,17 @@ async function renderJobDetail(root, jobId) {
     steerInputEl.placeholder = active ? "Send guidance to the next iteration…" : "Instructions to continue this job…";
   }
 
-  const loadResult = () => apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}/result`).then((res) => renderResultPanel(resultPanelEl, res)).catch(() => {});
+  const loadResult = () => apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}/result`).then(async (res) => {
+    renderResultPanel(resultPanelEl, res, jobId);
+    if (res.diffstat || (res.branch && (!res.base_sha || res.head_sha !== res.base_sha))) await loadDiff(true);
+  }).catch(() => {});
 
   const state = createTranscriptState({
     jobId,
     transcriptEl,
+    initialLastSeq: Number(detail.last_seq || 0),
+    activity: { phase: detail.activity?.phase || "", model_turns: Number(detail.activity?.model_turns || 0), last_tool: detail.activity?.last_tool || "" },
+    updateActivity: (a) => { const txt = formatActivity(a); activityEl.textContent = txt; activityEl.hidden = !txt; },
     syncPermissions: () => {
       const pending = [...state.permissionCards.values()].filter((c) => c.stateBadge.textContent === "pending");
       if (!pending.length) { bannerEl.hidden = true; bannerEl.replaceChildren(); return; }
@@ -555,7 +650,7 @@ async function renderJobDetail(root, jobId) {
         el("span", { className: "muted" }, " — " + pending.map((p) => `${p.toolLabel}${p.target ? " (" + p.target + ")" : ""}`).join(", "))
       );
     },
-    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = formatStatusLabel(st); syncControls(st); },
+    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = formatStatusLabel(st); syncControls(st); if (st === "waiting_for_input") loadDiff(true); },
     onAction: () => { openSSE(true, true); },
     onJobDone: () => { loadResult(); },
     updateIteration: (n) => { iterEl.textContent = `iter ${n}/${maxIter}`; },
@@ -582,6 +677,7 @@ async function renderJobDetail(root, jobId) {
   state.onQuestionClosed = (id) => { if (id === openQuestionId) { openQuestionId = ""; questionHostEl.replaceChildren(); } };
   if (detail.question) state.onQuestion(detail.question);
   if (!isActiveStatus(detail.status)) await loadResult();
+  else if (detail.status === "waiting_for_input") await loadDiff(true);
 
   root.replaceChildren(el("section", { "data-testid": "job-detail-view" },
     el("a", { className: "back-link", href: "#/", "data-testid": "back-to-jobs" }, "← All jobs"),
@@ -591,9 +687,10 @@ async function renderJobDetail(root, jobId) {
       el("div", { className: "detail-header-top" }, statusEl, el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId), cancelBtn),
       suspendedNoteEl,
       cancelDialogEl,
-      el("div", { className: "detail-meta" }, iterEl, el("span", { "data-testid": "detail-model" }, formatModel(detail.spec)), el("span", { "data-testid": "detail-repo" }, formatRepo(detail.spec)), usageEl, streamEl)
+      el("div", { className: "detail-meta" }, iterEl, activityEl, el("span", { "data-testid": "detail-model" }, formatModel(detail.spec)), el("span", { "data-testid": "detail-repo" }, formatRepo(detail.spec)), usageEl, streamEl)
     ),
     resultPanelEl,
+    diffCardEl,
     steerCardEl,
     el("div", { className: "detail-grid" },
       el("div", { className: "card" }, el("h3", {}, "Checklist"), checklistEl),
