@@ -648,3 +648,72 @@ func TestE2ENewJobFromGitHubIssue(t *testing.T) {
 		t.Fatalf("unexpected draft PR request: %#v", prReq)
 	}
 }
+
+func TestE2EInteractiveWorkspaceChatAndPromoteToGoal(t *testing.T) {
+	var mockSuspended atomic.Bool
+	var mgrPtr atomic.Pointer[jobs.Manager]
+	var wakeOnce sync.Once
+	wakeStarted, releaseWake := make(chan struct{}), make(chan struct{})
+	p := &scriptedE2EProvider{midJobReached: make(chan struct{}), releaseFinish: make(chan struct{}), turns: [][]glue.ProviderEvent{
+		textEvents("Checked `app.txt`:\n```html\n<script>window.__xss_chat=1</script>\n```\nReady for next step."),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"from chat\n"}`)}}, {Type: glue.ProviderEventDone}},
+		textEvents("Wrote `note.txt` in workspace."),
+		textEvents(`{"items":[{"title":"Update app.txt"}]}`),
+		{{Type: glue.ProviderEventStart}, {Type: glue.ProviderEventToolCall, ToolCall: &glue.ToolCall{ID: "m1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"app.txt","old_string":"old line","new_string":"promoted goal line"}`)}}, {Type: glue.ProviderEventDone}},
+		textEvents("Updated app.txt autonomously."),
+		textEvents(`{"done":true,"items":[{"title":"Update app.txt","done":true}],"summary":"Completed interactive-to-goal handoff"}`),
+	}}
+	close(p.releaseFinish)
+	_, bctx, mgr, ts := startE2EBrowser(t, p, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if mockSuspended.Load() && len(parts) == 3 && parts[0] == "v1" && parts[1] == "jobs" && r.Method == http.MethodGet {
+				rec := httptest.NewRecorder()
+				next.ServeHTTP(rec, r)
+				for k, v := range rec.Header() {
+					w.Header()[k] = v
+				}
+				w.WriteHeader(rec.Code)
+				_, _ = w.Write([]byte(strings.Replace(rec.Body.String(), `"status":"waiting_for_input"`, `"status":"suspended"`, 1)))
+				return
+			}
+			if mockSuspended.Load() && len(parts) == 4 && parts[1] == "jobs" && parts[3] == "events" && r.URL.Query().Get("cached") == "1" {
+				evs, _ := mgrPtr.Load().Events(r.Context(), parts[2], 0)
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, ev := range evs {
+					raw, _ := json.Marshal(ev)
+					_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.Seq, ev.Type, raw)
+				}
+				return
+			}
+			if mockSuspended.Load() && len(parts) == 4 && parts[1] == "jobs" && parts[3] == "goal" && r.Method == http.MethodPost {
+				wakeOnce.Do(func() { close(wakeStarted) })
+				<-releaseWake
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	mgrPtr.Store(mgr)
+	repo := initE2ERepo(t, true)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.EmulateViewport(390, 844, chromedp.EmulateMobile), chromedp.Navigate(ts.URL+"/#/new")))
+	waitJS(t, bctx, "mobile #/new interactive", `Boolean(document.querySelector('[data-testid="mode-interactive"]') && document.documentElement.scrollWidth <= 390)`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="mode-interactive"]`), chromedp.SetValue(`[data-testid="new-job-repo"]`, repo), chromedp.SendKeys(`[data-testid="new-job-objective"]`, "Inspect app.txt"), chromedp.Click(`[data-testid="new-job-submit"]`)))
+	waitJS(t, bctx, "turn 1 reply, code block XSS safe & awaiting_turn", `(() => { const cb = document.querySelector('[data-testid="code-block"] code'), ic = document.querySelector('[data-testid="inline-code"]'), ws = document.querySelector('[data-testid="workspace-status"]'), ta = document.querySelector('[data-testid="steer-input"]'), cp = document.querySelector('[data-testid="workspace-composer"]')?.getBoundingClientRect(); const shiftOk = ta?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, cancelable: true })), imeOk = ta?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, cancelable: true })); return Boolean(window.location.hash.startsWith("#/jobs/job-") && document.documentElement.scrollWidth <= 390 && cp && cp.left >= 0 && cp.right <= 390 && shiftOk && imeOk && document.querySelectorAll('[data-testid="user-turn"]').length === 1 && ic?.textContent === "app.txt" && cb?.textContent === "<script>window.__xss_chat=1</script>" && window.__xss_chat === undefined && ws?.textContent === "Ready for your message"); })()`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.SendKeys(`[data-testid="workspace-composer"] [data-testid="steer-input"]`, "Create note.txt\n")))
+	waitJS(t, bctx, "turn 2 via Enter key", `document.querySelectorAll('[data-testid="user-turn"]').length === 2 && document.querySelector('[data-testid="tool-call"][data-tool-name="write_file"] [data-testid="tool-name"]')?.textContent === "write_file note.txt" && [...document.querySelectorAll('[data-testid="assistant-text"]')].some((e) => e.textContent.includes("Wrote note.txt in workspace.")) && document.querySelector('[data-testid="workspace-status"]')?.textContent === "Ready for your message"`)
+	mockSuspended.Store(true)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Reload()))
+	waitJS(t, bctx, "suspended workspace status", `document.querySelector('[data-testid="workspace-status"]')?.textContent === "Suspended (wakes on message)" && document.querySelectorAll('[data-testid="user-turn"]').length === 2`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.Click(`[data-testid="promote-goal-btn"]`)))
+	waitJS(t, bctx, "promote goal form open & prefilled", `!document.querySelector('[data-testid="promote-goal-form"]')?.hidden && document.querySelector('[data-testid="promote-objective"]')?.value === "Inspect app.txt" && document.documentElement.scrollWidth <= 390`)
+	mustNoErr(t, chromedp.Do(bctx, chromedp.SetValue(`[data-testid="promote-objective"]`, "Update app.txt and verify"), chromedp.SendKeys(`[data-testid="promote-verify"]`, "git status --short"), chromedp.Click(`[data-testid="promote-submit"]`)))
+	select {
+	case <-wakeStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for POST /goal wake")
+	}
+	waitJS(t, bctx, "waking workspace indicator", `document.querySelector('[data-testid="workspace-status"]')?.textContent === "Waking workspace…"`)
+	mockSuspended.Store(false)
+	close(releaseWake)
+	waitJS(t, bctx, "promoted goal achieved with phase badges, diff & open PR", `["planner", "maker", "checker"].every((ph) => document.querySelector('[data-testid="phase-badge"][data-phase="' + ph + '"]')) && document.querySelector('[data-testid="result-status"]')?.textContent === "achieved" && document.querySelector('[data-testid="verify-exit-code"]')?.textContent === "exit 0" && document.querySelectorAll('[data-testid="job-diff"] [data-testid="diff-file"]').length === 2 && Boolean(document.querySelector('[data-testid="result-open-pr-btn"]')) && document.documentElement.scrollWidth <= 390`)
+}

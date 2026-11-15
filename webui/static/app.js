@@ -10,9 +10,10 @@ const SSE_EVENT_TYPES = [
   "operator_message", "operator_message_delivered", "run_interrupted",
   "question", "answer", "question_timeout", "question_assumed", "turn_interrupted",
   "permission_request", "permission_decision", "permission_expired", "permission_auto",
-  "loop_start", "loop_end", "turn_start", "turn_end", "message_start", "message_end",
+  "loop_start", "loop_end", "turn_start", "turn_end", "turn_complete", "message_start", "message_end",
   "text_delta", "tool_start", "tool_end", "error", "retry", "guardrail", "auto_continue",
 ];
+const GOAL_PHASES = new Set(["planner", "maker", "checker"]);
 
 let listTimer = null;
 let activeStream = null;
@@ -20,6 +21,13 @@ let statusFilter = "";
 
 const isActiveStatus = (st) => st === "created" || st === "running" || st === "waiting_for_input" || st === "suspended";
 const formatStatusLabel = (st) => (st === "suspended" ? "Suspended – waiting for you" : st);
+export function formatWorkspaceStatus(st, reason, mode, waking = false) {
+  if (waking) return "Waking workspace…";
+  if (st === "waiting_for_input" && reason === "awaiting_turn") return "Ready for your message";
+  if (st === "suspended" && (reason === "awaiting_turn" || (mode === "interactive" && (!reason || reason === "waiting_for_input")))) return "Suspended (wakes on message)";
+  return "";
+}
+const makePhaseBadge = (phase) => (GOAL_PHASES.has(phase) ? el("span", { className: `badge phase-badge phase-${phase}`, "data-testid": "phase-badge", "data-phase": phase }, phase) : null);
 const shortSHA = (sha) => (sha ? String(sha).slice(0, 12) : "—");
 
 function el(tag, attrs = {}, ...children) {
@@ -269,8 +277,37 @@ export function renderDiffFiles(bodyEl, summaryEl, raw) {
   bodyEl.replaceChildren(el("div", { className: "diff-nav", "data-testid": "diff-file-nav" }, ...files.map((f, idx) => el("button", { className: "btn-link diff-chip", type: "button", "data-testid": "diff-file-chip", "data-file-path": f.path, onclick: () => { sections[idx].open = true; sections[idx].scrollIntoView({ block: "nearest" }); } }, `${f.path} (+${f.additions} -${f.deletions})`))), ...sections);
 }
 
+function renderInlineNodes(str) {
+  const nodes = [], re = /`([^`\n]+)`/g;
+  let last = 0, m;
+  while ((m = re.exec(str))) {
+    if (m.index > last) nodes.push(str.slice(last, m.index));
+    nodes.push(el("code", { className: "inline-code", "data-testid": "inline-code" }, m[1]));
+    last = re.lastIndex;
+  }
+  if (last < str.length) nodes.push(str.slice(last));
+  return nodes;
+}
+
+export function renderFormattedText(container, text) {
+  const src = String(text || "").replace(/\r\n/g, "\n"), out = [], re = /```([^\n`]*)\n([\s\S]*?)(?:```|$)/g;
+  let last = 0, m;
+  const pushProse = (s) => {
+    const trimmed = s.replace(/^\n+|\n+$/g, "");
+    if (trimmed) out.push(el("p", { className: "assistant-para" }, ...renderInlineNodes(trimmed)));
+  };
+  while ((m = re.exec(src))) {
+    if (m.index > last) pushProse(src.slice(last, m.index));
+    const lang = m[1].trim();
+    out.push(el("pre", { className: "pre-wrap code-block", "data-testid": "code-block", ...(lang ? { "data-lang": lang } : {}) }, el("code", {}, m[2].replace(/\n$/, ""))));
+    last = re.lastIndex;
+  }
+  if (last < src.length) pushProse(src.slice(last));
+  container.replaceChildren(...out);
+}
+
 export function createTranscriptState(refs) {
-  return { activity: { phase: "", model_turns: 0, last_tool: "" }, initialLastSeq: 0, ...refs, seenSeqs: new Set(), lastSeq: 0, finished: false, currentTextEl: null, currentTextKey: "", toolCards: new Map(), lastTool: null, permissionCards: new Map() };
+  return { activity: { phase: "", model_turns: 0, last_tool: "" }, initialLastSeq: 0, statusFloorSeq: 0, inChat: false, ...refs, seenSeqs: new Set(), lastSeq: 0, finished: false, currentText: null, currentTextKey: "", toolCards: new Map(), lastTool: null, permissionCards: new Map() };
 }
 
 export function setPermissionCardState(state, permId, nextState) {
@@ -369,27 +406,37 @@ export function applyJobEvent(state, env) {
       state.transcriptEl.dataset.lastSeq = String(state.lastSeq);
     }
   }
-  const p = env?.payload || {};
+  const p = env?.payload || {}, isLive = !seq || seq > (state.statusFloorSeq || 0);
+  const emitStatus = (st, reason = "") => { if (isLive) state.updateStatus?.(st, reason); };
   if (seq === 1) { state.activity = { phase: "", model_turns: 0, last_tool: "" }; state.initialLastSeq = 0; }
   if (env.phase) state.activity.phase = env.phase;
   if (env.type === "turn_end" && (!seq || seq > (state.initialLastSeq || 0))) state.activity.model_turns++;
   if (env.phase || env.type === "turn_end") state.updateActivity?.(state.activity);
   if (env.type === "question") state.onQuestion?.({ id: p.question_id, question: p.question, options: p.options });
   if (env.type === "answer" || env.type === "question_timeout") state.onQuestionClosed?.(p.question_id);
-  if (env.type === "text_delta") {
-    const delta = p.delta || "";
-    if (!delta || (env.phase && env.phase !== "maker" && env.phase !== "chat")) return true;
-    const key = `${env.phase || "maker"}:${env.iteration ?? ""}:${env.session_id || ""}`;
-    if (!state.currentTextEl || state.currentTextKey !== key) {
-      const pre = el("pre", { className: "pre-wrap assistant-text", "data-testid": "assistant-text" });
-      state.transcriptEl.appendChild(el("div", { className: "transcript-item assistant-message", "data-testid": "transcript-item", "data-event-type": "text_delta", "data-seq": seq }, pre));
-      state.currentTextEl = pre;
-      state.currentTextKey = key;
-    }
-    state.currentTextEl.textContent += delta;
+  if (env.type === "job_created" && p.mode === "interactive") {
+    state.inChat = true;
+    if (p.objective) state.transcriptEl.appendChild(el("div", { className: "transcript-item user-turn", "data-testid": "user-turn", "data-event-type": "job_created", "data-seq": seq }, el("div", { className: "turn-role" }, "You"), el("p", { className: "assistant-para", "data-testid": "user-turn-text" }, p.objective)));
     return true;
   }
-  state.currentTextEl = null;
+  if (env.type === "job_started") { emitStatus("running", ""); return true; }
+  if (env.type === "text_delta" || env.type === "turn_complete") {
+    const delta = env.type === "text_delta" ? (p.delta || "") : (p.text || "");
+    if (!delta || (env.phase && env.phase !== "maker" && env.phase !== "chat")) return true;
+    const key = `${env.phase || "maker"}:${env.iteration ?? ""}:${env.session_id || ""}`;
+    if (!state.currentText || state.currentTextKey !== key) {
+      const bodyEl = el("div", { className: "assistant-text", "data-testid": "assistant-text" });
+      const head = env.phase === "chat" || state.inChat ? el("div", { className: "turn-role" }, "Assistant") : makePhaseBadge(env.phase);
+      state.transcriptEl.appendChild(el("div", { className: "transcript-item assistant-message", "data-testid": "transcript-item", "data-event-type": env.type, "data-seq": seq }, head, bodyEl));
+      state.currentText = { bodyEl, raw: "" };
+      state.currentTextKey = key;
+    }
+    state.currentText.raw = env.type === "turn_complete" && !state.currentText.raw ? delta : state.currentText.raw + (env.type === "text_delta" ? delta : "");
+    renderFormattedText(state.currentText.bodyEl, state.currentText.raw);
+    if (env.type === "turn_complete") state.currentText = null;
+    return true;
+  }
+  state.currentText = null;
 
   if (env.type === "tool_start") {
     const call = p.tool_call || {};
@@ -402,7 +449,7 @@ export function applyJobEvent(state, env) {
     const statusEl = el("span", { className: "badge status-running", "data-testid": "tool-status" }, "running");
     const resultEl = el("div", { className: "tool-result", "data-testid": "tool-result" });
     const details = el("details", { className: "transcript-item tool-call", "data-testid": "tool-call", "data-tool-name": name, "data-seq": seq },
-      el("summary", { className: "tool-summary", "data-testid": "tool-summary" }, nameEl, el("span", { className: "tool-meta" }, durEl, statusEl)),
+      el("summary", { className: "tool-summary", "data-testid": "tool-summary" }, nameEl, el("span", { className: "tool-meta" }, makePhaseBadge(env.phase), durEl, statusEl)),
       el("div", { className: "tool-body" }, el("div", { className: "tool-label" }, "Arguments"), el("pre", { className: "pre-wrap tool-args", "data-testid": "tool-args" }, formatJSON(call.arguments) || "{}"), resultEl)
     );
     state.transcriptEl.appendChild(details);
@@ -431,7 +478,7 @@ export function applyJobEvent(state, env) {
 
   if (env.type === "permission_request") {
     const permId = p.permission_id || `perm-${seq}`;
-    state.updateStatus?.("waiting_for_input");
+    emitStatus("waiting_for_input", "");
     upsertPermissionCard(state, permId, p.request || {}, "pending", seq);
     return true;
   }
@@ -441,7 +488,7 @@ export function applyJobEvent(state, env) {
     setPermissionCardState(state, p.permission_id || "", nextState);
     if (p.original_permission_id) setPermissionCardState(state, p.original_permission_id, nextState);
     const anyPending = [...state.permissionCards.values()].some((c) => c.stateBadge.textContent === "pending");
-    state.updateStatus?.(anyPending ? "waiting_for_input" : "running");
+    emitStatus(anyPending ? "waiting_for_input" : "running", "");
     return true;
   }
 
@@ -452,7 +499,12 @@ export function applyJobEvent(state, env) {
   if (typeof iter === "number" && iter > 0) state.updateIteration?.(iter);
   if (usage && typeof usage === "object") state.updateUsage?.(usage);
 
-  if (env.type === "job_waiting" && p.reason === "awaiting_turn") { state.updateStatus?.("waiting_for_input"); return true; }
+  if (env.type === "job_waiting" && p.reason === "awaiting_turn") { emitStatus("waiting_for_input", "awaiting_turn"); return true; }
+  if (env.type === "operator_message" && (state.inChat || env.phase === "chat")) {
+    if (env.phase === "chat") emitStatus("running", "");
+    state.transcriptEl.appendChild(el("div", { className: "transcript-item user-turn", "data-testid": "user-turn", "data-event-type": "operator_message", "data-seq": seq }, el("div", { className: "turn-role" }, "You"), el("p", { className: "assistant-para", "data-testid": "user-turn-text" }, p.text || "")));
+    return true;
+  }
 
   const dividers = {
     plan: () => `Plan (${(checklist || []).length} items)`,
@@ -463,19 +515,19 @@ export function applyJobEvent(state, env) {
     run_interrupted: () => `Interrupted: ${p.reason || p.message || "run interrupted"}`,
     job_resumed: () => {
       state.finished = false;
-      state.updateStatus?.("running");
+      emitStatus("running", "");
       return `Resumed at iteration ${p.from_iteration || iter || 1} (${p.reason || "resumed"})`;
     },
     task_suspended: () => {
-      if (p.reason === "waiting_for_input") state.updateStatus?.("suspended");
+      if (p.reason === "waiting_for_input") emitStatus("suspended", state.inChat ? "awaiting_turn" : "waiting_for_input");
       return `Task suspended (${p.reason || "idle"})`;
     },
     task_resumed: () => {
       state.finished = false;
-      state.updateStatus?.("running");
+      emitStatus("running", "");
       return `Task resumed (${p.reason || "on_demand"})`;
     },
-    mode_promoted: () => { state.finished = false; state.updateStatus?.("running"); return "Promoted to autonomous goal"; },
+    mode_promoted: () => { state.inChat = false; state.finished = false; emitStatus("running", ""); state.onPromoted?.(p.spec); return "Promoted to autonomous goal"; },
     job_done: () => {
       const st = p.status || "achieved";
       const summary = p.result?.Summary ?? p.result?.summary ?? p.error ?? "";
@@ -483,13 +535,13 @@ export function applyJobEvent(state, env) {
         if (c.stateBadge.textContent === "pending") setPermissionCardState(state, id, "expired");
       }
       state.finished = true;
-      state.updateStatus?.(st);
-      state.onJobDone?.(st);
+      if (isLive) { state.updateStatus?.(st, ""); state.onJobDone?.(st); }
       return `Job ${st}${summary ? " — " + summary : ""}`;
     },
   };
   if (dividers[env.type]) {
-    state.transcriptEl.appendChild(el("div", { className: "transcript-item goal-divider", "data-testid": "goal-divider", "data-event-type": env.type, "data-seq": seq }, dividers[env.type]()));
+    const divPhase = env.type === "plan" ? "planner" : env.type === "iteration_start" ? "maker" : env.type === "verdict" ? "checker" : "";
+    state.transcriptEl.appendChild(el("div", { className: `transcript-item goal-divider${env.type === "operator_message" ? " user-turn" : ""}`, "data-testid": "goal-divider", "data-event-type": env.type, "data-seq": seq }, makePhaseBadge(divPhase), dividers[env.type]()));
   }
   return true;
 }
@@ -542,9 +594,11 @@ async function renderJobDetail(root, jobId) {
     apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}`),
     apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}/permissions?state=pending`).catch(() => ({ permissions: [] })),
   ]);
-  let currentStatus = detail.status;
+  let currentStatus = detail.status, currentReason = detail.status_reason || "", currentMode = detail.spec?.mode === "interactive" ? "interactive" : "goal";
+  let waking = false, promoteOpen = false, es = null, retryTimer = null;
   const maxIter = detail.spec?.budgets?.max_iterations || 10;
   const statusEl = el("span", { className: `badge status-${detail.status}`, "data-testid": "detail-status" }, formatStatusLabel(detail.status));
+  const detailObjectiveEl = el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId);
   const suspendedNoteEl = el("p", { className: "muted suspended-note", "data-testid": "suspended-note", hidden: detail.status !== "suspended" }, "Suspended – waiting for you. The first action may take a few seconds while the task resumes.");
   const iterEl = el("span", { "data-testid": "detail-iteration" }, `iter ${detail.iteration ?? 0}/${maxIter}`);
   const activityText = formatActivity(detail.activity);
@@ -555,7 +609,9 @@ async function renderJobDetail(root, jobId) {
   const questionHostEl = el("div", { "data-testid": "question-host" });
   const resultPanelEl = el("div", { className: "card", "data-testid": "job-result-panel", hidden: true });
   const checklistEl = el("ul", { className: "checklist", "data-testid": "job-checklist" });
+  const checklistCardEl = el("div", { className: "card" }, el("h3", {}, "Checklist"), checklistEl);
   const transcriptEl = el("div", { className: "transcript", "data-testid": "job-transcript" });
+  const detailGridEl = el("div", { className: "detail-grid" }, checklistCardEl, el("div", { className: "card" }, el("h3", {}, "Transcript"), transcriptEl));
   const diffSummaryEl = el("span", { className: "muted", "data-testid": "diff-summary" });
   const diffErrEl = el("p", { className: "error-text", "data-testid": "diff-error", hidden: true });
   const diffBodyEl = el("div", { className: "diff-body", "data-testid": "diff-body" });
@@ -580,8 +636,49 @@ async function renderJobDetail(root, jobId) {
   const cancelDialogEl = el("div", { className: "cancel-confirm", "data-testid": "cancel-confirm-dialog", hidden: true }, el("span", {}, "Cancel this job?"), confirmCancelBtn, dismissCancelBtn, cancelErrEl);
   const cancelBtn = el("button", { className: "btn btn-danger", type: "button", "data-testid": "cancel-job-btn", hidden: !isActiveStatus(detail.status), onclick: () => { cancelDialogEl.hidden = false; cancelErrEl.hidden = true; } }, "Cancel job");
 
-  const steerHeadingEl = el("h3", { "data-testid": "steer-heading" }, "Send message");
-  const steerInputEl = el("input", { className: "input steer-input", type: "text", required: "true", "data-testid": "steer-input" });
+  const ensureLiveSSE = (force = false) => { if (force || !es || es.readyState === EventSource.CLOSED) openSSE(true, true); };
+  const workspaceStatusEl = el("span", { className: "badge workspace-status", "data-testid": "workspace-status", hidden: true });
+  const steerHeadingEl = el("h3", { className: "composer-heading", "data-testid": "steer-heading" }, "Send message");
+  const promoteBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "promote-goal-btn", onclick: () => { promoteOpen = !promoteOpen; promoteErrEl.hidden = true; syncControls(currentStatus, currentReason); if (promoteOpen) promoteObjInput.focus(); } }, "Run Autonomously");
+  const promoteObjInput = el("input", { className: "input", type: "text", value: detail.spec?.objective || "", placeholder: "Autonomous goal objective…", "data-testid": "promote-objective" });
+  const promoteVerifyInput = el("textarea", { className: "input", rows: 2, placeholder: "Verify commands (one per line, e.g. go test ./...)", "data-testid": "promote-verify" }, (detail.spec?.verify || []).map((v) => v.join(" ")).join("\n"));
+  const initDeliv = detail.spec?.delivery === "draft_pr" || detail.spec?.delivery === "pr" ? "pr" : detail.spec?.delivery === "none" ? "none" : "branch";
+  const promoteDeliverySelect = el("select", { className: "select", "data-testid": "promote-delivery" },
+    ...[["branch", "Push branch"], ["pr", "Open draft PR"], ["none", "Workspace only"]].map(([v, l]) => el("option", { value: v, ...(v === initDeliv ? { selected: "selected" } : {}) }, l)));
+  const promoteSubmitBtn = el("button", { className: "btn", type: "submit", "data-testid": "promote-submit" }, "Run until verified");
+  const promoteCancelBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "promote-cancel", onclick: () => { promoteOpen = false; syncControls(currentStatus, currentReason); } }, "Cancel");
+  const promoteErrEl = el("p", { className: "error-text", "data-testid": "promote-error", hidden: true });
+  const promoteFormEl = el("form", { className: "promote-form", "data-testid": "promote-goal-form", hidden: true, onsubmit: async (e) => {
+      e.preventDefault();
+      const objective = promoteObjInput.value.trim();
+      if (!objective) { promoteErrEl.textContent = "Objective is required"; promoteErrEl.hidden = false; return; }
+      promoteErrEl.hidden = true;
+      promoteSubmitBtn.disabled = promoteCancelBtn.disabled = promoteBtn.disabled = true;
+      const wasSuspended = currentStatus === "suspended";
+      if (wasSuspended) { waking = true; syncControls(currentStatus, currentReason); }
+      try {
+        const verify = promoteVerifyInput.value.split("\n").map((ln) => ln.trim()).filter(Boolean).map(splitCommand).filter((a) => a.length);
+        const body = { objective, delivery: promoteDeliverySelect.value, ...(verify.length ? { verify } : {}) };
+        const resp = await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/goal`, body);
+        waking = promoteOpen = state.inChat = state.finished = false;
+        currentMode = "goal";
+        detailObjectiveEl.textContent = resp?.job?.spec?.objective || objective;
+        resultPanelEl.hidden = true;
+        state.updateStatus("running", "");
+        ensureLiveSSE(wasSuspended);
+      } catch (err) {
+        waking = false;
+        promoteErrEl.textContent = err.message || "Failed to promote workspace";
+        promoteErrEl.hidden = false;
+      } finally {
+        promoteSubmitBtn.disabled = promoteCancelBtn.disabled = false;
+        syncControls(currentStatus, currentReason);
+      }
+    } }, promoteObjInput, promoteVerifyInput, el("div", { className: "steer-form" }, promoteDeliverySelect, promoteSubmitBtn, promoteCancelBtn), promoteErrEl);
+
+  const steerInputEl = el("textarea", { className: "input steer-input composer-textarea", rows: 2, "data-testid": "steer-input", onkeydown: (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); steerFormEl.dispatchEvent(new Event("submit", { cancelable: true })); }
+  } });
   const steerSubmitBtn = el("button", { className: "btn", type: "submit", "data-testid": "steer-submit" }, "Send message");
   let steerInterrupt = false;
   const interruptBtn = el("button", { className: "btn btn-secondary", type: "button", "data-testid": "interrupt-btn", onclick: () => { steerInterrupt = true; steerFormEl.dispatchEvent(new Event("submit", { cancelable: true })); } }, "Interrupt");
@@ -594,41 +691,59 @@ async function renderJobDetail(root, jobId) {
       if (!text) return;
       steerErrEl.hidden = true;
       steerSubmitBtn.disabled = interruptBtn.disabled = steerInputEl.disabled = true;
+      const wasSuspended = currentStatus === "suspended";
+      if (wasSuspended) { waking = true; syncControls(currentStatus, currentReason); }
       try {
         if (isActiveStatus(currentStatus)) {
-          const wasSuspended = currentStatus === "suspended";
           await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/messages${intr ? "?interrupt=true" : ""}`, { text });
           steerInputEl.value = "";
-          if (wasSuspended) { state.updateStatus("running"); openSSE(true, true); }
+          waking = false;
+          if (wasSuspended || currentReason === "awaiting_turn") state.updateStatus("running", "");
+          else syncControls(currentStatus, currentReason);
+          ensureLiveSSE(wasSuspended);
         } else {
           await apiPost(`/v1/jobs/${encodeURIComponent(jobId)}/continue`, { text });
           steerInputEl.value = "";
-          state.finished = false;
+          waking = state.finished = false;
           resultPanelEl.hidden = true;
-          state.updateStatus("running");
-          openSSE(true, true);
+          state.updateStatus("running", "");
+          ensureLiveSSE(true);
         }
       } catch (err) {
+        waking = false;
+        syncControls(currentStatus, currentReason);
         steerErrEl.textContent = err.message || "Request failed";
         steerErrEl.hidden = false;
       } finally {
         steerSubmitBtn.disabled = interruptBtn.disabled = steerInputEl.disabled = false;
       }
-    } }, steerInputEl, steerSubmitBtn, interruptBtn);
-  const steerCardEl = el("div", { className: "card", "data-testid": "steer-card" }, steerHeadingEl, steerFormEl, steerErrEl);
+    } }, steerInputEl, el("div", { className: "composer-actions" }, steerSubmitBtn, interruptBtn));
+  const steerCardEl = el("div", { className: "card composer-card", "data-testid": "steer-card" }, el("div", { className: "composer-top" }, steerHeadingEl, workspaceStatusEl, promoteBtn), promoteFormEl, steerFormEl, steerErrEl);
+  const composerEl = el("div", { className: "workspace-composer", "data-testid": "workspace-composer" }, steerCardEl);
 
-  function syncControls(st) {
+  function syncControls(st, reason = currentReason) {
     currentStatus = st;
-    const active = isActiveStatus(st);
+    currentReason = reason;
+    const active = isActiveStatus(st), wsText = formatWorkspaceStatus(st, reason, currentMode, waking);
+    workspaceStatusEl.textContent = wsText;
+    workspaceStatusEl.hidden = !wsText;
+    workspaceStatusEl.className = `badge workspace-status ${waking || st === "running" ? "status-running" : st === "suspended" ? "status-suspended" : "status-achieved"}`;
     suspendedNoteEl.hidden = st !== "suspended";
     cancelBtn.hidden = !active;
-    interruptBtn.hidden = !active;
+    interruptBtn.hidden = st !== "running";
     if (!active) cancelDialogEl.hidden = true;
-    steerCardEl.hidden = st === "achieved";
+    checklistCardEl.hidden = currentMode === "interactive";
+    detailGridEl.className = currentMode === "interactive" ? "detail-grid detail-grid-chat" : "detail-grid";
+    const canPromote = currentMode === "interactive" && (st === "waiting_for_input" || st === "suspended" || st === "created" || st === "interrupted" || st === "blocked");
+    promoteBtn.hidden = currentMode !== "interactive" || st === "achieved" || st === "canceled";
+    promoteBtn.disabled = !canPromote || waking;
+    if (!canPromote) promoteOpen = false;
+    promoteFormEl.hidden = !promoteOpen;
+    composerEl.hidden = steerCardEl.hidden = st === "achieved";
     const label = active ? "Send message" : "Continue with instructions";
-    steerHeadingEl.textContent = label;
+    steerHeadingEl.textContent = currentMode === "interactive" && active ? "Workspace chat" : label;
     steerSubmitBtn.textContent = label;
-    steerInputEl.placeholder = active ? "Send guidance to the next iteration…" : "Instructions to continue this job…";
+    steerInputEl.placeholder = !active ? "Instructions to continue this job…" : currentMode === "interactive" ? "Reply to workspace… (Enter to send, Shift+Enter for newline)" : "Send guidance to the next iteration…";
   }
 
   const loadResult = () => apiRequest(`/v1/jobs/${encodeURIComponent(jobId)}/result`).then(async (res) => {
@@ -640,6 +755,8 @@ async function renderJobDetail(root, jobId) {
     jobId,
     transcriptEl,
     initialLastSeq: Number(detail.last_seq || 0),
+    statusFloorSeq: Number(detail.last_seq || 0),
+    inChat: currentMode === "interactive",
     activity: { phase: detail.activity?.phase || "", model_turns: Number(detail.activity?.model_turns || 0), last_tool: detail.activity?.last_tool || "" },
     updateActivity: (a) => { const txt = formatActivity(a); activityEl.textContent = txt; activityEl.hidden = !txt; },
     syncPermissions: () => {
@@ -651,8 +768,9 @@ async function renderJobDetail(root, jobId) {
         el("span", { className: "muted" }, " — " + pending.map((p) => `${p.toolLabel}${p.target ? " (" + p.target + ")" : ""}`).join(", "))
       );
     },
-    updateStatus: (st) => { statusEl.className = `badge status-${st}`; statusEl.textContent = formatStatusLabel(st); syncControls(st); if (st === "waiting_for_input") loadDiff(true); },
-    onAction: () => { openSSE(true, true); },
+    updateStatus: (st, reason = "") => { waking = false; statusEl.className = `badge status-${st}`; statusEl.textContent = formatStatusLabel(st); syncControls(st, reason); if (st === "waiting_for_input") loadDiff(true); },
+    onPromoted: (spec) => { currentMode = "goal"; promoteOpen = false; if (spec?.objective) detailObjectiveEl.textContent = spec.objective; syncControls(currentStatus, currentReason); },
+    onAction: () => { ensureLiveSSE(true); },
     onJobDone: () => { loadResult(); },
     updateIteration: (n) => { iterEl.textContent = `iter ${n}/${maxIter}`; },
     updateUsage: (u) => { usageEl.textContent = formatUsage(u); },
@@ -667,13 +785,13 @@ async function renderJobDetail(root, jobId) {
     },
   });
   state.updateChecklist(detail.checklist || []);
-  syncControls(detail.status);
+  syncControls(detail.status, currentReason);
   for (const perm of pendingResp.permissions || []) upsertPermissionCard(state, perm.id, perm.request || {}, perm.state || "pending", 0);
   let openQuestionId = "";
   state.onQuestion = (q) => {
     if (!q?.id || q.id === openQuestionId) return;
     openQuestionId = q.id;
-    questionHostEl.replaceChildren(renderQuestionCard(jobId, q, () => { openQuestionId = ""; questionHostEl.replaceChildren(); state.updateStatus?.("running"); }));
+    questionHostEl.replaceChildren(renderQuestionCard(jobId, q, () => { openQuestionId = ""; questionHostEl.replaceChildren(); state.updateStatus?.("running", ""); }));
   };
   state.onQuestionClosed = (id) => { if (id === openQuestionId) { openQuestionId = ""; questionHostEl.replaceChildren(); } };
   if (detail.question) state.onQuestion(detail.question);
@@ -685,22 +803,17 @@ async function renderJobDetail(root, jobId) {
     bannerEl,
     questionHostEl,
     el("div", { className: "card", "data-testid": "job-header" },
-      el("div", { className: "detail-header-top" }, statusEl, el("h2", { className: "detail-objective", "data-testid": "detail-objective" }, detail.spec?.objective || jobId), cancelBtn),
+      el("div", { className: "detail-header-top" }, statusEl, detailObjectiveEl, cancelBtn),
       suspendedNoteEl,
       cancelDialogEl,
       el("div", { className: "detail-meta" }, iterEl, activityEl, el("span", { "data-testid": "detail-model" }, formatModel(detail.spec)), el("span", { "data-testid": "detail-repo" }, formatRepo(detail.spec)), usageEl, streamEl)
     ),
     resultPanelEl,
     diffCardEl,
-    steerCardEl,
-    el("div", { className: "detail-grid" },
-      el("div", { className: "card" }, el("h3", {}, "Checklist"), checklistEl),
-      el("div", { className: "card" }, el("h3", {}, "Transcript"), transcriptEl)
-    )
+    detailGridEl,
+    composerEl
   ));
 
-  let es = null;
-  let retryTimer = null;
   function openSSE(useAfter = false, forceLive = false) {
     if (state.finished) return;
     if (es) es.close();
