@@ -29,6 +29,14 @@ func (m *Manager) Message(ctx context.Context, id, text string) error {
 	if m.closed {
 		return errors.New("jobs: manager is closed")
 	}
+	if job, err := m.Get(ctx, id); err == nil && m.active[id] == nil && job.Spec.isInteractive() && job.Status == WaitingForInput {
+		if err := m.record(id, "operator_message", map[string]any{"text": text}, "chat", nil, Running); err != nil {
+			return err
+		}
+		job.Spec.Objective = text
+		m.launch(job, nil, false)
+		return nil
+	}
 	if err := m.record(id, "operator_message", map[string]any{"text": text}, "", nil, ""); err != nil {
 		return err
 	}
@@ -72,6 +80,10 @@ func (m *Manager) guidance(ctx context.Context, id string, iteration int) (strin
 	var messages []eventlog.Envelope
 	var texts []string
 	for _, e := range events {
+		if e.Type == "mode_promoted" {
+			messages, texts = nil, nil
+			continue
+		}
 		if e.Type == "answer" {
 			// Answers to ask_user are guidance for every later session too,
 			// so a new maker or the checker does not ask again.
@@ -119,7 +131,10 @@ func (m *Manager) guidance(ctx context.Context, id string, iteration int) (strin
 // current model request or tool call, so its next turn starts with the text
 // instead of waiting for the current step to finish.
 func (m *Manager) Interrupt(ctx context.Context, id, text string) error {
-	if err := m.Message(ctx, id, text); err != nil {
+	m.mu.Lock()
+	wasRunning := m.active[id] != nil
+	m.mu.Unlock()
+	if err := m.Message(ctx, id, text); err != nil || !wasRunning {
 		return err
 	}
 	m.mu.Lock()

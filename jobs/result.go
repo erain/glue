@@ -217,6 +217,14 @@ var ErrPatchTooLarge = errors.New("jobs: patch is too large")
 func (m *Manager) Patch(ctx context.Context, id string) ([]byte, error) {
 	res, err := m.Result(ctx, id)
 	if err != nil {
+		if j, jerr := m.Get(ctx, id); jerr == nil && j.Spec.isInteractive() && j.Status == WaitingForInput {
+			res.BaseSHA, res.Branch, err = j.BaseSHA, "glue/"+id, nil
+			if j.BaseSHA != "" && j.Workspace != "" {
+				res.HeadSHA, err = worktreeTree(ctx, j.Workspace)
+			}
+		}
+	}
+	if err != nil {
 		return nil, err
 	}
 	if res.BaseSHA == "" || res.HeadSHA == "" || res.BaseSHA == res.HeadSHA {
@@ -226,7 +234,7 @@ func (m *Manager) Patch(ctx context.Context, id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", job.Workspace, "diff", "--binary", res.BaseSHA+".."+res.HeadSHA)
+	cmd := exec.CommandContext(ctx, "git", "-C", job.Workspace, "diff", "--binary", res.BaseSHA, res.HeadSHA)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -244,6 +252,21 @@ func (m *Manager) Patch(ctx context.Context, id string) ([]byte, error) {
 		return nil, fmt.Errorf("jobs: diff %s: %w", id, err)
 	}
 	return data, nil
+}
+
+func worktreeTree(ctx context.Context, dir string) (string, error) {
+	tmp, err := os.MkdirTemp("", "glue-patch-index-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(tmp, "index")}
+	for _, args := range [][]string{{"read-tree", "HEAD"}, {"add", "-A", "--", ".", ":(exclude).glue"}} {
+		if _, err := workspaceGit(ctx, dir, env, args...); err != nil {
+			return "", err
+		}
+	}
+	return workspaceGit(ctx, dir, env, "write-tree")
 }
 
 func runVerifyCommand(ctx context.Context, dir string, env []string, timeout time.Duration, argv []string) VerifyResult {

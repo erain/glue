@@ -146,6 +146,17 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "accepted": true})
 			return
+		case "goal":
+			var body jobs.GoalPromoteRequest
+			if !jobMethod(w, r, http.MethodPost) || !jobBody(w, r, &body) {
+				return
+			}
+			if updated, err := s.jobs.PromoteToGoal(r.Context(), id, body); err != nil {
+				jobError(w, err)
+			} else {
+				writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "accepted": true, "job": updated})
+			}
+			return
 		case "messages":
 			if !jobMethod(w, r, http.MethodPost) {
 				return

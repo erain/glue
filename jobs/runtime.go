@@ -32,7 +32,9 @@ type execution struct {
 	// maker is the running maker session; operator messages steer it.
 	maker *glue.Session
 	// questions are ask_user calls waiting for an answer, by question ID.
-	questions map[string]*pendingQuestion
+	questions   map[string]*pendingQuestion
+	interactive bool
+	turnPrompt  string
 }
 
 // Start detaches execution from the caller after durably recording its start.
@@ -63,7 +65,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 func (m *Manager) launch(job Job, resume *glue.GoalRecord, recovering bool) {
 	id := job.ID
 	runCtx, cancel := context.WithCancel(context.Background())
-	run := &execution{ctx: runCtx, cancel: cancel, resume: resume, budgets: job.Spec.Budgets}
+	run := &execution{ctx: runCtx, cancel: cancel, resume: resume, budgets: job.Spec.Budgets, interactive: job.Spec.isInteractive(), turnPrompt: job.Spec.Objective}
 	if recovering && resume != nil {
 		run.initialUsage = resume.Usage
 	}
@@ -93,7 +95,7 @@ func (m *Manager) Cancel(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if job.Status == Created {
+	if job.Status == Created || (m.active[id] == nil && job.Status == WaitingForInput) {
 		if err := m.finalize(id, glue.GoalResult{}, Canceled); err != nil {
 			return err
 		}
@@ -143,7 +145,8 @@ func (m *Manager) record(id, typ string, payload any, phase string, iteration *i
 func (m *Manager) appendEvent(tx *sql.Tx, id, typ string, payload any, phase string, iteration *int, status Status) error {
 	var seq int64
 	var current Status
-	if err := tx.QueryRow("SELECT last_seq,status FROM jobs WHERE id=?", id).Scan(&seq, &current); err != nil {
+	var reason string
+	if err := tx.QueryRow("SELECT last_seq,status,status_reason FROM jobs WHERE id=?", id).Scan(&seq, &current, &reason); err != nil {
 		return err
 	}
 	if typ == "operator_message" && current != Created && current != Running && current != WaitingForInput && current != WaitingForCredentials {
@@ -154,6 +157,11 @@ func (m *Manager) appendEvent(tx *sql.Tx, id, typ string, payload any, phase str
 	}
 	if status == "" {
 		status = current
+	} else {
+		reason = ""
+		if p, ok := payload.(map[string]any); ok && typ == "job_waiting" {
+			reason, _ = p["reason"].(string)
+		}
 	}
 	seq++
 	now := m.options.Now().UTC()
@@ -161,7 +169,7 @@ func (m *Manager) appendEvent(tx *sql.Tx, id, typ string, payload any, phase str
 	if err := eventlog.Insert(tx, event); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("UPDATE jobs SET status=?,last_seq=?,updated_at=? WHERE id=?", status, seq, now.Format("2006-01-02T15:04:05.000000000Z"), id); err != nil {
+	if _, err := tx.Exec("UPDATE jobs SET status=?,status_reason=?,last_seq=?,updated_at=? WHERE id=?", status, reason, seq, now.Format("2006-01-02T15:04:05.000000000Z"), id); err != nil {
 		return err
 	}
 	return nil
@@ -175,6 +183,9 @@ func (m *Manager) execute(ctx context.Context, id string, run *execution) {
 	run.mu.Unlock()
 	if stop != nil {
 		stop()
+	}
+	if run.interactive && err == nil && ctx.Err() == nil && !budgetExpired && result.Status == "" && m.parkInteractive(id, run) {
+		return
 	}
 	status := Status(result.Status)
 	if err != nil || status == "" {
@@ -262,6 +273,9 @@ func (m *Manager) pursue(ctx context.Context, id string, run *execution) (glue.G
 			run.writeErr = err
 			run.cancel()
 		}
+	}
+	if run.interactive {
+		return m.runInteractiveSession(ctx, job, workspace.Path, workspace.BaseSHA, agent, run, emit)
 	}
 	var unsubscribe []func()
 	defer func() {

@@ -280,10 +280,11 @@ func TestGatewayServesCachedEventsWhenBackendDown(t *testing.T) {
 type fakeAXHarness struct {
 	mu                                             sync.Mutex
 	now                                            atomic.Int64
-	pendingPerm, decidedID                         string
+	pendingPerm, decidedID, lastDoPath             string
 	suspends, resumes, deletes, routerHits, closes atomic.Int32
 	failResult                                     atomic.Bool
 	tasks                                          map[string]bool
+	specs                                          map[string]jobs.Spec
 	onDelete                                       func(string)
 	events                                         []eventlog.Envelope
 }
@@ -303,9 +304,9 @@ func (h *fakeAXHarness) emit(pairs ...any) {
 func (h *fakeAXHarness) Create(_ context.Context, id string, spec jobs.Spec) (jobs.Job, error) {
 	h.mu.Lock()
 	if h.tasks == nil {
-		h.tasks = map[string]bool{}
+		h.tasks, h.specs = map[string]bool{}, map[string]jobs.Spec{}
 	}
-	h.tasks["glue-"+id] = true
+	h.tasks["glue-"+id], h.specs[id] = true, spec
 	h.mu.Unlock()
 	return jobs.Job{ID: id, Spec: spec, Status: jobs.Created, CreatedAt: h.Now()}, nil
 }
@@ -313,6 +314,10 @@ func (h *fakeAXHarness) Start(ctx context.Context, id string) (jobs.Job, error) 
 	_ = h.Resume(ctx, id)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if spec := h.specs[id]; spec.Mode == jobs.ModeInteractive {
+		h.emit("job_created", spec, "job_started", nil, "job_waiting", map[string]any{"reason": jobs.ReasonAwaitingTurn})
+		return jobs.Job{ID: id, Spec: spec, Status: jobs.Running}, nil
+	}
 	h.pendingPerm = "perm-1"
 	h.emit("job_created", jobs.Spec{Objective: "ax test"}, "job_started", nil, "permission_request", map[string]any{"permission_id": "perm-1", "request": glue.PermissionRequest{Tool: "write_file", Action: "write_file", Target: "hello.txt"}}, "job_waiting", nil)
 	return jobs.Job{ID: id, Status: jobs.Running}, nil
@@ -343,6 +348,16 @@ func (h *fakeAXHarness) Do(_ context.Context, _, subpath string, _ []byte) (int,
 	h.routerHits.Add(1)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.lastDoPath = subpath
+	if id, action, _ := strings.Cut(subpath, "/"); action == "messages" {
+		h.emit("operator_message", map[string]any{"text": "next"}, "job_waiting", map[string]any{"reason": jobs.ReasonAwaitingTurn})
+		return http.StatusAccepted, []byte(`{"accepted":true}`), nil
+	} else if action == "goal" {
+		spec := h.specs[id]
+		spec.Mode = jobs.ModeGoal
+		h.emit("mode_promoted", map[string]any{"spec": spec}, "job_done", map[string]any{"status": jobs.Achieved, "result": glue.GoalResult{Iterations: 1, Summary: "done"}})
+		return http.StatusAccepted, []byte(mustJSON(map[string]any{"accepted": true, "job": jobs.Job{ID: id, Spec: spec, Status: jobs.Running}})), nil
+	}
 	if permID := strings.Split(subpath, "/")[2]; permID == h.pendingPerm {
 		h.decidedID, h.pendingPerm = permID, ""
 		h.emit("permission_decision", map[string]any{"permission_id": permID, "decision": glue.PermissionDecision{Allow: true}}, "job_done", map[string]any{"status": jobs.Achieved, "result": glue.GoalResult{Iterations: 1, Summary: "done"}})
@@ -1054,5 +1069,33 @@ func TestCloudflareAccessAllowedEmails403(t *testing.T) {
 	pat := must(f.gw.reg.CreateToken(t.Context(), "eve@other.org", "cli"))
 	if _, err := (&jobclient.Client{BaseURL: f.ts.URL, Token: pat.Token, HTTP: f.ts.Client()}).List(t.Context(), jobs.Filter{}); err == nil {
 		t.Fatal("expected disallowed PAT to fail")
+	}
+}
+func newInteractiveAX(t *testing.T) (*fakeAXHarness, *Server, *jobclient.Client, string) {
+	h := &fakeAXHarness{}
+	h.now.Store(time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC).UnixNano())
+	gw := must(NewServer(Config{StateDir: t.TempDir(), Auth: AuthConfig{Mode: "dev-token", Token: "gw-token"}, SuspendAfter: 2 * time.Minute, ResumeTimeout: 5 * time.Second, Now: h.Now, Backends: []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}}, CustomBackends: map[string]Backend{"ax": h}}))
+	ts := httptest.NewServer(gw)
+	t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+	cli := &jobclient.Client{BaseURL: ts.URL, Token: "gw-token", HTTP: ts.Client()}
+	id := must(cli.Submit(t.Context(), jobs.Spec{Mode: jobs.ModeInteractive, Objective: "explore", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}, true)).ID
+	waitJob(t, gw, id, jobs.WaitingForInput, jobs.ReasonAwaitingTurn)
+	h.Advance(2*time.Minute+time.Second, gw)
+	waitJob(t, gw, id, jobs.Suspended, "waiting_for_input")
+	return h, gw, cli, id
+}
+func TestGatewayInteractiveAutoSuspendAndWakeOnMessage(t *testing.T) {
+	h, gw, cli, id := newInteractiveAX(t)
+	must(0, cli.Say(t.Context(), id, "next turn"))
+	waitJob(t, gw, id, jobs.WaitingForInput, jobs.ReasonAwaitingTurn)
+	if h.suspends.Load() != 1 || h.resumes.Load() != 2 || h.lastDoPath != id+"/messages" {
+		t.Fatalf("suspends=%d resumes=%d lastDoPath=%q", h.suspends.Load(), h.resumes.Load(), h.lastDoPath)
+	}
+}
+func TestGatewayForwardsPromoteToGoal(t *testing.T) {
+	h, gw, cli, id := newInteractiveAX(t)
+	promoted := must(cli.PromoteGoal(t.Context(), id, jobs.GoalPromoteRequest{Objective: "ship it", Verify: [][]string{{"true"}}}))
+	if rec := waitJob(t, gw, id, jobs.Achieved, "finished"); promoted.Spec.Mode != jobs.ModeGoal || rec.Spec.Mode != jobs.ModeGoal || h.lastDoPath != id+"/goal" {
+		t.Fatalf("promoted=%+v rec=%+v lastDoPath=%q", promoted.Spec, rec.Spec, h.lastDoPath)
 	}
 }

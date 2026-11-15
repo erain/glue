@@ -3,7 +3,9 @@
 package jobs
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +18,10 @@ import (
 )
 
 func (m *Manager) startIntent(ctx context.Context, job Job) error {
+	return m.commitIntent(ctx, job, "job_started", nil)
+}
+
+func (m *Manager) commitIntent(ctx context.Context, job Job, evType string, payload any) error {
 	subdir := "worktrees"
 	if job.Spec.Repo.URL != "" {
 		subdir = "repos"
@@ -24,10 +30,16 @@ func (m *Manager) startIntent(ctx context.Context, job Job) error {
 	if err != nil {
 		return err
 	}
-	agent := glue.NewAgent(glue.AgentOptions{Store: filestore.New(filepath.Join(m.options.StateDir, "sessions"))})
-	if err := agent.SaveGoal(ctx, glue.GoalRecord{ID: job.ID, Objective: job.Spec.Objective, Status: glue.GoalRunning, WorkDir: dir}); err != nil {
-		return err
+	dir = cmp.Or(job.Workspace, dir)
+	goalID := job.GoalID
+	if !job.Spec.isInteractive() {
+		goalID = cmp.Or(goalID, job.ID)
+		agent := glue.NewAgent(glue.AgentOptions{Store: filestore.New(filepath.Join(m.options.StateDir, "sessions"))})
+		if err := agent.SaveGoal(ctx, glue.GoalRecord{ID: goalID, Objective: job.Spec.Objective, Status: glue.GoalRunning, WorkDir: dir}); err != nil {
+			return err
+		}
 	}
+	data, _ := json.Marshal(job.Spec)
 	m.eventsMu.Lock()
 	defer m.eventsMu.Unlock()
 	tx, err := m.store.DB.BeginTx(ctx, nil)
@@ -35,14 +47,14 @@ func (m *Manager) startIntent(ctx context.Context, job Job) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "UPDATE jobs SET workspace=?,goal_id=? WHERE id=?", dir, job.ID, job.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE jobs SET workspace=?,spec_json=?,goal_id=? WHERE id=?", dir, string(data), goalID, job.ID); err != nil {
 		return err
 	}
 	initialStatus := Running
 	if m.missingCredentials(job.Spec, false) {
 		initialStatus = WaitingForCredentials
 	}
-	if err := m.appendEvent(tx, job.ID, "job_started", nil, "", nil, initialStatus); err != nil {
+	if err := m.appendEvent(tx, job.ID, evType, payload, "", nil, initialStatus); err != nil {
 		return err
 	}
 	return tx.Commit()
