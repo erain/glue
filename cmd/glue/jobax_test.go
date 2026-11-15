@@ -65,6 +65,7 @@ type fakeAXRig struct {
 	egress       map[string]bool
 	daemons      map[string]*daemon.Server
 	managers     map[string]*jobs.Manager
+	restarts     map[string]func() *jobs.Manager
 	lastOpts     axbackend.Options
 }
 
@@ -74,6 +75,7 @@ func newFakeAXRig(t *testing.T, makeProvider func() glue.Provider) *fakeAXRig {
 		t: t, repoDir: serveJobRepo(t), makeProvider: makeProvider,
 		workspaces: map[string]*v1alpha1.Workspace{}, tasks: map[string]*v1alpha1.Task{},
 		egress: map[string]bool{}, daemons: map[string]*daemon.Server{}, managers: map[string]*jobs.Manager{},
+		restarts: map[string]func() *jobs.Manager{},
 	}
 	lis, gs := bufconn.Listen(1<<20), grpc.NewServer()
 	v1alpha1.RegisterAXServer(gs, rig)
@@ -176,7 +178,18 @@ func (r *fakeAXRig) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequ
 	srv := must(daemon.New(daemon.Options{Host: glue.NewAgent(glue.AgentOptions{Provider: prov, Model: "fake", Store: filestore.New(r.t.TempDir())}), Token: tok, StateDir: stateDir, Jobs: mgr}))
 	r.t.Cleanup(func() { _ = srv.Close(); _ = mgr.Close() })
 	task.Status = &v1alpha1.TaskStatus{Phase: "Suspended"}
-	r.tasks[name], r.daemons[name], r.managers[strings.TrimPrefix(name, "glue-")] = task, srv, mgr
+	jobID := strings.TrimPrefix(name, "glue-")
+	r.tasks[name], r.daemons[name], r.managers[jobID] = task, srv, mgr
+	r.restarts[jobID] = func() *jobs.Manager {
+		_ = errors.Join(srv.Close(), mgr.Close())
+		p2 := r.makeProvider()
+		mgr = must(jobs.New(jobs.Options{StateDir: stateDir, ProviderFactory: fakeFactory(p2), RequireCredentials: true}))
+		srv = must(daemon.New(daemon.Options{Host: glue.NewAgent(glue.AgentOptions{Provider: p2, Model: "fake", Store: filestore.New(r.t.TempDir())}), Token: tok, StateDir: stateDir, Jobs: mgr}))
+		r.t.Cleanup(func() { _ = srv.Close(); _ = mgr.Close() })
+		defer r.lock()()
+		r.tasks[name].Status, r.daemons[name], r.managers[jobID] = &v1alpha1.TaskStatus{Phase: "Suspended"}, srv, mgr
+		return mgr
+	}
 	return task, nil
 }
 func (r *fakeAXRig) CreateActorEgressPolicy(_ context.Context, req *ateapipb.CreateActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
@@ -226,7 +239,7 @@ func (r *fakeAXRig) DeleteActorEgressPolicy(_ context.Context, req *ateapipb.Del
 
 func clearJobTestEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "GLUE_CONFIG_DIR", "GLUE_SERVER", "GLUE_TOKEN", "GLUE_DAEMON_TOKEN", "AX_SERVER", "AX_SERVER_ADDR", "GLUE_AX_SERVER", "GLUE_AX_KUBECONFIG", "GLUE_AX_CONTEXT", "KUBECONFIG", "KUBE_CONTEXT", "KUBECONTEXT", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY", "GLUE_GITHUB_TOKEN", "GITHUB_TOKEN"} {
+	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "GLUE_CONFIG_DIR", "GLUE_NOTIFY_URL", "GLUE_DELIVER", "GLUE_PROVIDER", "GLUE_MODEL", "GLUE_THINKING", "GLUE_AX_ATESPACE", "GLUE_SERVER", "GLUE_TOKEN", "GLUE_DAEMON_TOKEN", "AX_SERVER", "AX_SERVER_ADDR", "GLUE_AX_SERVER", "GLUE_AX_KUBECONFIG", "GLUE_AX_CONTEXT", "KUBECONFIG", "KUBE_CONTEXT", "KUBECONTEXT", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY", "OPENAI_API_KEY", "GLUE_GITHUB_TOKEN", "GITHUB_TOKEN"} {
 		t.Setenv(k, "")
 		_ = os.Unsetenv(k)
 	}
@@ -654,4 +667,98 @@ func TestNotifyHostInEgress(t *testing.T) {
 
 	err = jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "--notify", "ntfy.sh/x", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
 	checkAX(t, err != nil && strings.Contains(err.Error(), "invalid notify URL"), "bad URL: %v", err)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestUserConfigNotifySurvivesRestart(t *testing.T) {
+	clearJobTestEnv(t)
+	for k, v := range map[string]string{"GLUE_GITHUB_TOKEN": "ghp_fakeNotifyTestToken", "GEMINI_API_KEY": "AIzaRestartNotifyKey123456", "XDG_CONFIG_HOME": t.TempDir()} {
+		t.Setenv(k, v)
+	}
+	doneCh := make(chan struct{}, 2)
+	sink := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if b, _ := io.ReadAll(r.Body); strings.Contains(string(b), `"status":"achieved"`) {
+			doneCh <- struct{}{}
+		}
+	}))
+	t.Cleanup(sink.Close)
+	must(saveUserConfig(&userConfig{Notify: []string{sink.URL + "/glue-0123456789abcdef0123456789abcdef"}}))
+	calls := 0
+	rig := newFakeAXRig(t, func() glue.Provider {
+		calls++
+		return &scriptedProvider{turns: map[bool][][]glue.ProviderEvent{true: {textTurn(`{"items":[{"title":"n"}]}`), textTurn("wip"), textTurn(`{"done":false,"items":[{"title":"n","done":false}],"summary":"wip"}`)}, false: {textTurn("ok"), textTurn(`{"done":true,"items":[{"title":"n","done":true,"evidence":"ok"}],"summary":"ok"}`)}}[calls == 1]}
+	})
+	jobID := strings.TrimSpace(mustJobCLI(t, "submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox.git", "--max-iterations", "1", "Add note"))
+	waitJob(t, func() *jobs.Manager { defer rig.lock()(); return rig.managers[jobID] }(), jobID, jobs.MaxIterations)
+	checkAX(t, must(rig.restarts[jobID]().Inspect(context.Background(), jobID)).Credentials == "absent", "expected absent credentials")
+	mustJobCLI(t, "continue", jobID, "finish", "--max-iterations", "1", "--ax")
+	attachOut := mustJobCLI(t, "attach", jobID, "--ax")
+	checkAX(t, strings.Contains(attachOut, "job achieved") && !strings.Contains(attachOut, "0123456789abcdef0123456789abcdef"), "attachOut=%q", attachOut)
+	select {
+	case <-doneCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected achieved notification after task restart")
+	}
+}
+
+func TestJobInitGeneratesTopicAndPings(t *testing.T) {
+	clearJobTestEnv(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	must(saveUserConfig(&userConfig{PublicURL: "https://glue.example.com"}))
+	var pingURL, pingBody string
+	doer := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		pingURL, pingBody = r.URL.String(), string(must(io.ReadAll(r.Body)))
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})
+	var out1, out2, out3 bytes.Buffer
+	checkAX(t, jobCommand(context.Background(), []string{"init", "--non-interactive"}, strings.NewReader(""), &out1, &out1, doer) == nil && strings.HasPrefix(pingURL, "https://ntfy.sh/glue-") && len(strings.TrimPrefix(pingURL, "https://ntfy.sh/glue-")) == 32 && pingBody == "Glue phone notifications connected" && strings.Contains(out1.String(), pingURL) && strings.Contains(out1.String(), "█"), "init 1: %s", out1.String())
+	checkAX(t, jobCommand(context.Background(), []string{"init", "--non-interactive"}, strings.NewReader(""), &out2, &out2, doer) == nil && !strings.Contains(out2.String(), pingURL) && strings.Contains(out2.String(), redactNotify(pingURL)), "out2=%s", out2.String())
+	cfg, _, err := loadUserConfig()
+	over := "https://ntfy.sh/glue-override0123456789abcdef0123"
+	checkAX(t, err == nil && cfg.PublicURL == "https://glue.example.com" && slices.Equal(cfg.Notify, []string{pingURL}) && jobCommand(context.Background(), []string{"init", "--notify", over, "--non-interactive"}, strings.NewReader(""), &out3, &out3, doer) == nil && !strings.Contains(out3.String(), over), "cfg=%+v err=%v", cfg, err)
+}
+
+func TestE2EAXUserConfigNotifyWithoutFlag(t *testing.T) {
+	if os.Getenv("GLUE_E2E_AX") != "1" {
+		t.Skip("set GLUE_E2E_AX=1 to run")
+	}
+	for _, k := range []string{"GLUE_SERVER", "GLUE_TOKEN", "GLUE_DAEMON_TOKEN", "AX_SERVER", "GLUE_NOTIFY_URL", "GLUE_CONFIG_DIR"} {
+		t.Setenv(k, "")
+	}
+	_ = loadEnvFiles([]string{filepath.Join(os.Getenv("HOME"), ".env")})
+	if err := checkLiveDirectAX("", ""); err != nil || !envSet("GEMINI_API_KEY", "OPENROUTER_API_KEY") {
+		checkAX(t, !axLiveStrict(), "live AX cluster and provider key required (cluster=%v)", err)
+		t.Skipf("live AX preconditions unavailable (cluster=%v)", err)
+	}
+	ghTok, _ := githubToken(t.Context())
+	t.Setenv("GLUE_GITHUB_TOKEN", ghTok)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Cleanup(func() { _ = axbackend.StopTunnels("") })
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	run := func(args ...string) string {
+		var out, errBuf bytes.Buffer
+		checkAX(t, runCLIWithDeps(ctx, args, strings.NewReader(""), &out, &errBuf, defaultProviderFactory, serveDaemon, nil) == 0, "glue %v: %s", args, errBuf.String())
+		return out.String()
+	}
+	run("job", "init", "--non-interactive", "--repo", "https://github.com/erain/glue-sandbox.git")
+	cfg := must(func() (*userConfig, error) { c, _, err := loadUserConfig(); return c, err }())
+	cfg.Deliver, cfg.Provider, cfg.Model = "none", map[bool]string{true: "gemini", false: "openrouter"}[envSet("GEMINI_API_KEY")], map[bool]string{true: "gemini-3-flash-preview"}[envSet("GEMINI_API_KEY")]
+	must(saveUserConfig(cfg))
+	jobID := strings.TrimSpace(run("--remote", "Create notify_cfg.txt containing exact line ok.", "--repo", "https://github.com/erain/glue-sandbox.git", "--verify", "grep -qx ok notify_cfg.txt", "--max-iterations", "2"))
+	t.Cleanup(func() {
+		_ = runCLIWithDeps(context.Background(), []string{"job", "delete", jobID, "--ax"}, strings.NewReader(""), io.Discard, io.Discard, defaultProviderFactory, serveDaemon, nil)
+	})
+	att := run("job", "attach", jobID)
+	checkAX(t, strings.Contains(att, "job achieved"), "attach %s:\n%s", jobID, att)
+	for range 15 {
+		if resp, err := http.Get(cfg.Notify[0] + "/json?poll=1&since=10m"); err == nil && strings.Contains(func() string { defer resp.Body.Close(); b, _ := io.ReadAll(resp.Body); return string(b) }(), jobID) {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("did not receive ntfy done message for %s", jobID)
 }

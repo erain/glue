@@ -18,6 +18,7 @@ import (
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/erain/glue/internal/modelselection"
+	"github.com/erain/glue/internal/redact"
 	"github.com/erain/glue/jobs"
 	"github.com/erain/glue/providers"
 )
@@ -145,9 +146,10 @@ type jobTargetOpts struct {
 
 func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (jobAPI, bool, error) {
 	serverFlag, backend := strings.TrimSpace(t.conn.ServerURL), strings.TrimSpace(t.backend)
-	kubeCfg, kubeCtx := strings.TrimSpace(t.kubeconfig), strings.TrimSpace(t.kubectx)
+	kubeCfg, kubeCtx, atespace := resolveUserAXTarget(t.kubeconfig, t.kubectx, t.atespace)
 	openAX := func() (jobAPI, bool, error) {
 		creds := resolveAXCredentials(ctx)
+		creds.NotifyURLs = nil
 		egress := slices.Clone(axbackend.DefaultEgressHosts)
 		for _, h := range t.egress {
 			if h = strings.TrimSpace(h); h != "" && !slices.Contains(egress, h) {
@@ -163,7 +165,7 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 		api, err := newAXJobAPI(ctx, axbackend.Options{
 			Connect: axbackend.ConnectOptions{
 				AXServer:   cmp.Or(strings.TrimSpace(os.Getenv("GLUE_AX_SERVER")), strings.TrimSpace(os.Getenv("AX_SERVER_ADDR"))),
-				KubeConfig: kubeCfg, KubeContext: kubeCtx, Atespace: cmp.Or(strings.TrimSpace(t.atespace), "default"),
+				KubeConfig: kubeCfg, KubeContext: kubeCtx, Atespace: cmp.Or(atespace, "default"),
 			},
 			Image: strings.TrimSpace(t.image), CPU: t.cpu, Memory: t.memory, StartTimeout: t.startTimeout, Credentials: creds, EgressHosts: egress, Progress: t.progress,
 		})
@@ -196,16 +198,19 @@ func resolveJobAPI(ctx context.Context, t jobTargetOpts, httpClient httpDoer) (j
 	return nil, false, fmt.Errorf("%w\nNo AX cluster was found either (pass --context, set GLUE_AX_CONTEXT, or source scripts/ax-dev/env.sh). Run glue job doctor for details", resolveErr)
 }
 
-// notifyURLs returns the valid --notify URLs, or GLUE_NOTIFY_URL when none were given.
+// notifyURLs returns the valid --notify URLs, falling back to GLUE_NOTIFY_URL and ~/.config/glue/config.yaml.
 func notifyURLs(flags []string) []string {
 	if len(flags) == 0 {
 		if v := strings.TrimSpace(os.Getenv("GLUE_NOTIFY_URL")); v != "" {
 			flags = []string{v}
+		} else if ucfg, _, _ := loadUserConfig(); ucfg != nil {
+			flags = ucfg.Notify
 		}
 	}
 	var out []string
 	for _, u := range flags {
 		if u = strings.TrimSpace(u); jobs.ValidNotifyURL(u) == nil {
+			redact.Register(u)
 			out = append(out, u)
 		}
 	}
@@ -224,7 +229,7 @@ func resolveAXCredentials(ctx context.Context) jobs.Credentials {
 		}
 	}
 	ghTok, _ := githubToken(ctx)
-	creds := jobs.Credentials{GitHubToken: ghTok}
+	creds := jobs.Credentials{GitHubToken: ghTok, NotifyURLs: notifyURLs(nil)}
 	if len(pks) > 0 {
 		creds.ProviderKeys = pks
 	}

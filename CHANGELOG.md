@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- Personal remote defaults in `~/.config/glue/config.yaml` (`XDG_CONFIG_HOME`, `0600`, strict YAML `ax`, `public_url`, `notify`, `deliver`, `provider`, `model`, `thinking` with `flag > env > .glue/remote.yaml > ~/.config/glue/config.yaml > default` precedence) and `glue job init` one-scan QR phone pairing (`internal/qr`), keeping `NotifyURLs` durable across AX task restarts and redacted in `doctor`, submit summaries, and errors.
+
 - `glue job pr [<id>]` and `POST /v1/jobs/{id}/pr` open draft pull requests after completion for branch-delivered jobs and persist `pr_url` across `glue serve`, `glue-gateway`, direct AX (`~/.config/glue/ax-jobs/<id>.json`, without waking suspended tasks), and `glue job pick` so `glue job show`, `glue job result`, and `glue job continue --from-pr` find the PR URL.
 
 - Interactive multi-turn job workspaces (`jobs.Spec.Mode: "interactive"`, CLI `-i` / `--interactive`) run conversational turns backed by persistent `<id>:chat` sessions, park in `waiting_for_input` (`status_reason: "awaiting_turn"`) for idle AX auto-suspend and wake-on-message without notification spam, serve live working-tree diffs from `GET /v1/jobs/{id}/patch`, and escalate in place to autonomous goal pursuit (`Manager.PromoteToGoal`, `POST /v1/jobs/{id}/goal`) on the same `/workspace`.
