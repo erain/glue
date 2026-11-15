@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/erain/glue"
 )
 
 type fakeJobs struct {
@@ -21,6 +22,7 @@ type fakeJobs struct {
 	logs, diffs           map[string]string
 	pr                    string
 	detailCalls, logCalls int
+	teleport              func(context.Context, string) (TeleportResult, error)
 }
 
 func (f *fakeJobs) List(context.Context) ([]JobRow, error) { return f.rows, nil }
@@ -52,6 +54,12 @@ func (f *fakeJobs) Transcript(_ context.Context, id string) (string, error) {
 func (f *fakeJobs) Pull(_ context.Context, id string, apply bool) (string, error) {
 	f.calls, f.pulled = append(f.calls, fmt.Sprintf("pull:%s:%t", id, apply)), append(f.pulled, id)
 	return pick(apply, "applied patch from "+id+"\n", "fetched glue/"+id+"; on branch glue/"+id+"\n"), nil
+}
+func (f *fakeJobs) Teleport(ctx context.Context, id string) (TeleportResult, error) {
+	if _ = f.rec("teleport:%s", id); f.teleport != nil {
+		return f.teleport(ctx, id)
+	}
+	return TeleportResult{SessionID: "teleport-" + strings.TrimPrefix(id, "job-")}, nil
 }
 
 // runCmd runs a command and feeds every resulting message back into the
@@ -249,4 +257,33 @@ func TestJobsPanelApplyVsBranchPull(t *testing.T) {
 	m, f := jobsModel()
 	sendJobs(t, m, "/jobs", "p", "A")
 	assertCalls(t, f, "pull:job-00000000000a:false", "pull:job-00000000000a:true")
+}
+
+func TestTUISlashTeleportAndJobsKeyTSwitchesSession(t *testing.T) {
+	st := newMemStore()
+	_, f := jobsModel()
+	f.teleport = func(ctx context.Context, id string) (TeleportResult, error) {
+		sid := "teleport-" + strings.TrimPrefix(id, "job-")
+		_ = st.Save(ctx, sid, glue.SessionState{Version: glue.SessionStateVersion, ID: sid, Messages: []glue.Message{textMsg(glue.MessageRoleUser, "Handoff "+id), textMsg(glue.MessageRoleAssistant, "Remote job handoff "+id+": [x] verify suite green")}})
+		return TeleportResult{SessionID: sid, Notice: "switched to glue/" + id}, nil
+	}
+	m := newModel(context.Background(), Config{Agent: glue.NewAgent(glue.AgentOptions{Provider: fakeProvider{}, Store: st}), Store: st, SessionID: "tui:init", Jobs: f, PublicURL: "https://glue.example.com/", SubmitRemote: func(context.Context, RemoteRequest, func(string)) (string, error) { return "job-00000000000a", nil }})
+	m.tick = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+	_, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	slash := func(line string) string {
+		c, _ := parseSlashCommand(line)
+		_, next := m.handleSlash(c)
+		runCmd(t, m, next)
+		return stripANSI(m.View())
+	}
+	if v := slash("/remote ship feature"); !strings.Contains(v, "https://glue.example.com/#/jobs/job-00000000000a") {
+		t.Fatalf("/remote missing browser permalink:\n%s", v)
+	}
+	if v := slash("/teleport job-00000000000a"); m.cfg.SessionID != "teleport-00000000000a" || !strings.Contains(v, "Remote job handoff job-00000000000a") {
+		t.Fatalf("after /teleport session=%q view:\n%s", m.cfg.SessionID, v)
+	}
+	stepJobsView(t, m, []string{"/jobs", "Down"}, "", "t teleport")
+	if sendJobs(t, m, "t"); m.jobs != nil || m.cfg.SessionID != "teleport-00000000000b" || !strings.Contains(stripANSI(m.View()), "Remote job handoff job-00000000000b") {
+		t.Fatalf("after t in /jobs panel=%+v session=%q", m.jobs, m.cfg.SessionID)
+	}
 }

@@ -57,9 +57,9 @@ var (
 	errJobDetached           = errors.New("job attach detached")
 )
 
-const jobUsage = "Usage:\n  glue job <init|login|doctor|ui|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]"
+const jobUsage = "Usage:\n  glue job <init|login|doctor|ui|submit|start|list|show|attach|logs|result|diff|pull|teleport|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]"
 
-func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
+func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer, newProvider ...providerFactory) error {
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {}
@@ -97,7 +97,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	snapshot := fs.Bool("snapshot", false, "remote jobs: start from a snapshot of the working tree, including uncommitted changes")
 	snapshotMax := fs.Int64("snapshot-max-size", defaultSnapshotMaxBytes, "remote jobs: largest new file content a snapshot may push, in bytes")
 	ignoreLocal := fs.Bool("ignore-local", false, "remote jobs: start from the remote base ref even if local work would be missed")
-	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull: switch to the job branch"), fs.Bool("apply", false, "pull: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull: overwrite an existing local branch or apply over local changes")
+	pullCheckout, pullApply, pullForce := fs.Bool("checkout", false, "pull/teleport: switch to the job branch"), fs.Bool("apply", false, "pull/teleport: apply the job's changes to the working tree without committing"), fs.Bool("force", false, "pull/teleport: overwrite an existing local branch or apply over local changes")
+	noTUI, teleportStore := fs.Bool("no-tui", false, "teleport: persist the handoff session without opening the TUI"), fs.String("store", "", "teleport: session store directory (default <repo>/.glue/sessions)")
 	noBudget := fs.Bool("no-budget", false, "remote jobs: do not apply the default wall-clock and token budgets")
 	olderThan, dryRun := fs.String("older-than", "7d", "prune: delete finished jobs last updated before this age (e.g. 12h, 7d)"), fs.Bool("dry-run", false, "prune: list what would be deleted without deleting; continue --from-pr: print the instructions without sending")
 	quiet := fs.Bool("quiet", false, "submit: print only the job ID")
@@ -160,7 +161,7 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		_, err := fmt.Fprintf(stdout, "saved token in %s\n", jobclient.ServersPath())
 		return err
 	}
-	if sub == "pr" && len(pos) == 0 {
+	if (sub == "pr" || sub == "teleport") && len(pos) == 0 {
 		pos = []string{"latest"}
 	}
 	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && sub != "init" && sub != "ui" && len(pos) == 0 {
@@ -334,6 +335,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 				}
 			}
 			printSubmitSummary(stderr, job.ID, directAX, *start, summary)
+			if base := browserBaseURL(conn.ServerURL, ucfg); base != "" {
+				fmt.Fprintf(stderr, "  browser: %s/#/jobs/%s\n", base, job.ID)
+			}
 			if urls := notifyURLs(target.notify); len(urls) > 0 {
 				fmt.Fprintf(stderr, "  %-9s %s\n", "notify", redactNotify(urls...))
 			}
@@ -409,12 +413,26 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "pending_permission: %s\t%s\t%s\t%s\n", p.ID, p.Request.Tool, p.Request.Action, p.Request.Target)
 		}
 		return nil
-	case "pull":
+	case "pull", "teleport":
 		dir := "."
 		if r := strings.TrimSpace(*repo); r != "" && !isRemoteRepoRef(r) {
 			dir = r // the checkout to pull into
 		}
-		return pullJob(ctx, c, pos[0], dir, pullOptions{checkout: *pullCheckout, apply: *pullApply, force: *pullForce}, stdout)
+		opts := pullOptions{checkout: *pullCheckout, apply: *pullApply, force: *pullForce}
+		if sub == "pull" {
+			return pullJob(ctx, c, pos[0], dir, opts, stdout)
+		}
+		sid, sdir, err := teleportJob(ctx, c, pos[0], dir, *teleportStore, opts, stdout)
+		if err == nil && !*noTUI && isTTY(stdin) && isTTY(stdout) {
+			pf := defaultProviderFactory
+			if len(newProvider) > 0 && newProvider[0] != nil {
+				pf = newProvider[0]
+			}
+			return runAgentCommand(ctx, "glue code", true, []string{"--work", dir, "--store", sdir, "--id", sid}, stdin, stdout, stderr, pf)
+		} else if err == nil {
+			_, err = fmt.Fprintf(stdout, "session: %s\nnext: glue code --id %s%s\n", sid, sid, map[bool]string{true: " --work " + dir + " --store " + sdir}[dir != "."])
+		}
+		return err
 	case "diff":
 		if *stat {
 			res, err := c.Result(ctx, pos[0])

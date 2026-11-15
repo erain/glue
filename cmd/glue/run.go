@@ -324,6 +324,7 @@ func runAgentCommand(ctx context.Context, cmdName string, defaultCoding bool, ar
 				return filterTools(wtTools, *toolsAllow, *noTools)
 			}
 		}
+		ucfg, _, _ := loadUserConfig()
 		return runTUI(ctx, tui.Config{
 			Agent:        agent,
 			SessionID:    effectiveID,
@@ -335,7 +336,8 @@ func runAgentCommand(ctx context.Context, cmdName string, defaultCoding bool, ar
 			ProviderImpl: providerImpl,
 			AlwaysAllow:  *yolo,
 			BuildTools:   buildToolsAt,
-			Jobs:         tuiJobs{workDir: *workDir},
+			PublicURL:    browserBaseURL("", ucfg),
+			Jobs:         tuiJobs{workDir: *workDir, storeDir: *storeDir},
 			SubmitRemote: func(ctx context.Context, req tui.RemoteRequest, progress func(string)) (string, error) {
 				return submitRemoteFromTUI(ctx, *workDir, req, progress)
 			},

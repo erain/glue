@@ -30,7 +30,7 @@ glue job init                         # doctor checks + one-time QR phone pairin
 glue --remote "Add Sub(a, b int) next to Add, with a table-driven test" \
   --snapshot --verify "go test ./..."
 glue job attach latest                # live transcript; Ctrl-C detaches, the job keeps going
-glue job pull latest --apply          # the result, on top of the work you sent
+glue job pull latest --apply          # the result, on top of the work you sent (or `glue job teleport` to open TUI with context)
 ```
 
 The job ID comes back in about 3 seconds; your phone hears when the job is done
@@ -561,8 +561,8 @@ transcript), **`/fork [N]`** (branch from message N — defaults to
 original intact), **`/clone`** (full duplicate of the current
 session), **`/tree`** (visualize the session lineage with
 `├─ / └─` glyphs, current node marked `◉`; pick one to switch — see
-[ADR-0015](docs/adr/0015-session-tree.md)), **`/jobs`** (remote jobs with status and age, refreshed every 10 s without waking suspended AX tasks; Enter opens a scrollable live transcript with `d` unified diff toggle, `1`–`9`/`a` question answers, `y`/`s`/`n` permission decisions, `s` say and `i` interrupt steering, `c` cancel confirmation, `o` draft PR creation, `p` branch pull, and `A` `--apply` working-tree pull; the status bar shows `⧗ N remote jobs · M waiting`
-while any run), **`/remote [--snapshot] <objective>`**
+[ADR-0015](docs/adr/0015-session-tree.md)), **`/jobs`** (remote jobs with status and age, refreshed every 10 s without waking suspended AX tasks; Enter opens a scrollable live transcript with `d` unified diff toggle, `1`–`9`/`a` question answers, `y`/`s`/`n` permission decisions, `s` say and `i` interrupt steering, `c` cancel confirmation, `o` draft PR creation, `p` branch pull, `A` `--apply` working-tree pull, and `t` teleport into the active coding session; the status bar shows `⧗ N remote jobs · M waiting`
+while any run), **`/teleport [<id>]`** (pull a remote job's changes and provider-neutral handoff briefing into `.glue/sessions` and switch the active TUI session), **`/remote [--snapshot] <objective>`**
 (hand the task to a remote AX job with this session's latest compaction
 summary, or its last 4,000 characters, as background; the same local-state
 checks as `glue --remote` apply), and **`/goal <objective>`**

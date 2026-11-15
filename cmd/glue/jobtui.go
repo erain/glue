@@ -70,7 +70,7 @@ func (w *lineWriter) flush() {
 
 // tuiJobs implements tui.JobsBridge with the glue job commands, so the TUI
 // reaches the same backend (AX or a daemon) as the CLI.
-type tuiJobs struct{ workDir string }
+type tuiJobs struct{ workDir, storeDir string }
 
 func (t tuiJobs) run(ctx context.Context, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
@@ -156,4 +156,10 @@ func (t tuiJobs) Say(ctx context.Context, id, s string, intr bool) error {
 }
 func (t tuiJobs) Pull(ctx context.Context, id string, apply bool) (string, error) {
 	return t.run(ctx, "pull", fmt.Sprintf("--apply=%t", apply), id, "--repo", cmp.Or(t.workDir, "."))
+}
+func (t tuiJobs) Teleport(ctx context.Context, id string) (tui.TeleportResult, error) {
+	out, err := t.run(ctx, "teleport", "--no-tui", "--repo", cmp.Or(t.workDir, "."), "--store", cmp.Or(t.storeDir, ".glue/sessions"), cmp.Or(strings.TrimSpace(id), "latest"))
+	_, sid, _ := strings.Cut("\n"+out, "\nsession: ")
+	sid, _, _ = strings.Cut(sid, "\n")
+	return tui.TeleportResult{SessionID: strings.TrimSpace(sid), Notice: strings.TrimSpace(out)}, err
 }

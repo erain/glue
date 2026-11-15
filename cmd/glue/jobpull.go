@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/erain/glue/jobs"
 )
 
 // pullOptions selects how glue job pull brings a job's changes home.
@@ -28,10 +30,21 @@ func pullJob(ctx context.Context, c jobAPI, id, dir string, o pullOptions, stdou
 		return errors.New("--checkout and --apply cannot be combined")
 	}
 	d, err := c.Show(ctx, id)
+	if err == nil {
+		err = checkPullRepo(ctx, id, dir, d.Spec.Repo.URL)
+	}
 	if err != nil {
 		return err
 	}
-	if want := strings.TrimSpace(d.Spec.Repo.URL); want != "" {
+	res, err := c.Result(ctx, id)
+	if err != nil {
+		return err
+	}
+	return pullJobChanges(ctx, c, id, dir, res, o, stdout)
+}
+
+func checkPullRepo(ctx context.Context, id, dir, wantURL string) error {
+	if want := strings.TrimSpace(wantURL); want != "" {
 		origin, err := gitOutput(ctx, dir, "config", "--get", "remote.origin.url")
 		if err != nil || origin == "" {
 			return fmt.Errorf("this checkout has no origin remote; run glue job pull from a clone of %s", want)
@@ -42,10 +55,10 @@ func pullJob(ctx context.Context, c jobAPI, id, dir string, o pullOptions, stdou
 			return fmt.Errorf("job %s ran on %s, but this checkout's origin is %s; run glue job pull from a clone of that repo", id, want, origin)
 		}
 	}
-	res, err := c.Result(ctx, id)
-	if err != nil {
-		return err
-	}
+	return nil
+}
+
+func pullJobChanges(ctx context.Context, c jobAPI, id, dir string, res jobs.Result, o pullOptions, stdout io.Writer) error {
 	if res.HeadSHA == "" || res.HeadSHA == res.BaseSHA {
 		_, err := fmt.Fprintf(stdout, "job %s made no changes\n", id)
 		return err
@@ -88,7 +101,7 @@ func pullJob(ctx context.Context, c jobAPI, id, dir string, o pullOptions, stdou
 		_, err := fmt.Fprintf(stdout, "switched to %s\n", branch)
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "next: git switch %s\n", branch)
+	_, err := fmt.Fprintf(stdout, "next: git switch %s\n", branch)
 	return err
 }
 

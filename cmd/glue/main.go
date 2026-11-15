@@ -132,7 +132,7 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 		return 0
 	}
 	if strings.HasPrefix(args[0], "-") && hasRemoteFlag(args) {
-		if err := jobCommand(ctx, append([]string{"submit"}, args...), stdin, stdout, stderr, client); err != nil {
+		if err := jobCommand(ctx, append([]string{"submit"}, args...), stdin, stdout, stderr, client, newProvider); err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitCodeOf(err)
 		}
@@ -173,7 +173,7 @@ func runCLIWithDeps(ctx context.Context, args []string, stdin io.Reader, stdout 
 		}
 		return code
 	case "job":
-		if err := jobCommand(ctx, args[1:], stdin, stdout, stderr, client); err != nil {
+		if err := jobCommand(ctx, args[1:], stdin, stdout, stderr, client, newProvider); err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitCodeOf(err)
 		}
@@ -312,6 +312,7 @@ Manage remote jobs:
   glue job attach [<id>]              Stream live job events (Ctrl-C detaches cleanly)
   glue job say | answer <id> "<text>" Steer a running job (--interrupt) or answer a question
   glue job diff | pull | pr [<id>]    Review patch, pull branch/changes, or open a draft PR
+  glue job teleport [<id>]            Pull job changes and session briefing into local TUI
   glue job continue <id> [flags]      Resume a job with instructions or --from-pr feedback
 
 Models & daemon:
