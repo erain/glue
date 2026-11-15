@@ -447,3 +447,13 @@ func TestJobPRIdempotentWhenAlreadyOpen(t *testing.T) {
 		t.Fatalf("out1=%q out2=%q posts=%d", out1, out2, posts.Load())
 	}
 }
+func TestJobsPanelApplyVsBranchPullBridge(t *testing.T) {
+	ctx, dst := context.Background(), filepath.Join(t.TempDir(), "user")
+	id, b := func() (string, tuiJobs) { id, _ := setupJobPRFixture(t); return id, tuiJobs{workDir: dst} }()
+	gitIn(t, t.TempDir(), "clone", "-q", gitIn(t, must(must(jobclient.New(jobclient.Config{}, nil)).Show(ctx, id)).Spec.Repo.Path, "config", "--get", "remote.origin.url"), dst)
+	rows, diff, pr, info := must(b.List(ctx)), must(b.Diff(ctx, id)), must(b.OpenPR(ctx, id)), must(b.Detail(ctx, id))
+	outB, outA := must(b.Pull(ctx, id, false)), must(b.Pull(ctx, id, true))
+	if len(rows) == 0 || rows[0].ID != id || !strings.Contains(diff, "+ready") || pr != "https://github.com/erain/glue-sandbox/pull/42" || info.Summary != "Add pr.txt" || !strings.Contains(outB, "created branch glue/"+id) || !strings.Contains(outA, "applied job "+id) || string(must(os.ReadFile(filepath.Join(dst, "pr.txt")))) != "ready\n" {
+		t.Fatalf("rows=%+v diff=%q pr=%q info=%+v b=%q a=%q", rows, diff, pr, info, outB, outA)
+	}
+}
