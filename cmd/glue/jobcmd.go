@@ -28,6 +28,7 @@ type jobAPI interface {
 	Show(ctx context.Context, id string) (jobs.Detail, error)
 	Permissions(ctx context.Context, id, state string) ([]jobs.PermissionInfo, error)
 	Result(ctx context.Context, id string) (jobs.Result, error)
+	OpenPR(ctx context.Context, id, token string) (jobs.Result, error)
 	Patch(ctx context.Context, id string) ([]byte, error)
 	Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error
 	Say(ctx context.Context, id, text string) error
@@ -49,7 +50,7 @@ var (
 
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
+		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <login|doctor|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
 		return err
 	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
@@ -140,6 +141,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		_, err := fmt.Fprintf(stdout, "saved token in %s\n", jobclient.ServersPath())
 		return err
+	}
+	if sub == "pr" && len(pos) == 0 {
+		pos = []string{"latest"}
 	}
 	if sub != "submit" && sub != "list" && sub != "prune" && sub != "doctor" && len(pos) == 0 {
 		return fmt.Errorf("usage: glue job %s <id>", sub)
@@ -354,6 +358,9 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		if d.Spec.Repo.SnapshotOf != "" {
 			fmt.Fprintf(stdout, "snapshot_of: %s\n", d.Spec.Repo.SnapshotOf)
 		}
+		if d.PRURL != "" {
+			fmt.Fprintf(stdout, "pr_url: %s\n", d.PRURL)
+		}
 		fmt.Fprintf(stdout, "wall_clock: %s\ntoken_budget: %s\n", budgetText(d.Spec.Budgets.WallClock.String(), d.Spec.Budgets.WallClock == 0), budgetText(fmt.Sprint(d.Spec.Budgets.TokenBudget), d.Spec.Budgets.TokenBudget == 0))
 		if q := d.Question; q != nil {
 			fmt.Fprintf(stdout, "question: %s\n", q.Question)
@@ -412,6 +419,14 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			fmt.Fprintf(stdout, "verify: %s (exit %d, %dms)\n", strings.Join(v.Argv, " "), v.ExitCode, v.DurationMS)
 		}
 		return nil
+	case "pr":
+		tok, _ := githubToken(ctx)
+		res, err := c.OpenPR(ctx, pos[0], tok)
+		if err != nil || *asJSON {
+			return writeJSONOrErr(stdout, res, err)
+		}
+		_, err = fmt.Fprintf(stdout, "draft PR: %s\n", res.PRURL)
+		return err
 	case "compare":
 		return jobCompare(ctx, c, pos[0], time.Now(), stdout)
 	case "pick":

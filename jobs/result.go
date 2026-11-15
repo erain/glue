@@ -107,6 +107,50 @@ func (m *Manager) Result(ctx context.Context, id string) (Result, error) {
 	return res, nil
 }
 
+// SetResultPRURL persists prURL into a finished job's completion record.
+func (m *Manager) SetResultPRURL(ctx context.Context, id, prURL string) (Result, error) {
+	if prURL = strings.TrimSpace(prURL); prURL == "" {
+		return Result{}, invalid("pr_url", "required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	res, err := m.Result(ctx, id)
+	if err == nil && res.PRURL != prURL {
+		res.PRURL, res.DeliveryError = prURL, ""
+		err = m.writeResult(res)
+	}
+	return res, err
+}
+
+// OpenDraftPR opens or reuses a draft pull request for a finished job and persists pr_url.
+func (m *Manager) OpenDraftPR(ctx context.Context, id, token string) (Result, error) {
+	job, err := m.Get(ctx, id)
+	if err != nil {
+		return Result{}, err
+	}
+	res, err := m.Result(ctx, id)
+	if err != nil || res.PRURL != "" {
+		return res, err
+	}
+	if res.Branch == "" || (res.BaseSHA != "" && (res.HeadSHA == "" || res.HeadSHA == res.BaseSHA)) {
+		return Result{}, fmt.Errorf("%w: job %s pushed no branch", ErrConflict, id)
+	}
+	tok := cmpOr(strings.TrimSpace(token), cmpOr(m.githubToken(), strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))))
+	if tok == "" {
+		return Result{}, invalid("github_token", "set GLUE_GITHUB_TOKEN or GITHUB_TOKEN, or run gh auth login")
+	}
+	if info, err := os.Stat(job.Workspace); job.Workspace != "" && err == nil && info.IsDir() && (job.Spec.Delivery == "none" || res.DeliveryError != "") {
+		if err := pushBranch(ctx, job.Workspace, res.Branch, tok); err != nil {
+			return Result{}, err
+		}
+	}
+	prURL, err := OpenDraftPR(ctx, job, res, tok)
+	if err != nil {
+		return Result{}, err
+	}
+	return m.SetResultPRURL(ctx, id, prURL)
+}
+
 func (m *Manager) resultPath(id string) string {
 	return filepath.Join(m.options.StateDir, "jobs", id, "result.json")
 }
@@ -432,11 +476,15 @@ func prBase(ctx context.Context, job Job, token, defaultBranch string) string {
 	base := strings.TrimPrefix(strings.TrimSpace(job.Spec.Repo.BaseRef), "refs/heads/")
 	if branch, _, ok := strings.Cut(job.Spec.Repo.SnapshotOf, "@"); ok {
 		base = ""
-		if extra, cleanup, err := gitAuthEnv(token); err == nil {
-			if out, err := workspaceGit(ctx, job.Workspace, extra, "ls-remote", "--heads", "origin", branch); err == nil && strings.TrimSpace(out) != "" {
-				base = branch
+		if job.Workspace != "" {
+			if extra, cleanup, err := gitAuthEnv(token); err == nil {
+				if out, err := workspaceGit(ctx, job.Workspace, extra, "ls-remote", "--heads", "origin", branch); err == nil && strings.TrimSpace(out) != "" {
+					base = branch
+				}
+				cleanup()
 			}
-			cleanup()
+		} else if owner, repo, err := parseOriginRepo(job.Spec.Repo.URL); err == nil && branch != "" && githubJSON(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/branches/%s", githubAPIBase(), owner, repo, strings.ReplaceAll(url.PathEscape(branch), "%2F", "/")), token, nil, nil) == nil {
+			base = branch
 		}
 	}
 	if base == "" {
@@ -489,13 +537,18 @@ func githubAPIBase() string {
 // OpenDraftPR opens a draft pull request for the branch a finished job pushed,
 // or returns the job's PR or an open PR from that branch if one exists.
 func OpenDraftPR(ctx context.Context, job Job, res Result, token string) (string, error) {
+	redact.Register(strings.TrimSpace(token))
 	if res.PRURL != "" {
 		return res.PRURL, nil
 	}
-	if res.Branch == "" {
+	if res.Branch == "" || (res.BaseSHA != "" && (res.HeadSHA == "" || res.HeadSHA == res.BaseSHA)) {
 		return "", fmt.Errorf("%w: job %s pushed no branch", ErrConflict, job.ID)
 	}
-	owner, repo, err := parseOriginRepo(job.Spec.Repo.URL)
+	repoURL := job.Spec.Repo.URL
+	if repoURL == "" && job.Workspace != "" {
+		repoURL, _ = workspaceGit(ctx, job.Workspace, nil, "remote", "get-url", "origin")
+	}
+	owner, repo, err := parseOriginRepo(repoURL)
 	if err != nil {
 		return "", err
 	}

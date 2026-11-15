@@ -508,11 +508,12 @@ the public `glue` library API (homepage: <https://glue-coding.vercel.app>; remot
 
 ```sh
 # Launch an autonomous coding job directly on AX (auto policy by default, zero gateway needed):
-id=$(go run ./cmd/glue --remote "Add a Makefile test target" --verify "make test" --deliver pr)
+id=$(go run ./cmd/glue --remote "Add a Makefile test target" --verify "make test")
 go run ./cmd/glue job list
 go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without canceling
 go run ./cmd/glue job say "$id" "Keep existing target names unchanged."
 go run ./cmd/glue job result "$id"
+go run ./cmd/glue job pr "$id"       # opens a draft PR for the pushed branch and persists pr_url
 
 # Interactive TUI (default when stdin/stdout are a terminal and no --prompt):
 go run ./cmd/glue run --provider codex --coding --work .

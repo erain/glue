@@ -689,6 +689,9 @@ func (b *Backend) Show(ctx context.Context, id string) (jobs.Detail, error) {
 		if isTerminal(d.Status) {
 			b.settleFinished(ctx, id)
 		}
+		if c := b.loadCache(id); c != nil && c.Result != nil && d.PRURL == "" {
+			d.PRURL = c.Result.PRURL
+		}
 		return d, nil
 	}
 	c := b.loadCache(id)
@@ -703,6 +706,7 @@ func (b *Backend) Show(ctx context.Context, id string) (jobs.Detail, error) {
 	// A job that finished while attached has a cached result but may have
 	// no cached detail; take its final iteration and usage from the result.
 	if c != nil && c.Result != nil {
+		d.PRURL = cmp.Or(d.PRURL, c.Result.PRURL)
 		d.Iteration = max(d.Iteration, c.Result.Iterations)
 		if c.Result.Usage.TotalTokens > d.Usage.TotalTokens {
 			d.Usage = c.Result.Usage
@@ -748,6 +752,42 @@ func (b *Backend) Result(ctx context.Context, id string) (res jobs.Result, err e
 		b.updateCache(id, func(c *cachedJob) { c.Status, c.Result = res.Status, &res })
 	}
 	return res, err
+}
+
+// OpenPR opens or reuses a draft pull request for a finished AX job and caches pr_url without waking suspended tasks.
+func (b *Backend) OpenPR(ctx context.Context, id, token string) (jobs.Result, error) {
+	res, err := b.Result(ctx, id)
+	if err != nil || res.PRURL != "" {
+		return res, err
+	}
+	spec, _ := b.cachedState(ctx, id)
+	t, terr := b.getTask(ctx, id)
+	if terr == nil {
+		if j, ok := b.taskToJob(t); ok && spec.Objective == "" {
+			spec = j.Spec
+		} else if ok && spec.Repo.URL == "" {
+			spec.Repo = j.Spec.Repo
+		}
+	}
+	tok := cmp.Or(strings.TrimSpace(token), strings.TrimSpace(b.opts.Credentials.GitHubToken), envOr("GLUE_GITHUB_TOKEN"), envOr("GITHUB_TOKEN"))
+	if tok == "" {
+		return jobs.Result{}, errors.New("pr needs a GitHub token: set GLUE_GITHUB_TOKEN or GITHUB_TOKEN, or run gh auth login")
+	}
+	prURL, err := jobs.OpenDraftPR(ctx, jobs.Job{ID: id, Spec: spec}, res, tok)
+	if err != nil {
+		return jobs.Result{}, err
+	}
+	res.PRURL, res.DeliveryError = prURL, ""
+	b.updateCache(id, func(c *cachedJob) {
+		c.Result = &res
+		if c.Detail != nil {
+			c.Detail.PRURL = prURL
+		}
+	})
+	if terr == nil && isWorkspaceReady(t) {
+		_, _ = b.jobClient(id).SetPRURL(ctx, id, prURL)
+	}
+	return res, nil
 }
 
 // patchPath names the cached patch for one finished run of a job. It is

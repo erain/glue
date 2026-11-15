@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,5 +331,45 @@ func TestCredentialsEndpointRequiresAuth(t *testing.T) {
 	jobHTTP(t, srv, http.MethodPost, "/v1/credentials", body, http.StatusOK)
 	if !srv.jobs.HasCredentials() {
 		t.Fatal("expected HasCredentials() = true")
+	}
+}
+
+func TestDaemonPostJobPROpensAndPersists(t *testing.T) {
+	var posts atomic.Int32
+	routes := map[string]string{"GET /repos/erain/glue-sandbox": `{"default_branch":"main"}`, "GET /repos/erain/glue-sandbox/pulls": `[]`}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := routes[r.Method+" "+r.URL.Path]; ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		posts.Add(1)
+		_, _ = w.Write([]byte(`{"html_url":"https://github.com/erain/glue-sandbox/pull/15"}`))
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	t.Setenv("GLUE_GITHUB_TOKEN", "gh-tok")
+	s, _, _ := jobHTTPFixture(t, nil)
+	specData, _ := json.Marshal(jobs.Spec{Objective: "add a.txt", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
+	id := jobHTTP(t, s, http.MethodPost, "/v1/jobs", string(specData), 201)["job"].(map[string]any)["id"].(string)
+	jobHTTP(t, s, http.MethodPost, "/v1/jobs/"+id+"/pr", "{}", http.StatusConflict)
+	jobHTTP(t, s, http.MethodDelete, "/v1/jobs/"+id, "", http.StatusAccepted)
+	wLogin := httptest.NewRecorder()
+	s.ServeHTTP(wLogin, httptest.NewRequest(http.MethodPost, "/v1/session/login", strings.NewReader(`{"token":"token"}`)))
+	cookie, csrf := wLogin.Result().Cookies()[0], s.csrfToken()
+	for _, tc := range []struct {
+		csrf string
+		want int
+	}{{"", http.StatusForbidden}, {csrf, http.StatusOK}, {csrf, http.StatusOK}} {
+		w, req := httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id+"/pr", nil)
+		req.AddCookie(cookie)
+		if tc.csrf != "" {
+			req.Header.Set(csrfHeaderName, tc.csrf)
+		}
+		if s.ServeHTTP(w, req); w.Code != tc.want {
+			t.Fatalf("POST pr csrf=%q: code=%d body=%s", tc.csrf, w.Code, w.Body.String())
+		}
+	}
+	if posts.Load() != 1 || jobHTTP(t, s, http.MethodGet, "/v1/jobs/"+id+"/result", "", 200)["pr_url"] != "https://github.com/erain/glue-sandbox/pull/15" || jobHTTP(t, s, http.MethodGet, "/v1/jobs/"+id, "", 200)["pr_url"] != "https://github.com/erain/glue-sandbox/pull/15" {
+		t.Fatalf("posts=%d or pr_url not persisted", posts.Load())
 	}
 }
