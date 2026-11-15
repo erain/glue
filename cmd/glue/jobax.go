@@ -80,6 +80,9 @@ func (a *axJobAPI) Submit(ctx context.Context, spec jobs.Spec, start bool) (jobs
 	if !slices.Contains([]string{"", "none", "branch", "draft_pr"}, spec.Delivery) {
 		return jobs.Job{}, fmt.Errorf("unknown delivery mode %q (expected none, branch, or draft_pr)", spec.Delivery)
 	}
+	if !slices.Contains([]string{"", jobs.ModeGoal, jobs.ModeInteractive}, spec.Mode) {
+		return jobs.Job{}, fmt.Errorf("unknown job mode %q (expected goal or interactive)", spec.Mode)
+	}
 	if spec.Policy != "" {
 		if _, err := jobs.BuiltInPolicy(spec.Policy); err != nil {
 			return jobs.Job{}, err

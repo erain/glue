@@ -8,7 +8,8 @@ with `--coding`).
 
 | Field | Type | Description |
 |---|---|---|
-| `objective` | `string` | Required coding goal description. |
+| `mode` | `string` | `goal` (default autonomous planner/maker/checker loop) or `interactive` (multi-turn conversational workspace parked in `waiting_for_input` with `status_reason: "awaiting_turn"` between turns). Escalate in place via `POST /v1/jobs/{id}/goal`. |
+| `objective` | `string` | Required coding goal description (or first prompt in `interactive` mode). |
 | `repo` | `{path, url, base_ref}` | Exactly one of `path` (local git repo) or `url` (clone source), plus optional `base_ref`. |
 | `provider`, `model`, `thinking` | `string` | Coding provider/model selection (defaults to `gemini` / `gemini-3-flash-preview` with thinking `low`; an unset `thinking` on that model means `low`). |
 | `budgets` | `{max_iterations, token_budget, wall_clock}` | Iteration limit (default `10`), token cap, and wall-clock timeout. Jobs submitted directly to AX default to `wall_clock: 1h` and `token_budget: 2000000` when unset; `--no-budget` removes those defaults. A job stopped by a budget ends `budget_limited`, still runs the finalize step, and records `budget_exceeded` (`wall_clock` or `token_budget`) in `result.json`. |
@@ -89,7 +90,7 @@ terminal `job_done` event:
 
 ## CLI (`glue --remote` and `glue job`)
 
-From a git checkout, `glue --remote "<objective>"` and `glue job <subcommand>` execute directly against AX via `internal/axbackend` (`--ax`, `--kubeconfig`, `--context`, `--atespace`, `--image`, `--env`) with zero gateway deployment required ([ADR-0020](adr/0020-ax-first-direct-execution.md)): `glue` normalizes `remote.origin.url` to HTTPS, detects the default base branch, pushes ambient GitHub and provider credentials in memory (`POST /v1/credentials`), authenticates tasks via `ax-system/glue-ax-task-hmac`, and caches terminal `jobs.Result` records under `~/.config/glue/ax-jobs/` (`0600`) so `list`, `show`, and `result` do not wake suspended sandboxes.
+From a git checkout, `glue --remote "<objective>"` (`-i` / `--interactive` for multi-turn interactive workspace mode) and `glue job <subcommand>` execute directly against AX via `internal/axbackend` (`--ax`, `--kubeconfig`, `--context`, `--atespace`, `--image`, `--env`) with zero gateway deployment required ([ADR-0020](adr/0020-ax-first-direct-execution.md)): `glue` normalizes `remote.origin.url` to HTTPS, detects the default base branch, pushes ambient GitHub and provider credentials in memory (`POST /v1/credentials`), authenticates tasks via `ax-system/glue-ax-task-hmac`, and caches terminal `jobs.Result` records under `~/.config/glue/ax-jobs/` (`0600`) so `list`, `show`, and `result` do not wake suspended sandboxes.
 
 When `--repo` is omitted (or is a local checkout) and `--base` is not given, a remote job starts from the current branch if `origin` has it, otherwise from `origin`'s default branch. Before anything is created, Glue compares the checkout with that remote ref (using remote-tracking refs, no network) and refuses to submit when the clone would miss local work: a branch that is not on `origin`, commits on `HEAD` that no `origin` ref contains, or uncommitted or untracked files (paths under `.glue/` are ignored). The error lists what was found and the ways forward: push first, pass `--base <ref>`, or pass `--ignore-local` to start from the remote ref on purpose.
 

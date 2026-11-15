@@ -5,7 +5,7 @@ const TRUNCATE_LIMIT = 4096;
 const REFRESH_MS = 10000;
 const STATUSES = ["", "created", "running", "waiting_for_input", "suspended", "achieved", "blocked", "budget_limited", "max_iterations", "errored", "canceled", "interrupted"];
 const SSE_EVENT_TYPES = [
-  "message", "job_created", "job_started", "job_waiting", "job_resumed", "job_done", "task_suspended", "task_resumed",
+  "message", "job_created", "job_started", "job_waiting", "job_resumed", "job_done", "mode_promoted", "task_suspended", "task_resumed",
   "plan", "iteration_start", "maker_done", "verdict", "done", "blocked", "budget_limited", "max_iterations",
   "operator_message", "operator_message_delivered", "run_interrupted",
   "question", "answer", "question_timeout", "question_assumed", "turn_interrupted",
@@ -189,7 +189,7 @@ async function renderJobsList(root) {
           el("div", { className: "job-stats" },
             pendingCount > 0 ? el("span", { className: "badge status-waiting_for_input", "data-testid": "job-pending-permissions" }, `${pendingCount} pending`) : null,
             // Waiting with no pending permission means the agent asked a question.
-            j.status === "waiting_for_input" && pendingCount === 0 ? el("span", { className: "badge status-waiting_for_input", "data-testid": "job-question" }, "question") : null,
+            j.status === "waiting_for_input" && pendingCount === 0 && j.status_reason !== "awaiting_turn" ? el("span", { className: "badge status-waiting_for_input", "data-testid": "job-question" }, "question") : null,
             el("span", { "data-testid": "job-iteration" }, `iter ${j.iteration ?? 0}/${maxIter}`),
             el("time", { "data-testid": "job-updated", datetime: j.updated_at || "" }, formatTime(j.updated_at))
           )
@@ -321,7 +321,7 @@ export function applyJobEvent(state, env) {
   if (env.type === "answer" || env.type === "question_timeout") state.onQuestionClosed?.(p.question_id);
   if (env.type === "text_delta") {
     const delta = p.delta || "";
-    if (!delta || (env.phase && env.phase !== "maker")) return true;
+    if (!delta || (env.phase && env.phase !== "maker" && env.phase !== "chat")) return true;
     const key = `${env.phase || "maker"}:${env.iteration ?? ""}:${env.session_id || ""}`;
     if (!state.currentTextEl || state.currentTextKey !== key) {
       const pre = el("pre", { className: "pre-wrap assistant-text", "data-testid": "assistant-text" });
@@ -387,6 +387,8 @@ export function applyJobEvent(state, env) {
   if (typeof iter === "number" && iter > 0) state.updateIteration?.(iter);
   if (usage && typeof usage === "object") state.updateUsage?.(usage);
 
+  if (env.type === "job_waiting" && p.reason === "awaiting_turn") { state.updateStatus?.("waiting_for_input"); return true; }
+
   const dividers = {
     plan: () => `Plan (${(checklist || []).length} items)`,
     iteration_start: () => `Iteration ${iter || 1} started`,
@@ -407,6 +409,7 @@ export function applyJobEvent(state, env) {
       state.updateStatus?.("running");
       return `Task resumed (${p.reason || "on_demand"})`;
     },
+    mode_promoted: () => { state.finished = false; state.updateStatus?.("running"); return "Promoted to autonomous goal"; },
     job_done: () => {
       const st = p.status || "achieved";
       const summary = p.result?.Summary ?? p.result?.summary ?? p.error ?? "";

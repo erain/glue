@@ -100,7 +100,7 @@ func (r *jobRenderer) render(ev eventlog.Envelope) {
 	}
 	switch ev.Type {
 	case string(glue.EventTextDelta):
-		if delta := payloadString(ev.Payload, "delta"); delta != "" && (ev.Phase == "" || ev.Phase == "maker") {
+		if delta := payloadString(ev.Payload, "delta"); delta != "" && (ev.Phase == "" || ev.Phase == "maker" || ev.Phase == "chat") {
 			fmt.Fprint(r.out, delta)
 			r.wroteDelta = !strings.HasSuffix(delta, "\n")
 		}

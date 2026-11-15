@@ -34,7 +34,7 @@ const SubmitUnknown jobs.Status = "submit_unknown"
 var (
 	validStatuses = []jobs.Status{"", jobs.Created, SubmitUnknown, jobs.Running, jobs.WaitingForInput, jobs.WaitingForCredentials, jobs.Suspended, jobs.Achieved, jobs.Blocked, jobs.BudgetLimited, jobs.MaxIterations, jobs.Errored, jobs.Canceled, jobs.Interrupted}
 	eventStatuses = map[string]jobs.Status{
-		"job_created": jobs.Created, "job_started": jobs.Running, "job_resumed": jobs.Running, "task_resumed": jobs.Running,
+		"job_created": jobs.Created, "job_started": jobs.Running, "job_resumed": jobs.Running, "task_resumed": jobs.Running, "mode_promoted": jobs.Running,
 		"permission_decision": jobs.Running, "permission_expired": jobs.Running,
 		"permission_request": jobs.WaitingForInput, "job_waiting": jobs.WaitingForInput,
 		"job_waiting_for_credentials": jobs.WaitingForCredentials,
@@ -103,7 +103,7 @@ func (r *Registry) UpsertStatus(ctx context.Context, id, backend string, spec jo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.fmtTime(time.Time{})
-	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,?,?,?,'',0,?,?,0,0,'') ON CONFLICT(id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", id, backend, id, cmp.Or(ownerFromCtx(ctx), "dev-token"), mustJSON(spec), st, now, now)
+	_, err := r.store.DB.ExecContext(ctx, "INSERT INTO jobs("+jobColumns+") VALUES(?,?,?,?,?,?,'',0,?,?,0,0,'') ON CONFLICT(id) DO UPDATE SET spec_json=CASE WHEN ? != '' THEN excluded.spec_json ELSE spec_json END,status=excluded.status,status_reason='',updated_at=excluded.updated_at", id, backend, id, cmp.Or(ownerFromCtx(ctx), "dev-token"), mustJSON(spec), st, now, now, spec.Objective)
 	return err
 }
 func scanRecord(row interface{ Scan(...any) error }) (Record, error) {
@@ -201,7 +201,8 @@ func (r *Registry) AppendEvent(ctx context.Context, jobID string, ev eventlog.En
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var lastSeq, upSeq int64
-	if err := r.store.DB.QueryRowContext(ctx, "SELECT last_seq,upstream_seq FROM jobs WHERE id=?", jobID).Scan(&lastSeq, &upSeq); err != nil || (ev.Seq > 0 && ev.Seq <= upSeq) {
+	var curReason string
+	if err := r.store.DB.QueryRowContext(ctx, "SELECT last_seq,upstream_seq,status_reason FROM jobs WHERE id=?", jobID).Scan(&lastSeq, &upSeq, &curReason); err != nil || (ev.Seq > 0 && ev.Seq <= upSeq) {
 		return false, err
 	}
 	upSeq, ev.Seq = max(upSeq, ev.Seq), max(lastSeq+1, ev.Seq)
@@ -214,8 +215,11 @@ func (r *Registry) AppendEvent(ctx context.Context, jobID string, ev eventlog.En
 		return false, nil
 	}
 	st, reason := statusFromEvent(ev), ""
-	if m, ok := ev.Payload.(map[string]any); ok && ev.Type == "task_suspended" {
-		if reason, _ = m["reason"].(string); reason == "waiting_for_input" {
+	if ev.Type == "operator_message" && curReason == jobs.ReasonAwaitingTurn {
+		st = jobs.Running
+	}
+	if m, ok := ev.Payload.(map[string]any); ok && (ev.Type == "task_suspended" || ev.Type == "job_waiting") {
+		if reason, _ = m["reason"].(string); ev.Type == "task_suspended" && reason == "waiting_for_input" {
 			st = jobs.Suspended
 		}
 	}

@@ -146,6 +146,10 @@ func (c *Client) Interrupt(ctx context.Context, id, text string) error {
 func (c *Client) Continue(ctx context.Context, id, text string, maxIterations int) error {
 	return c.doJSON(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/continue", map[string]any{"text": text, "max_iterations": maxIterations}, http.StatusAccepted, nil)
 }
+func (c *Client) PromoteGoal(ctx context.Context, id string, req jobs.GoalPromoteRequest) (jobs.Job, error) {
+	out, err := doDecode[envelope](ctx, c, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/goal", req, http.StatusAccepted)
+	return out.Job, err
+}
 
 // Patch returns the job's binary git diff from its base to its final commit.
 func (c *Client) Patch(ctx context.Context, id string) ([]byte, error) {

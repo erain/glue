@@ -4,6 +4,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -49,6 +50,19 @@ func (m *Manager) recoverJobs() error {
 	return nil
 }
 func (m *Manager) recoverJob(ctx context.Context, job Job) (*recovery, error) {
+	if job.Spec.isInteractive() && job.GoalID == "" {
+		if job.Workspace == "" {
+			return nil, fmt.Errorf("jobs: recovery requires saved goal/workspace identity")
+		}
+		pending, err := m.Permissions(ctx, job.ID, "pending")
+		for _, p := range pending {
+			err = errors.Join(err, m.record(job.ID, "permission_expired", map[string]any{"permission_id": p.ID}, "", nil, ""))
+		}
+		if err == nil && (job.Status != WaitingForInput || job.StatusReason != ReasonAwaitingTurn) {
+			err = m.record(job.ID, "job_waiting", map[string]any{"reason": ReasonAwaitingTurn}, "chat", nil, WaitingForInput)
+		}
+		return nil, err
+	}
 	store := filestore.New(filepath.Join(m.options.StateDir, "sessions"))
 	agent := glue.NewAgent(glue.AgentOptions{Store: store})
 	rec, ok, err := agent.LoadGoal(ctx, job.GoalID)

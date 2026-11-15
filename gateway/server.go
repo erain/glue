@@ -45,7 +45,7 @@ var gatewayRoutes = []Route{
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
 	{http.MethodGet, "/v1/jobs/{id}/permissions", false}, {http.MethodPost, "/v1/jobs/{id}/permissions/{permID}/decision", false},
 	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
-	{http.MethodPost, "/v1/jobs/{id}/answers", false},
+	{http.MethodPost, "/v1/jobs/{id}/answers", false}, {http.MethodPost, "/v1/jobs/{id}/goal", false},
 }
 
 // Server serves the glue-gateway HTTP API, upstream SSE proxy, and browser UI.
@@ -812,7 +812,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	default:
-		if r.Method == http.MethodPost && (sub == "messages" || sub == "continue" || sub == "answers" || (len(parts) == 4 && parts[1] == "permissions" && parts[3] == "decision")) {
+		if r.Method == http.MethodPost && (sub == "messages" || sub == "continue" || sub == "answers" || sub == "goal" || (len(parts) == 4 && parts[1] == "permissions" && parts[3] == "decision")) {
 			body, err := io.ReadAll(r.Body)
 			if isTooLarge(w, err) {
 				return
@@ -833,6 +833,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				sub += "?interrupt=true"
 			}
 			if code, respBody, err := b.Do(r.Context(), r.Method, rec.BackendRef+"/"+sub, body); err == nil {
+				if sub == "goal" && code < 300 {
+					var out struct{ Job jobs.Job }
+					_ = json.Unmarshal(respBody, &out)
+					_ = s.reg.UpsertStatus(r.Context(), id, rec.Backend, out.Job.Spec, cmp.Or(out.Job.Status, jobs.Running))
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(code)
 				_, _ = w.Write(respBody)

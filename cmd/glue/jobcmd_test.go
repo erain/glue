@@ -318,7 +318,7 @@ func waitJob(t *testing.T, mgr *jobs.Manager, jobID string, want jobs.Status) st
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(15 * time.Millisecond) {
 		if job, err := mgr.Get(context.Background(), jobID); err == nil && job.Status == want {
-			if perms, _ := mgr.Permissions(context.Background(), jobID, "pending"); want != jobs.WaitingForInput || len(perms) > 0 {
+			if perms, _ := mgr.Permissions(context.Background(), jobID, "pending"); want != jobs.WaitingForInput || len(perms) > 0 || job.StatusReason != "" {
 				if len(perms) > 0 {
 					return perms[0].ID
 				}
@@ -379,5 +379,26 @@ func TestJobPrune(t *testing.T) {
 		if _, err := parseAge(in); err == nil {
 			t.Fatalf("parseAge(%q) succeeded", in)
 		}
+	}
+}
+
+func TestInteractiveJobPromoteToGoalRunsVerifyOnSameWorktree(t *testing.T) {
+	ctx, repo := context.Background(), serveJobRepo(t)
+	p := &scriptedProvider{turns: [][]glue.ProviderEvent{
+		toolCallTurn("w1", "write_file", `{"path":"hello.txt","content":"from-interactive\n"}`), textTurn("drafted hello.txt in interactive mode"),
+		textTurn(`{"items":[{"title":"ship hello.txt"}]}`), textTurn("kept existing hello.txt"), textTurn(`{"done":true,"items":[{"title":"ship hello.txt","done":true,"evidence":"hello.txt"}],"summary":"promoted goal done"}`),
+	}}
+	ts, mgr := newTestJobDaemon(t, p)
+	cli := &jobclient.Client{BaseURL: ts.URL, Token: "job-token", HTTP: ts.Client()}
+	id := strings.TrimSpace(mustJobCLI(t, "submit", "--server", ts.URL, "--token", "job-token", "--repo", repo, "-i", "Draft hello.txt"))
+	waitJob(t, mgr, id, jobs.WaitingForInput)
+	promoted := must(cli.PromoteGoal(ctx, id, jobs.GoalPromoteRequest{Objective: "Ship hello.txt", Verify: [][]string{{"test", "-f", "hello.txt"}}}))
+	if promoted.Spec.Mode != jobs.ModeGoal || !strings.Contains(promoted.Spec.Context, "drafted hello.txt in interactive mode") {
+		t.Fatalf("unexpected promoted job: %+v", promoted.Spec)
+	}
+	waitJob(t, mgr, id, jobs.Achieved)
+	res, patch := must(cli.Result(ctx, id)), must(cli.Patch(ctx, id))
+	if res.Status != jobs.Achieved || len(res.Verify) != 1 || res.Verify[0].ExitCode != 0 || !strings.Contains(string(patch), "+from-interactive") {
+		t.Fatalf("res=%+v patch=%q", res, patch)
 	}
 }

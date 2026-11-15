@@ -50,9 +50,12 @@ type Budgets struct {
 // MaxContextBytes caps Spec.Context.
 const MaxContextBytes = 16 << 10
 
+const ModeGoal, ModeInteractive, ReasonAwaitingTurn = "goal", "interactive", "awaiting_turn"
+
 // Spec describes a coding objective and its execution settings.
 type Spec struct {
 	ID        string     `json:"id,omitempty"`
+	Mode      string     `json:"mode,omitempty"`
 	Objective string     `json:"objective"`
 	Repo      RepoSpec   `json:"repo"`
 	Provider  string     `json:"provider"`
@@ -86,6 +89,8 @@ type Spec struct {
 	ShellEnvSecretAllow []string      `json:"shell_env_secret_allow,omitempty"`
 	ShellTimeout        time.Duration `json:"shell_timeout,omitempty"`
 }
+
+func (s Spec) isInteractive() bool { return s.Mode == ModeInteractive }
 
 // Status is the durable job lifecycle state.
 type Status string
@@ -173,8 +178,8 @@ type Manager struct {
 	credsNotify chan struct{}
 }
 
-const schema = `CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,spec_json TEXT NOT NULL,status TEXT NOT NULL,base_sha TEXT NOT NULL,workspace TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_seq INTEGER NOT NULL,goal_id TEXT NOT NULL);`
-const columns = "id,spec_json,status,base_sha,workspace,created_at,updated_at,last_seq,goal_id"
+const schema = `CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,spec_json TEXT NOT NULL,status TEXT NOT NULL,base_sha TEXT NOT NULL,workspace TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_seq INTEGER NOT NULL,goal_id TEXT NOT NULL,status_reason TEXT NOT NULL DEFAULT '');`
+const columns = "id,spec_json,status,base_sha,workspace,created_at,updated_at,last_seq,goal_id,status_reason"
 
 // New opens durable state and resumes running/waiting jobs in the background.
 // Created and terminal jobs never start automatically.
@@ -199,6 +204,7 @@ func New(opts Options) (*Manager, error) {
 		releaseLock(lock)
 		return nil, err
 	}
+	_, _ = store.DB.Exec("ALTER TABLE jobs ADD COLUMN status_reason TEXT NOT NULL DEFAULT ''")
 	m := &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}, credsNotify: make(chan struct{})}
 	if err := m.recoverJobs(); err != nil {
 		return nil, errors.Join(err, m.Close())
@@ -294,6 +300,9 @@ func (m *Manager) validate(s Spec) (Spec, error) {
 	s.ID = strings.TrimSpace(s.ID)
 	if s.ID != "" && (!strings.HasPrefix(s.ID, "job-") || len(s.ID) <= 4 || strings.ContainsAny(s.ID, " \t\r\n/\\")) {
 		return s, invalid("id", "must start with job-")
+	}
+	if s.Mode = strings.TrimSpace(s.Mode); s.Mode != "" && s.Mode != ModeGoal && s.Mode != ModeInteractive {
+		return s, invalid("mode", "must be goal or interactive")
 	}
 	s.Objective = strings.TrimSpace(s.Objective)
 	if s.Objective == "" {
@@ -410,7 +419,7 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 	}
 	defer tx.Rollback()
 	stamp := now.Format("2006-01-02T15:04:05.000000000Z")
-	if _, err := tx.ExecContext(ctx, "INSERT INTO jobs("+columns+") VALUES(?,?,?,'','',?,?,1,'')", job.ID, string(data), Created, stamp, stamp); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO jobs("+columns+") VALUES(?,?,?,'','',?,?,1,'','')", job.ID, string(data), Created, stamp, stamp); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			err = fmt.Errorf("%w: job %s already exists", ErrConflict, job.ID)
 		}
@@ -427,7 +436,7 @@ func (m *Manager) Create(ctx context.Context, spec Spec) (Job, error) {
 func scan(row interface{ Scan(...any) error }) (Job, error) {
 	var j Job
 	var data, created, updated string
-	if err := row.Scan(&j.ID, &data, &j.Status, &j.BaseSHA, &j.Workspace, &created, &updated, &j.LastSeq, &j.GoalID); err != nil {
+	if err := row.Scan(&j.ID, &data, &j.Status, &j.BaseSHA, &j.Workspace, &created, &updated, &j.LastSeq, &j.GoalID, &j.StatusReason); err != nil {
 		return j, err
 	}
 	if err := json.Unmarshal([]byte(data), &j.Spec); err != nil {

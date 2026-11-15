@@ -75,6 +75,8 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	attempts := fs.Int("attempts", 1, "submit this many attempts of the objective in parallel (max 8)")
 	group := fs.String("group", "", "list: only the attempts in this group")
 	interrupt := fs.Bool("interrupt", false, "say: also cancel the agent's current model request or tool call")
+	interactive := fs.Bool("interactive", false, "submit: start an interactive multi-turn workspace")
+	fs.BoolVar(interactive, "i", false, "submit: shorthand for --interactive")
 	fromPR := fs.Bool("from-pr", false, "continue: address the job's PR review threads, new comments and failed checks")
 	var issueRefs repeatedStrings
 	fs.Var(&issueRefs, "issue", "start the job from a GitHub issue (number, owner/repo#N, or URL); repeat for one job per issue")
@@ -265,6 +267,12 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 			Policy:  strings.TrimSpace(*policy), Verify: verify, Delivery: strings.TrimSpace(*deliver), Backend: strings.TrimSpace(*backend),
 			Setup: setup, SetupTimeout: *setupTimeout, OnQuestion: strings.TrimSpace(*onQuestion), QuestionTimeout: *questionTimeout,
 			Context: strings.TrimSpace(*jobContext),
+		}
+		if *interactive {
+			if *attempts > 1 {
+				return errors.New("--interactive and --attempts cannot be combined")
+			}
+			spec.Mode = jobs.ModeInteractive
 		}
 		if len(issueRefs) > 0 {
 			tok, _ := githubToken(ctx)
