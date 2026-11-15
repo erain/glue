@@ -128,6 +128,12 @@ func (c *Client) Permissions(ctx context.Context, id, state string) ([]jobs.Perm
 func (c *Client) Result(ctx context.Context, id string) (jobs.Result, error) {
 	return doDecode[jobs.Result](ctx, c, http.MethodGet, "/v1/jobs/"+url.PathEscape(id)+"/result", nil, http.StatusOK)
 }
+func (c *Client) OpenPR(ctx context.Context, id, githubToken string) (jobs.Result, error) {
+	return doDecode[jobs.Result](ctx, c, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/pr", map[string]string{"github_token": strings.TrimSpace(githubToken)}, http.StatusOK)
+}
+func (c *Client) SetPRURL(ctx context.Context, id, prURL string) (jobs.Result, error) {
+	return doDecode[jobs.Result](ctx, c, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/pr", map[string]string{"pr_url": strings.TrimSpace(prURL)}, http.StatusOK)
+}
 func (c *Client) Decide(ctx context.Context, id, permID string, allow bool, rememberFor, reason string) error {
 	if !allow && strings.TrimSpace(reason) == "" {
 		reason = "permission denied by user"

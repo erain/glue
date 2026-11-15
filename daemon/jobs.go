@@ -220,6 +220,30 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, result)
 			return
+		case "pr":
+			if !jobMethod(w, r, http.MethodPost) {
+				return
+			}
+			var body struct {
+				GitHubToken string `json:"github_token"`
+				PRURL       string `json:"pr_url"`
+			}
+			dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&body); (err != nil && !errors.Is(err, io.EOF)) || (err == nil && dec.Decode(&struct{}{}) != io.EOF) {
+				writeError(w, http.StatusBadRequest, "invalid_request", "invalid pr body", false)
+				return
+			}
+			call := func() (jobs.Result, error) { return s.jobs.OpenDraftPR(r.Context(), id, body.GitHubToken) }
+			if strings.TrimSpace(body.PRURL) != "" {
+				call = func() (jobs.Result, error) { return s.jobs.SetResultPRURL(r.Context(), id, body.PRURL) }
+			}
+			if result, err := call(); err != nil {
+				jobError(w, err)
+			} else {
+				writeJSON(w, http.StatusOK, result)
+			}
+			return
 		case "answers":
 			if !jobMethod(w, r, http.MethodPost) {
 				return

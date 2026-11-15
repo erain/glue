@@ -402,3 +402,48 @@ func TestInteractiveJobPromoteToGoalRunsVerifyOnSameWorktree(t *testing.T) {
 		t.Fatalf("res=%+v patch=%q", res, patch)
 	}
 }
+
+func setupJobPRFixture(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+	clearJobTestEnv(t)
+	var posts atomic.Int32
+	routes := map[string]string{"GET /repos/erain/glue-sandbox": `{"default_branch":"main"}`, "GET /repos/erain/glue-sandbox/pulls": `[]`}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := routes[r.Method+" "+r.URL.Path]; ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		var req map[string]any
+		if _ = json.NewDecoder(r.Body).Decode(&req); r.Method == http.MethodPost && req["draft"] == true {
+			posts.Add(1)
+			_, _ = w.Write([]byte(`{"html_url":"https://github.com/erain/glue-sandbox/pull/42"}`))
+			return
+		}
+		http.Error(w, "unexpected", http.StatusBadRequest)
+	}))
+	t.Cleanup(gh.Close)
+	bare, src := filepath.Join(t.TempDir(), "erain", "glue-sandbox.git"), serveJobRepo(t)
+	runGit(t, t.TempDir(), "init", "--bare", "-qb", "main", bare)
+	runGit(t, src, "remote", "add", "origin", bare)
+	runGit(t, src, "push", "-q", "origin", "main:main")
+	p := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn(`{"items":[{"title":"ship pr.txt"}]}`), toolCallTurn("w1", "write_file", `{"path":"pr.txt","content":"ready\n"}`), textTurn("wrote pr.txt"), textTurn(`{"done":true,"items":[{"title":"ship pr.txt","done":true,"evidence":"pr.txt"}],"summary":"Add pr.txt"}`)}}
+	ts, mgr := newTestJobDaemon(t, p)
+	for k, v := range map[string]string{"GLUE_SERVER": ts.URL, "GLUE_TOKEN": "job-token", "GLUE_GITHUB_API_URL": gh.URL, "GLUE_GITHUB_TOKEN": "gh-tok"} {
+		t.Setenv(k, v)
+	}
+	id := strings.TrimSpace(mustJobCLI(t, "submit", "--repo", src, "--deliver", "branch", "Add pr.txt"))
+	waitJob(t, mgr, id, jobs.Achieved)
+	return id, &posts
+}
+func TestJobPROpensDraftPRForSingleJob(t *testing.T) {
+	id, posts := setupJobPRFixture(t)
+	if out := mustJobCLI(t, "pr"); out != "draft PR: https://github.com/erain/glue-sandbox/pull/42\n" || posts.Load() != 1 || !strings.Contains(mustJobCLI(t, "result", id[:10]), "pr_url: https://github.com/erain/glue-sandbox/pull/42") || !strings.Contains(mustJobCLI(t, "show", id[:10]), "pr_url: https://github.com/erain/glue-sandbox/pull/42") {
+		t.Fatalf("pr stdout=%q posts=%d", out, posts.Load())
+	}
+}
+func TestJobPRIdempotentWhenAlreadyOpen(t *testing.T) {
+	id, posts := setupJobPRFixture(t)
+	if out1, out2 := mustJobCLI(t, "pr", id), mustJobCLI(t, "pr", id); out1 != "draft PR: https://github.com/erain/glue-sandbox/pull/42\n" || out2 != out1 || posts.Load() != 1 {
+		t.Fatalf("out1=%q out2=%q posts=%d", out1, out2, posts.Load())
+	}
+}

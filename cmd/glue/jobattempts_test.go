@@ -51,10 +51,32 @@ func (f *attemptsFakeAPI) List(context.Context, jobs.Filter) ([]jobs.Job, error)
 	return out, nil
 }
 func (f *attemptsFakeAPI) Result(_ context.Context, id string) (jobs.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if r, ok := f.results[id]; ok {
 		return r, nil
 	}
 	return jobs.Result{}, jobs.ErrConflict
+}
+func (f *attemptsFakeAPI) OpenPR(ctx context.Context, id, token string) (jobs.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.results[id]
+	if !ok {
+		return jobs.Result{}, jobs.ErrConflict
+	}
+	var picked jobs.Job
+	for _, j := range f.jobs {
+		if j.ID == id {
+			picked = j
+		}
+	}
+	u, err := jobs.OpenDraftPR(ctx, picked, r, token)
+	if err == nil {
+		r.PRURL = u
+		f.results[id] = r
+	}
+	return r, err
 }
 
 func runAttemptsCLI(t *testing.T, api *attemptsFakeAPI, args ...string) (string, string, error) {
@@ -373,5 +395,39 @@ func TestContinueFromPRDryRun(t *testing.T) {
 	}
 	if err := jobCommand(context.Background(), []string{"continue", "--ax", "--from-pr", "job-0123456789ac"}, strings.NewReader(""), &out, &out, nil); err == nil || !strings.Contains(err.Error(), "has no pull request") {
 		t.Fatalf("job without PR: %v", err)
+	}
+}
+
+func TestJobPickPersistsPRURLForContinueFromPR(t *testing.T) {
+	routes := map[string]string{
+		"GET /repos/erain/glue-sandbox": `{"default_branch":"main"}`, "GET /repos/erain/glue-sandbox/pulls": `[]`,
+		"POST /repos/erain/glue-sandbox/pulls":            `{"html_url":"https://github.com/erain/glue-sandbox/pull/7"}`,
+		"POST /graphql":                                   `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"path":"a.go","line":3,"comments":{"nodes":[{"body":"Fix race.","createdAt":"2026-11-12T10:00:00Z","author":{"login":"rev"}}]}}]}}}}}`,
+		"GET /repos/erain/glue-sandbox/issues/7/comments": `[]`, "GET /repos/erain/glue-sandbox/commits/abc/check-runs": `{"check_runs":[]}`,
+	}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			_, _ = w.Write([]byte(routes[r.Method+" "+r.URL.Path]))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(gh.Close)
+	base := groupFixture()
+	r := base.results["job-00000000000a"]
+	r.HeadSHA, base.results["job-00000000000a"] = "abc", r
+	api := &continueFakeAPI{attemptsFakeAPI: attemptsFakeAPI{jobs: base.jobs, results: base.results}}
+	clearJobTestEnv(t)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	t.Setenv("GLUE_GITHUB_TOKEN", "tok")
+	orig := newAXJobAPI
+	t.Cleanup(func() { newAXJobAPI = orig })
+	newAXJobAPI = func(context.Context, axbackend.Options) (jobAPI, error) { return api, nil }
+	var out bytes.Buffer
+	if err := jobCommand(context.Background(), []string{"pick", "--ax", "job-00000000000a"}, strings.NewReader(""), &out, &out, nil); err != nil || api.results["job-00000000000a"].PRURL != "https://github.com/erain/glue-sandbox/pull/7" {
+		t.Fatalf("pick: err=%v pr_url=%q", err, api.results["job-00000000000a"].PRURL)
+	}
+	if err := jobCommand(context.Background(), []string{"continue", "--ax", "--from-pr", "job-00000000000a"}, strings.NewReader(""), &out, &out, nil); err != nil || len(api.continued) != 1 || !strings.Contains(api.continued[0], "Fix race.") {
+		t.Fatalf("continue --from-pr after pick: err=%v continued=%v", err, api.continued)
 	}
 }

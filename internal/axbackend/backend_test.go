@@ -586,3 +586,38 @@ func TestTaskClonesRepoItself(t *testing.T) {
 	repo, _ := task.GetSpec().GetConfig().AsMap()["repo"].(map[string]any)
 	check(t, repo["url"] == "https://github.com/erain/glue-sandbox" && repo["base_ref"] == "dev" && repo["snapshot_of"] == "main" && repo["path"] == nil, "task config repo = %v", repo)
 }
+
+func TestJobPRDoesNotWakeSuspendedAXTask(t *testing.T) {
+	var prReq map[string]any
+	var posts atomic.Int32
+	routes := map[string]string{"GET /repos/erain/glue-sandbox": `{"default_branch":"main"}`, "GET /repos/erain/glue-sandbox/branches/feat/snap": `{"name":"feat/snap"}`, "GET /repos/erain/glue-sandbox/pulls": `[]`}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := routes[r.Method+" "+r.URL.Path]; ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		posts.Add(1)
+		_ = json.NewDecoder(r.Body).Decode(&prReq)
+		_, _ = w.Write([]byte(`{"html_url":"https://github.com/erain/glue-sandbox/pull/9"}`))
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	cp, _, _, b := newFakeBackendEnv(t, credsHandler)
+	id := "job-pr0000000001"
+	_, err := b.Create(t.Context(), id, jobs.Spec{Objective: "Fix bug", Issue: "erain/glue-sandbox#12", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox", BaseRef: "glue-snapshot/" + id, SnapshotOf: "feat/snap@deadbeef"}})
+	mustOK(t, err)
+	b.updateCache(id, func(c *cachedJob) {
+		c.Status, c.Result = jobs.Achieved, &jobs.Result{JobID: id, Status: jobs.Achieved, Branch: "glue/" + id, BaseSHA: "111", HeadSHA: "222", Summary: "Fixed bug"}
+	})
+	cp.mu.Lock()
+	resumesBefore, httpBefore := cp.resumeCalls, cp.taskHTTPHits.Load()
+	cp.mu.Unlock()
+	res1, res2 := must(b.OpenPR(t.Context(), id, "gh-tok"))(t), must(b.OpenPR(t.Context(), id, "gh-tok"))(t)
+	cp.mu.Lock()
+	resumesAfter := cp.resumeCalls
+	cp.mu.Unlock()
+	check(t, res1.PRURL == "https://github.com/erain/glue-sandbox/pull/9" && res2.PRURL == res1.PRURL && posts.Load() == 1, "res1=%+v res2=%+v posts=%d", res1, res2, posts.Load())
+	check(t, prReq["draft"] == true && prReq["base"] == "feat/snap" && strings.Contains(fmt.Sprint(prReq["body"]), "Closes #12"), "prReq=%+v", prReq)
+	check(t, resumesAfter == resumesBefore && cp.taskHTTPHits.Load() == httpBefore, "woke suspended task: resumes %d->%d http %d->%d", resumesBefore, resumesAfter, httpBefore, cp.taskHTTPHits.Load())
+	check(t, must(b.Result(t.Context(), id))(t).PRURL == res1.PRURL && must(b.Show(t.Context(), id))(t).PRURL == res1.PRURL, "cached result/show missing pr_url")
+}

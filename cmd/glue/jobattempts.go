@@ -171,15 +171,14 @@ func jobPick(ctx context.Context, c jobAPI, id, token string, stdout, stderr io.
 		return fmt.Errorf("pick takes a job ID, not a group ID; see glue job compare %s", id)
 	}
 	picked := list[i]
-	res, err := c.Result(ctx, picked.ID)
-	if err != nil {
+	if _, err := c.Result(ctx, picked.ID); err != nil {
 		return fmt.Errorf("attempt %s has no result yet: %w", picked.ID, err)
 	}
-	url, err := jobs.OpenDraftPR(ctx, picked, res, token)
+	res, err := c.OpenPR(ctx, picked.ID, token)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "draft PR: %s\n", url)
+	fmt.Fprintf(stdout, "draft PR: %s\n", res.PRURL)
 	for _, o := range list {
 		if o.ID == picked.ID {
 			continue

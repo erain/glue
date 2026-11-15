@@ -22,7 +22,7 @@ func continueFromPR(ctx context.Context, c jobAPI, id, token string) (string, er
 		return "", fmt.Errorf("job %s has no result yet: %w", id, err)
 	}
 	if res.PRURL == "" {
-		return "", fmt.Errorf("job %s has no pull request; --from-pr works for jobs delivered with --deliver pr", id)
+		return "", fmt.Errorf("job %s has no pull request; open one with glue job pr %s or --deliver pr", id, id)
 	}
 	fb, err := jobs.FetchPRFeedback(ctx, res.PRURL, res.HeadSHA, res.FinishedAt, token)
 	if err != nil {

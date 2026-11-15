@@ -37,6 +37,7 @@ type Detail struct {
 	Activity               Activity             `json:"activity"`
 	// Question is the open question the job is waiting on, if any.
 	Question *QuestionInfo `json:"question,omitempty"`
+	PRURL    string        `json:"pr_url,omitempty"`
 }
 
 // Activity describes what a job is doing right now, from its event log.
@@ -268,6 +269,9 @@ func (m *Manager) Inspect(ctx context.Context, id string) (Detail, error) {
 		detail.Credentials = "absent"
 		if m.HasCredentials() {
 			detail.Credentials = "present"
+		}
+		if res, rerr := m.Result(ctx, id); rerr == nil {
+			detail.PRURL = res.PRURL
 		}
 	}
 	return detail, err

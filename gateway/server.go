@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -44,7 +45,7 @@ var gatewayRoutes = []Route{
 	{http.MethodGet, "/v1/backends", false}, {http.MethodGet, "/v1/diagnostics", false}, {http.MethodGet, "/v1/jobs", false}, {http.MethodPost, "/v1/jobs", false},
 	{http.MethodGet, "/v1/jobs/{id}", false}, {http.MethodDelete, "/v1/jobs/{id}", false}, {http.MethodPost, "/v1/jobs/{id}/start", false},
 	{http.MethodGet, "/v1/jobs/{id}/permissions", false}, {http.MethodPost, "/v1/jobs/{id}/permissions/{permID}/decision", false},
-	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
+	{http.MethodGet, "/v1/jobs/{id}/result", false}, {http.MethodPost, "/v1/jobs/{id}/pr", false}, {http.MethodGet, "/v1/jobs/{id}/events", false}, {http.MethodPost, "/v1/jobs/{id}/messages", false}, {http.MethodPost, "/v1/jobs/{id}/continue", false},
 	{http.MethodPost, "/v1/jobs/{id}/answers", false}, {http.MethodPost, "/v1/jobs/{id}/goal", false},
 }
 
@@ -766,6 +767,45 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		res, err := b.Result(r.Context(), rec.BackendRef)
 		if err == nil {
 			_ = s.reg.SaveResult(r.Context(), id, res)
+		}
+		respond(w, http.StatusOK, res, err)
+	case "POST pr":
+		var body struct {
+			GitHubToken string `json:"github_token"`
+			PRURL       string `json:"pr_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); isTooLarge(w, err) {
+			return
+		} else if err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, "invalid_request", "invalid pr body")
+			return
+		}
+		tok := cmp.Or(strings.TrimSpace(body.GitHubToken), s.cfg.Credentials.GitHubToken, strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN")))
+		if lb, ok := b.(*LocalBackend); ok {
+			call, arg := lb.OpenPR, tok
+			if strings.TrimSpace(body.PRURL) != "" {
+				call, arg = lb.SetPRURL, body.PRURL
+			}
+			res, err := call(r.Context(), rec.BackendRef, arg)
+			if err == nil {
+				_ = s.reg.SaveResult(r.Context(), id, res)
+			}
+			respond(w, http.StatusOK, res, err)
+			return
+		}
+		if rec.Result == nil {
+			respond(w, 0, nil, fmt.Errorf("%w: result is not available", jobs.ErrConflict))
+			return
+		}
+		res, prURL := *rec.Result, cmp.Or(strings.TrimSpace(body.PRURL), rec.Result.PRURL)
+		if prURL == "" && tok == "" {
+			err = fmt.Errorf("%w: github_token: required", jobs.ErrInvalid)
+		} else if prURL == "" {
+			prURL, err = jobs.OpenDraftPR(r.Context(), rec.Job(), res, tok)
+		}
+		if err == nil && res.PRURL != prURL {
+			res.PRURL, res.DeliveryError = prURL, ""
+			err = s.reg.SaveResult(r.Context(), id, res)
 		}
 		respond(w, http.StatusOK, res, err)
 	case "GET events":

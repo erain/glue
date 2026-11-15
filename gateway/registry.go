@@ -248,7 +248,11 @@ func (r *Registry) summarize(ctx context.Context, id string) (jobs.Detail, []job
 	if err := errors.Join(err1, err2); err != nil {
 		return jobs.Detail{}, nil, err
 	}
-	return jobs.SummarizeEvents(rec.Job(), evs)
+	d, perms, err := jobs.SummarizeEvents(rec.Job(), evs)
+	if err == nil && rec.Result != nil {
+		d.PRURL = rec.Result.PRURL
+	}
+	return d, perms, err
 }
 func (r *Registry) Inspect(ctx context.Context, id string) (jobs.Detail, error) {
 	d, _, err := r.summarize(ctx, id)

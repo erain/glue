@@ -16,6 +16,8 @@ Peggy is retired; its [historical release notes](https://github.com/erain/glue/b
 
 ## Unreleased
 
+- `glue job pr [<id>]` and `POST /v1/jobs/{id}/pr` open draft pull requests after completion for branch-delivered jobs and persist `pr_url` across `glue serve`, `glue-gateway`, direct AX (`~/.config/glue/ax-jobs/<id>.json`, without waking suspended tasks), and `glue job pick` so `glue job show`, `glue job result`, and `glue job continue --from-pr` find the PR URL.
+
 - Interactive multi-turn job workspaces (`jobs.Spec.Mode: "interactive"`, CLI `-i` / `--interactive`) run conversational turns backed by persistent `<id>:chat` sessions, park in `waiting_for_input` (`status_reason: "awaiting_turn"`) for idle AX auto-suspend and wake-on-message without notification spam, serve live working-tree diffs from `GET /v1/jobs/{id}/patch`, and escalate in place to autonomous goal pursuit (`Manager.PromoteToGoal`, `POST /v1/jobs/{id}/goal`) on the same `/workspace`.
 
 - `glue-gateway` adds `auth.mode: cloudflare-access` (`team_domain`, `aud`, optional `allowed_emails`), verifying `Cf-Access-Jwt-Assertion` (`RS256`/`ES256`) against cached JWKS keys and establishing CSRF-protected `glue_session` cookies with zero OAuth App registration or second login screen.

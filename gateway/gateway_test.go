@@ -1099,3 +1099,46 @@ func TestGatewayForwardsPromoteToGoal(t *testing.T) {
 		t.Fatalf("promoted=%+v rec=%+v lastDoPath=%q", promoted.Spec, rec.Spec, h.lastDoPath)
 	}
 }
+
+func TestGatewayPostJobPROpensAndPersistsWithoutWakeup(t *testing.T) {
+	var posts atomic.Int32
+	routes := map[string]string{"GET /repos/erain/glue-sandbox": `{"default_branch":"main"}`, "GET /repos/erain/glue-sandbox/pulls": `[]`}
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := routes[r.Method+" "+r.URL.Path]; ok {
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		posts.Add(1)
+		_, _ = w.Write([]byte(`{"html_url":"https://github.com/erain/glue-sandbox/pull/21"}`))
+	}))
+	t.Cleanup(gh.Close)
+	t.Setenv("GLUE_GITHUB_API_URL", gh.URL)
+	h := &fakeAXHarness{}
+	h.now.Store(time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC).UnixNano())
+	gw := must(NewServer(Config{StateDir: t.TempDir(), Auth: AuthConfig{Mode: "dev-token", Token: "gw-token"}, Credentials: jobs.Credentials{GitHubToken: "gh-tok"}, Now: h.Now, Backends: []BackendConfig{{Name: "ax", Type: "ax", Image: "localhost:5001/glue-task@sha256:11"}}, CustomBackends: map[string]Backend{"ax": h}}))
+	ts := httptest.NewServer(gw)
+	t.Cleanup(func() { ts.Close(); _ = gw.Close() })
+	id, spec := "job-000000000099", jobs.Spec{Objective: "ship feature", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}
+	_, _ = gw.reg.CreateJob(t.Context(), Record{ID: id, Backend: "ax", BackendRef: id, Owner: "dev-token", Spec: spec, Status: jobs.Suspended, StatusReason: "finished", CreatedAt: h.Now(), UpdatedAt: h.Now()})
+	must(0, gw.reg.SaveResult(t.Context(), id, jobs.Result{JobID: id, Status: jobs.Achieved, Branch: "glue/" + id, BaseSHA: "111", HeadSHA: "222", Summary: "done"}))
+	loginResp := must(ts.Client().Post(ts.URL+"/v1/session/login", "application/json", strings.NewReader(`{"token":"gw-token"}`)))
+	cookie := loginResp.Cookies()[0]
+	var sess struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	_ = json.NewDecoder(loginResp.Body).Decode(&sess)
+	loginResp.Body.Close()
+	for _, tc := range []struct {
+		csrf string
+		want int
+	}{{"", http.StatusForbidden}, {sess.CSRFToken, http.StatusOK}, {sess.CSRFToken, http.StatusOK}} {
+		if st := doCookieStatus(t, ts.Client(), http.MethodPost, ts.URL+"/v1/jobs/"+id+"/pr", cookie, tc.csrf, "{}"); st != tc.want {
+			t.Fatalf("POST pr csrf=%q got %d, want %d", tc.csrf, st, tc.want)
+		}
+	}
+	cli := &jobclient.Client{BaseURL: ts.URL, Token: "gw-token", HTTP: ts.Client()}
+	res, detail := must(cli.Result(t.Context(), id)), must(cli.Show(t.Context(), id))
+	if res.PRURL != "https://github.com/erain/glue-sandbox/pull/21" || detail.PRURL != res.PRURL || posts.Load() != 1 || h.resumes.Load() != 0 || h.routerHits.Load() != 0 {
+		t.Fatalf("res=%+v detail.PRURL=%q posts=%d resumes=%d routerHits=%d", res, detail.PRURL, posts.Load(), h.resumes.Load(), h.routerHits.Load())
+	}
+}
