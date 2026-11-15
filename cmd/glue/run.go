@@ -64,8 +64,19 @@ type agentConfig struct {
 	Coding bool
 }
 
+var runTUI = tui.Run
+
+const (
+	runUsage  = "Usage:\n  glue run --prompt \"<text>\" [--provider <name>] [--model <id>] [--coding] [flags]\n  glue run [--coding] [--continue | --id <id>] [--select] [flags]\n\nRun a local agent (chat default: openrouter/openrouter/free; --coding: gemini/gemini-3-flash-preview)."
+	codeUsage = "Usage:\n  glue code [--continue | --id <id>] [--select] [--provider <name>] [--model <id>] [--prompt \"<text>\"] [flags]\n\nStart an interactive coding TUI or run a coding prompt with local tools enabled (equivalent to \"glue run --coding\")."
+)
+
 func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory) error {
-	flags := flag.NewFlagSet("glue run", flag.ContinueOnError)
+	return runAgentCommand(ctx, "glue run", false, args, stdin, stdout, stderr, newProvider)
+}
+
+func runAgentCommand(ctx context.Context, cmdName string, defaultCoding bool, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, newProvider providerFactory) error {
+	flags := flag.NewFlagSet(cmdName, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	id := flags.String("id", "default", "session id")
@@ -77,7 +88,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	model := flags.String("model", "", "model id (default: selected activity or explicit provider default); gemini/<model> accepted")
 	storeDir := flags.String("store", ".glue/sessions", "session store directory")
 	workDir := flags.String("work", ".", "working directory for AGENTS.md, skills, roles, and optional coding tools")
-	coding := flags.Bool("coding", false, "enable local coding tools for this run")
+	coding := flags.Bool("coding", defaultCoding, "enable local coding tools for this run")
 	codingAllowOverwrite := flags.Bool("coding-allow-overwrite", false, "allow write_file to replace existing files after model and permission approval")
 	yolo := flags.Bool("yolo", false, "auto-allow all side-effecting tool calls (write_file / edit_file / shell_exec / mcp). implies --coding-allow-overwrite. always use on a feature branch.")
 	showUsage := flags.Bool("usage", false, "print token usage summary to stderr when available")
@@ -90,7 +101,11 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	var codingCfg codingFlagConfig
 	registerShellFlags(flags, &codingCfg)
 
-	if err := flags.Parse(args); err != nil {
+	usageText := runUsage
+	if defaultCoding {
+		usageText = codeUsage
+	}
+	if helped, err := parseCommandFlags(flags, args, stdout, stderr, usageText); helped || err != nil {
 		return err
 	}
 	if err := codingCfg.validate(); err != nil {
@@ -120,8 +135,17 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 		return fmt.Errorf("unknown agent %q; only 'default' is available in this runner", agentName)
 	}
 
+	if *coding && !(*selectFlag && (!isTTY(stdin) || !isTTY(stderr))) {
+		set := map[string]bool{}
+		flags.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		ucfg, _, uerr := loadUserConfig()
+		if uerr != nil {
+			return uerr
+		}
+		applyUserConfig(ucfg, set, nil, provider, model, thinking, nil)
+	}
 	if *selectFlag {
-		if !isFileTTY(stdin) || !isFileTTY(stderr) {
+		if !isTTY(stdin) || !isTTY(stderr) {
 			return errors.New("--select requires terminal stdin and stderr; use glue models and --provider/--model/--thinking for scripts")
 		}
 		initialProvider, initialModel, err := resolveSelection(*coding, *provider, *model)
@@ -144,8 +168,8 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	effectivePrompt := strings.TrimSpace(*prompt)
 	interactive := false
 	if effectivePrompt == "" {
-		stdinTTY := isFileTTY(stdin)
-		stdoutTTY := isFileTTY(stdout)
+		stdinTTY := isTTY(stdin)
+		stdoutTTY := isTTY(stdout)
 		switch {
 		case !stdinTTY:
 			// Piped or test input. Read everything as the prompt.
@@ -221,7 +245,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	}
 	effectivePrompt = atRes.Prompt
 	for _, skip := range atRes.Skipped {
-		fmt.Fprintf(stderr, "glue run: %s: %s\n", skip.Mention, skip.Reason)
+		fmt.Fprintf(stderr, "%s: %s: %s\n", cmdName, skip.Mention, skip.Reason)
 	}
 
 	// In interactive mode the TUI installs its own permission bridge
@@ -233,10 +257,10 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 	switch {
 	case *yolo:
 		permission = yoloPermission{}
-		fmt.Fprintf(stderr, "glue run: --yolo enabled; permission prompts are off (use on a feature branch).\n")
+		fmt.Fprintf(stderr, "%s: --yolo enabled; permission prompts are off (use on a feature branch).\n", cmdName)
 	case *coding && !interactive:
 		permission = newLocalPromptPermission(stdin, stderr)
-		fmt.Fprintf(stderr, "glue run: coding tools enabled for %s\n", *workDir)
+		fmt.Fprintf(stderr, "%s: coding tools enabled for %s\n", cmdName, *workDir)
 	}
 
 	// Construct the provider and store once so the TUI can reuse them
@@ -260,8 +284,8 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			return fmt.Errorf("--continue: no sessions found in %s", *storeDir)
 		}
 		effectiveID = summaries[0].ID
-		fmt.Fprintf(stderr, "glue run: continuing session %q (%d messages, last updated %s)\n",
-			effectiveID, summaries[0].Messages, summaries[0].UpdatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(stderr, "%s: continuing session %q (%d messages, last updated %s)\n",
+			cmdName, effectiveID, summaries[0].Messages, summaries[0].UpdatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	systemPrompt, autoContinue := capabilityDefaults(providerName, tools, *coding)
 	// Coding runs get the refreshable environment block (cwd, git
@@ -300,7 +324,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 				return filterTools(wtTools, *toolsAllow, *noTools)
 			}
 		}
-		return tui.Run(ctx, tui.Config{
+		return runTUI(ctx, tui.Config{
 			Agent:        agent,
 			SessionID:    effectiveID,
 			Provider:     providerName,
@@ -345,7 +369,7 @@ func runCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.W
 			fmt.Fprintln(stdout)
 		}
 		if hint := providers.ModelUnavailableHint(providerName, effectiveModel, err); hint != "" {
-			return fmt.Errorf("%w\nglue run: %s", err, hint)
+			return fmt.Errorf("%w\n%s: %s", err, cmdName, hint)
 		}
 		return err
 	}

@@ -27,6 +27,8 @@ const (
 	goalExitBudgetLimited = 4
 )
 
+const goalUsage = "Usage:\n  glue goal \"<objective>\" [--coding] [--yolo] [--worktree] [flags] | glue goal --resume [<id>] | glue goal --list\n\nRun an autonomous goal loop headlessly (plan -> make -> verify); exit code reflects the outcome."
+
 // goalCommand implements `glue goal`: the headless goal runner —
 // the unit cron, CI, or other external schedulers invoke for unattended goals.
 func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, newProvider providerFactory) (int, error) {
@@ -51,7 +53,10 @@ func goalCommand(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	var codingCfg codingFlagConfig
 	registerShellFlags(flags, &codingCfg)
 
-	if err := flags.Parse(args); err != nil {
+	if helped, err := parseCommandFlags(flags, args, stdout, stderr, goalUsage); helped || err != nil {
+		if helped {
+			return goalExitAchieved, nil
+		}
 		return goalExitErrored, nil // flag package already printed the error
 	}
 	if err := codingCfg.validate(); err != nil {

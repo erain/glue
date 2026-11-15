@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/erain/glue"
+	"github.com/erain/glue/cmd/glue/tui"
 	"github.com/erain/glue/daemon"
 )
 
@@ -131,7 +134,10 @@ func TestRunCLIUnknownCommand(t *testing.T) {
 	t.Parallel()
 
 	var stdout, stderr bytes.Buffer
-	code := runCLI(context.Background(), []string{"nope"}, &stdout, &stderr, fakeFactory(nil))
+	code := runCLI(context.Background(), []string{"nope"}, &stdout, &stderr, func(string) (glue.Provider, error) {
+		t.Fatal("unknown command must not construct provider")
+		return nil, nil
+	})
 	if code == 0 {
 		t.Fatal("code = 0, want nonzero")
 	}
@@ -285,4 +291,145 @@ func lastToolText(t *testing.T, req glue.ProviderRequest) string {
 		t.Fatalf("last message = %#v, want tool result", msg)
 	}
 	return msg.Content[0].Text
+}
+
+func clearCodingConfigEnv(t *testing.T, xdg string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	for _, k := range []string{"GLUE_CONFIG_DIR", "GLUE_PROVIDER", "GLUE_MODEL", "GLUE_THINKING"} {
+		t.Setenv(k, "")
+	}
+}
+
+func TestBareGlueTTYLaunchesCodingTUI(t *testing.T) {
+	t.Chdir(t.TempDir())
+	xdg := t.TempDir()
+	clearCodingConfigEnv(t, xdg)
+	origTTY, origTUI := isTTY, runTUI
+	t.Cleanup(func() { isTTY, runTUI = origTTY, origTUI })
+
+	checkLaunch := func(t *testing.T, wantProv, wantModel, wantThinking string) {
+		t.Helper()
+		p := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("ready")}}
+		var gotProv string
+		var cfg tui.Config
+		isTTY = func(any) bool { return true }
+		runTUI = func(_ context.Context, c tui.Config) error { cfg = c; return nil }
+		var out, errs bytes.Buffer
+		code := runCLIWithDeps(context.Background(), nil, strings.NewReader(""), &out, &errs, func(n string) (glue.Provider, error) {
+			gotProv = n
+			return p, nil
+		}, serveDaemon, http.DefaultClient)
+		if code != 0 || gotProv != wantProv || cfg.Provider != wantProv || cfg.Model != wantModel || cfg.WorkDir != "." || cfg.Agent == nil || cfg.BuildTools == nil || cfg.SubmitRemote == nil || cfg.Jobs == nil {
+			t.Fatalf("code=%d prov=%q cfg=%+v stderr=%q", code, gotProv, cfg, errs.String())
+		}
+		var names []string
+		for _, tool := range cfg.Tools {
+			names = append(names, tool.Name)
+		}
+		for _, want := range []string{"read_file", "write_file", "edit_file", "shell_exec", "git_diff_branch", "git_log_branch"} {
+			if !containsString(names, want) {
+				t.Fatalf("tools=%v missing %s", names, want)
+			}
+		}
+		sess := must(cfg.Agent.Session(context.Background(), "bare-tui"))
+		_ = must(sess.Prompt(context.Background(), "hi"))
+		if len(p.requests) != 1 || p.requests[0].Model != wantModel || p.requests[0].Options["thinking_level"] != wantThinking || p.requests[0].SystemPrompt == "" {
+			t.Fatalf("agent request=%+v", p.requests)
+		}
+	}
+
+	t.Run("defaults", func(t *testing.T) { checkLaunch(t, "gemini", "gemini-3-flash-preview", "low") })
+	t.Run("user_config", func(t *testing.T) {
+		cfgFile := filepath.Join(xdg, "glue", "config.yaml")
+		must(0, os.MkdirAll(filepath.Dir(cfgFile), 0o700))
+		must(0, os.WriteFile(cfgFile, []byte("provider: gemini\nmodel: gemini-3.1-pro-preview\nthinking: high\n"), 0o600))
+		checkLaunch(t, "gemini", "gemini-3.1-pro-preview", "high")
+	})
+	t.Run("partial_tty_prints_help", func(t *testing.T) {
+		in, out := strings.NewReader(""), &bytes.Buffer{}
+		for _, tty := range []func(any) bool{func(v any) bool { return v == in }, func(v any) bool { return v == out }} {
+			isTTY, runTUI = tty, func(context.Context, tui.Config) error { t.Fatal("must not launch TUI"); return nil }
+			out.Reset()
+			code := runCLIWithDeps(context.Background(), nil, in, out, io.Discard, func(string) (glue.Provider, error) { t.Fatal("must not construct provider"); return nil, nil }, serveDaemon, http.DefaultClient)
+			if code != 0 || !strings.Contains(out.String(), "glue code") {
+				t.Fatalf("code=%d out=%q", code, out.String())
+			}
+		}
+	})
+}
+
+func TestCodeSubcommandEnablesCodingTools(t *testing.T) {
+	clearCodingConfigEnv(t, t.TempDir())
+	workDir, storeDir := t.TempDir(), t.TempDir()
+	p1 := &scriptedProvider{turns: [][]glue.ProviderEvent{toolCallTurn("c1", "write_file", `{"path":"note.txt","content":"from glue code"}`), textTurn("wrote note")}}
+	var gotProv string
+	var out, errs bytes.Buffer
+	code := runCLIWithDeps(context.Background(), []string{"code", "--work", workDir, "--store", storeDir, "--prompt", "write a note"}, strings.NewReader("a\n"), &out, &errs, func(n string) (glue.Provider, error) { gotProv = n; return p1, nil }, serveDaemon, http.DefaultClient)
+	if code != 0 || gotProv != "gemini" || p1.requests[0].Model != "gemini-3-flash-preview" || p1.requests[0].Options["thinking_level"] != "low" || string(must(os.ReadFile(filepath.Join(workDir, "note.txt")))) != "from glue code" {
+		t.Fatalf("code=%d prov=%q req=%+v stderr=%q", code, gotProv, p1.requests, errs.String())
+	}
+	p2 := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("resumed")}}
+	errs.Reset()
+	code = runCLIWithDeps(context.Background(), []string{"code", "--continue", "--model", "gemini-3.1-pro-preview", "--work", workDir, "--store", storeDir, "--prompt", "next"}, strings.NewReader(""), io.Discard, &errs, fakeFactory(p2), serveDaemon, http.DefaultClient)
+	if code != 0 || len(p2.requests) != 1 || p2.requests[0].Model != "gemini-3.1-pro-preview" || len(p2.requests[0].Messages) != 6 || len(p2.requests[0].Tools) == 0 || !strings.Contains(errs.String(), "glue code: continuing session") {
+		t.Fatalf("continue code=%d req=%+v stderr=%q", code, p2.requests, errs.String())
+	}
+	errs.Reset()
+	if code = runCLIWithDeps(context.Background(), []string{"code", "--select", "--prompt", "hi"}, strings.NewReader(""), io.Discard, &errs, fakeFactory(nil), serveDaemon, http.DefaultClient); code == 0 || !strings.Contains(errs.String(), "requires terminal") {
+		t.Fatalf("select code=%d stderr=%q", code, errs.String())
+	}
+	chat := &scriptedProvider{turns: [][]glue.ProviderEvent{textTurn("hi")}}
+	var chatProv string
+	if code = runCLIWithDeps(context.Background(), []string{"run", "--store", t.TempDir(), "--prompt", "hi"}, strings.NewReader(""), io.Discard, io.Discard, func(n string) (glue.Provider, error) { chatProv = n; return chat, nil }, serveDaemon, http.DefaultClient); code != 0 || chatProv != "openrouter" || chat.requests[0].Model != "openrouter/free" || len(chat.requests[0].Tools) != 0 {
+		t.Fatalf("run without --coding changed: code=%d prov=%q req=%+v", code, chatProv, chat.requests)
+	}
+}
+
+func TestConciseTopLevelHelp(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}} {
+		var out, errs bytes.Buffer
+		code := runCLI(context.Background(), args, &out, &errs, fakeFactory(nil))
+		text := out.String()
+		if lines := strings.Count(strings.TrimSuffix(text, "\n"), "\n") + 1; code != 0 || errs.Len() != 0 || lines >= 40 || strings.Contains(text, "--mcp-resources-json") || strings.Contains(text, "--forget-permission-json") {
+			t.Fatalf("args=%v code=%d lines=%d stderr=%q\n%s", args, code, lines, errs.String(), text)
+		}
+		for _, want := range []string{"Code locally:", "Run remotely on AX:", "Manage remote jobs:", "Models & daemon:", "  glue ", "glue code", "glue --remote", "glue job"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("args=%v missing %q:\n%s", args, want, text)
+			}
+		}
+	}
+}
+
+func TestSubcommandHelpFlags(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		sub   string
+		wants []string
+	}{
+		{"code", []string{"glue code", "--continue", "--select", "--model", "--prompt"}},
+		{"run", []string{"glue run", "--coding", "--continue", "--mode"}},
+		{"connect", []string{"glue connect", "--mcp-resources-json", "--forget-permission-json", "--inspect"}},
+		{"serve", []string{"glue serve", "--coding", "--jobs", "--job-from-ax", "--token-file"}},
+		{"job", []string{"glue job", "--snapshot", "--verify"}},
+		{"goal", []string{"glue goal", "--worktree", "--resume"}},
+		{"models", []string{"glue models", "--provider", "--json"}},
+	} {
+		t.Run(tc.sub, func(t *testing.T) {
+			t.Parallel()
+			var flagOut, helpOut, errs bytes.Buffer
+			c1 := runCLI(context.Background(), []string{tc.sub, "--help"}, &flagOut, &errs, fakeFactory(nil))
+			c2 := runCLI(context.Background(), []string{"help", tc.sub}, &helpOut, &errs, fakeFactory(nil))
+			if c1 != 0 || c2 != 0 || errs.Len() != 0 || helpOut.String() != flagOut.String() {
+				t.Fatalf("%s help: c1=%d c2=%d stderr=%q", tc.sub, c1, c2, errs.String())
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(flagOut.String(), want) {
+					t.Fatalf("%s --help missing %q:\n%s", tc.sub, want, flagOut.String())
+				}
+			}
+		})
+	}
 }

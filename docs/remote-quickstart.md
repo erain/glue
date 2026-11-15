@@ -106,7 +106,7 @@ glue job prune              # deletes finished jobs older than 7 days
 
 - Put repo-wide settings (setup and verify commands, image, resources) in `.glue/remote.yaml`: see [jobs.md](jobs.md#per-repo-settings-glueremoteyaml).
 - Start from a GitHub issue: `glue --remote --issue 123`.
-- From the interactive TUI: `/remote <task>` hands the task off with your session as context, and `/jobs` shows your jobs.
+- Start the local coding TUI with bare `glue` (or `glue code --continue`): `/remote <task>` hands the task off with your session as context, and `/jobs` shows your jobs.
 
 ## Proving it on every release
 

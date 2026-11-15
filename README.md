@@ -14,7 +14,7 @@ build your own tool-calling agents on the same provider-agnostic loop.
   [AX](https://github.com/google/ax) sandboxes with zero gateway deployment or
   custom Kubernetes manifests ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)).
   Inspect, stream, or steer anytime (`glue job list|show|attach|say|result`),
-  run offline locally (`glue run`, `glue goal`, `glue serve`), or add the
+  run offline locally (`glue`, `glue code`, `glue run`, `glue goal`, `glue serve`), or add the
   optional host-mode [`glue-gateway`](gateway/README.md) for mobile browser UI
   and GitHub OAuth.
 - **Composable Go agent framework (`github.com/erain/glue`):** A small,
@@ -182,9 +182,9 @@ directly, or select by name via `providers.New`.
 | **OpenRouter** | `providers/openrouter` | `OPENROUTER_API_KEY` | OpenAI-compatible aggregator; `openrouter/free` auto-picks a free model. |
 
 CLI defaults depend on activity: `glue run` and `glue serve` use
-`openrouter` / `openrouter/free`; `--coding` and `glue goal` use
+`openrouter` / `openrouter/free`; bare `glue`, `glue code`, `--coding`, and `glue goal` use
 `gemini` / `gemini-3-flash-preview` with thinking `low`. Explicit `--provider` and `--model`
-override these choices. `glue models` labels the chat and coding defaults.
+(or `~/.config/glue/config.yaml` for coding runs) override these choices. `glue models` labels the chat and coding defaults.
 
 ```go
 // Codex — bill against your ChatGPT subscription instead of an API key:
@@ -515,12 +515,13 @@ go run ./cmd/glue job say "$id" "Keep existing target names unchanged."
 go run ./cmd/glue job result "$id"
 go run ./cmd/glue job pr "$id"       # opens a draft PR for the pushed branch and persists pr_url
 
-# Interactive TUI (default when stdin/stdout are a terminal and no --prompt):
-go run ./cmd/glue run --provider codex --coding --work .
+# Interactive coding TUI (bare `glue` on a TTY, or `glue code [flags]`):
+go run ./cmd/glue
+go run ./cmd/glue code --continue
 
-# One-shot run (any registered provider; default openrouter/free):
+# One-shot runs (`glue code` enables coding tools; `glue run` defaults to openrouter/free):
 go run ./cmd/glue run --prompt "Say hi" --id demo --store .glue/sessions
-go run ./cmd/glue run --provider codex --coding --work . --prompt "Fix the failing test."
+go run ./cmd/glue code --provider codex --prompt "Fix the failing test."
 
 # Scripted: pipe the prompt in.
 echo "summarize main.go" | go run ./cmd/glue run --provider codex --coding
@@ -544,7 +545,7 @@ go run ./cmd/glue job result "$id"
 ```
 
 **Interactive mode** (designed in [ADR-0014](docs/adr/0014-coding-agent-tui.md)).
-With no `--prompt` and a terminal on both stdin and stdout, `glue run`
+Running bare `glue` in a terminal (or `glue code` / `glue run` with no `--prompt`)
 opens a bubbletea TUI: scrollable transcript with sticky-scroll,
 multi-line input, streaming text (re-rendered as markdown after each
 turn settles via `charmbracelet/glamour`), tool-call cards with a

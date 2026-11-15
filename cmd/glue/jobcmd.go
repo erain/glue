@@ -48,13 +48,12 @@ var (
 	errJobDetached           = errors.New("job attach detached")
 )
 
+const jobUsage = "Usage:\n  glue job <init|login|doctor|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]"
+
 func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, httpClient httpDoer) error {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		_, err := fmt.Fprint(stdout, "Usage:\n  glue job <init|login|doctor|submit|start|list|show|attach|logs|result|diff|pull|pr|compare|pick|answer|approve|deny|say|continue|cancel|delete|prune> [flags]\n")
-		return err
-	}
 	fs := flag.NewFlagSet("glue job", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {}
 	conn := jobclient.Config{MetadataPath: defaultMetadataPath()}
 	fs.StringVar(&conn.ServerURL, "server", "", "job server URL")
 	fs.StringVar(&conn.Token, "token", "", "bearer token")
@@ -113,7 +112,15 @@ func jobCommand(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	setupTimeout := fs.Duration("setup-timeout", 0, "timeout for each --setup command (default 10m)")
 	var verifyRaw repeatedStrings
 	fs.Var(&verifyRaw, "verify", "verification command")
+	if len(args) == 0 || args[0] == "-h" || args[0] == "-help" || args[0] == "--help" || args[0] == "help" {
+		printFlagSetUsage(fs, stdout, jobUsage)
+		return nil
+	}
 	pos, err := parseInterspersed(fs, args)
+	if errors.Is(err, flag.ErrHelp) {
+		printFlagSetUsage(fs, stdout, jobUsage)
+		return nil
+	}
 	if err != nil || len(pos) == 0 {
 		return err
 	}

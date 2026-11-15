@@ -76,6 +76,8 @@ type connectPermissionDecision struct {
 	RememberFor string `json:"remember_for,omitempty"`
 }
 
+const connectUsage = "Usage:\n  glue connect (--prompt \"<text>\" | --skill <name> | --inspect | --status | --diagnose | --tools | --skills | --roles | --mcp-resources | --mcp-prompts | --mcp-read | --mcp-prompt | --recall \"<query>\" | --memories | --permissions) [flags]\n\nStart a daemon prompt/skill run, or inspect daemon status, tools, skills, roles, MCP, recall, and permissions."
+
 func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, client httpDoer) error {
 	flags := flag.NewFlagSet("glue connect", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -133,7 +135,7 @@ func connectCommand(ctx context.Context, args []string, stdin io.Reader, stdout 
 	var runArgs repeatedStrings
 	flags.Var(&runArgs, "arg", "skill or MCP prompt argument key=value; repeatable")
 
-	if err := flags.Parse(args); err != nil {
+	if helped, err := parseCommandFlags(flags, args, stdout, stderr, connectUsage); helped || err != nil {
 		return err
 	}
 	markUsagePricingFlagState(flags, usagePricing)
