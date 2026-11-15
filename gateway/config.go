@@ -170,6 +170,10 @@ func (cfg Config) Validate() (Config, error) {
 	cfg.Auth.SessionAbsoluteTTL, cfg.Auth.SessionIdleTTL, cfg.Auth.RateLimitPerMin = cmp.Or(cfg.Auth.SessionAbsoluteTTL, DefaultSessionAbsoluteTTL), cmp.Or(cfg.Auth.SessionIdleTTL, DefaultSessionIdleTTL), cmp.Or(cfg.Auth.RateLimitPerMin, DefaultAuthRateLimit)
 	cfg.Auth.AuthorizeURL, cfg.Auth.TokenURL, cfg.Auth.UserURL = cmp.Or(strings.TrimSpace(cfg.Auth.AuthorizeURL), "https://github.com/login/oauth/authorize"), cmp.Or(strings.TrimSpace(cfg.Auth.TokenURL), "https://github.com/login/oauth/access_token"), cmp.Or(strings.TrimSpace(cfg.Auth.UserURL), "https://api.github.com/user")
 	cfg.Credentials.GitHubToken = cmp.Or(strings.TrimSpace(cfg.Credentials.GitHubToken), strings.TrimSpace(os.Getenv("GLUE_GITHUB_TOKEN")), strings.TrimSpace(os.Getenv("GITHUB_TOKEN")))
+	cfg.Credentials.PublicURL = cmp.Or(strings.TrimRight(strings.TrimSpace(cfg.Credentials.PublicURL), "/"), cfg.PublicURL, strings.TrimRight(strings.TrimSpace(os.Getenv("GLUE_PUBLIC_URL")), "/"))
+	if cfg.Credentials.PublicURL != "" && jobs.ValidNotifyURL(cfg.Credentials.PublicURL) != nil {
+		return Config{}, fmt.Errorf("gateway: invalid public_url %q", cfg.Credentials.PublicURL)
+	}
 	if cfg.Credentials.ProviderKeys == nil {
 		cfg.Credentials.ProviderKeys = map[string]string{}
 	}

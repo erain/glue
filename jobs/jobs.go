@@ -119,6 +119,7 @@ type Credentials struct {
 	// They are secrets: kept in memory and redacted like tokens. A push
 	// without them keeps the URLs already set.
 	NotifyURLs []string `json:"notify_urls,omitempty"`
+	PublicURL  string   `yaml:"public_url,omitempty" json:"public_url,omitempty"`
 }
 
 // Job is a persisted specification and its execution metadata.
@@ -165,6 +166,9 @@ type Manager struct {
 	notifyMu     sync.Mutex
 	notifyClosed bool
 	notifyWG     sync.WaitGroup
+	replyCtx     context.Context
+	replyCancel  context.CancelFunc
+	waits        map[string]context.Context
 	closed       bool
 	closeOnce    sync.Once
 	closeErr     error
@@ -205,7 +209,8 @@ func New(opts Options) (*Manager, error) {
 		return nil, err
 	}
 	_, _ = store.DB.Exec("ALTER TABLE jobs ADD COLUMN status_reason TEXT NOT NULL DEFAULT ''")
-	m := &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}, credsNotify: make(chan struct{})}
+	replyCtx, replyCancel := context.WithCancel(context.Background())
+	m := &Manager{lock: lock, store: store, options: opts, active: map[string]*execution{}, waits: map[string]context.Context{}, credsNotify: make(chan struct{}), replyCtx: replyCtx, replyCancel: replyCancel}
 	if err := m.recoverJobs(); err != nil {
 		return nil, errors.Join(err, m.Close())
 	}
@@ -237,7 +242,11 @@ func (m *Manager) SetCredentials(creds Credentials) {
 	if len(notify) == 0 {
 		notify = m.creds.NotifyURLs
 	}
-	m.creds, m.hasCreds = Credentials{GitHubToken: tok, ProviderKeys: keys, NotifyURLs: notify}, tok != "" || len(keys) > 0
+	pub := m.creds.PublicURL
+	if p := strings.TrimRight(strings.TrimSpace(creds.PublicURL), "/"); ValidNotifyURL(p) == nil {
+		pub = p
+	}
+	m.creds, m.hasCreds = Credentials{GitHubToken: tok, ProviderKeys: keys, NotifyURLs: notify, PublicURL: pub}, tok != "" || len(keys) > 0
 	close(m.credsNotify)
 	m.credsNotify = make(chan struct{})
 	m.credsMu.Unlock()

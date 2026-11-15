@@ -669,8 +669,9 @@ func TestNotifyHostInEgress(t *testing.T) {
 	checkAX(t, len(got.Credentials.NotifyURLs) == 1 && got.Credentials.NotifyURLs[0] == "https://ntfy.sh/glue-secret-topic", "notify creds = %v", got.Credentials.NotifyURLs)
 
 	t.Setenv("GLUE_NOTIFY_URL", "https://hooks.example.com/abc")
+	t.Setenv("GLUE_PUBLIC_URL", "https://glue.example.com/")
 	err = jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
-	checkAX(t, err == nil && slices.Contains(got.EgressHosts, "hooks.example.com"), "env default: %v %v", err, got.EgressHosts)
+	checkAX(t, err == nil && slices.Contains(got.EgressHosts, "hooks.example.com") && got.Credentials.PublicURL == "https://glue.example.com", "env default: %v %v %q", err, got.EgressHosts, got.Credentials.PublicURL)
 
 	err = jobCommand(context.Background(), []string{"submit", "--ax", "--repo", "https://github.com/erain/glue-sandbox", "--notify", "ntfy.sh/x", "Add Shout"}, strings.NewReader(""), &out, &out, nil)
 	checkAX(t, err != nil && strings.Contains(err.Error(), "invalid notify URL"), "bad URL: %v", err)
@@ -768,6 +769,69 @@ func TestE2EAXUserConfigNotifyWithoutFlag(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	t.Fatalf("did not receive ntfy done message for %s", jobID)
+}
+
+func TestE2EAXNtfyTwoWayQuestionReply(t *testing.T) {
+	if os.Getenv("GLUE_E2E_AX") != "1" {
+		t.Skip("set GLUE_E2E_AX=1 to run")
+	}
+	for _, k := range []string{"GLUE_SERVER", "GLUE_TOKEN", "GLUE_DAEMON_TOKEN", "AX_SERVER", "GLUE_NOTIFY_URL", "GLUE_PUBLIC_URL", "GLUE_CONFIG_DIR"} {
+		t.Setenv(k, "")
+	}
+	_ = loadEnvFiles([]string{filepath.Join(os.Getenv("HOME"), ".env")})
+	if err := checkLiveDirectAX("", ""); err != nil || !envSet("GEMINI_API_KEY", "OPENROUTER_API_KEY") {
+		checkAX(t, !axLiveStrict(), "live AX cluster and provider key required (cluster=%v)", err)
+		t.Skipf("live AX preconditions unavailable (cluster=%v)", err)
+	}
+	ghTok, _ := githubToken(t.Context())
+	t.Setenv("GLUE_GITHUB_TOKEN", ghTok)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Cleanup(func() { _ = axbackend.StopTunnels("") })
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	t.Cleanup(cancel)
+	run := func(args ...string) string {
+		var out, errBuf bytes.Buffer
+		checkAX(t, runCLIWithDeps(ctx, args, strings.NewReader(""), &out, &errBuf, defaultProviderFactory, serveDaemon, nil) == 0, "glue %v: %s", args, errBuf.String())
+		return out.String()
+	}
+	var rnd [16]byte
+	_, _ = rand.Read(rnd[:])
+	topicURL, hasGem := fmt.Sprintf("https://ntfy.sh/glue-e2e-%x", rnd), envSet("GEMINI_API_KEY")
+	must(saveUserConfig(&userConfig{PublicURL: "https://glue.example.com", Notify: []string{topicURL}, Deliver: "none", Provider: map[bool]string{true: "gemini", false: "openrouter"}[hasGem], Model: map[bool]string{true: "gemini-3-flash-preview"}[hasGem]}))
+	sresp := must(http.DefaultClient.Do(must(http.NewRequestWithContext(ctx, http.MethodGet, topicURL+"/json", nil))))
+	t.Cleanup(func() { _ = sresp.Body.Close() })
+	sc := bufio.NewScanner(sresp.Body)
+	checkAX(t, sc.Scan() && strings.Contains(sc.Text(), `"open"`), "ntfy open: %v", sc.Err())
+	prompt := "Call ask_user once right now with question 'Which label should go in choice.txt?' and options ['Alpha', 'Beta'], then create choice.txt containing only the chosen word followed by a newline."
+	jobID := strings.TrimSpace(run("--remote", prompt, "--repo", "https://github.com/erain/glue-sandbox.git", "--image", cmp.Or(os.Getenv("GLUE_AX_E2E_IMAGE"), axbackend.DefaultImage()), "--verify", "grep -qx Beta choice.txt", "--max-iterations", "3"))
+	t.Cleanup(func() {
+		_ = runCLIWithDeps(context.Background(), []string{"job", "delete", jobID, "--ax"}, strings.NewReader(""), io.Discard, io.Discard, defaultProviderFactory, serveDaemon, nil)
+	})
+	wantClick, tapped, confirmed := "https://glue.example.com/#/jobs/"+jobID, false, false
+	for sc.Scan() {
+		var ev struct {
+			Event, Title, Message, Click string
+			Actions                      []struct{ Action, Label, URL, Method, Body string }
+		}
+		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Event != "message" || !strings.Contains(ev.Message, jobID) {
+			continue
+		}
+		checkAX(t, ev.Click == wantClick, "click=%q, want %q", ev.Click, wantClick)
+		for _, a := range ev.Actions {
+			if !tapped && a.Action == "http" && a.Label == "Beta" && a.Method == "POST" && strings.HasPrefix(a.URL, "https://ntfy.sh/glue-reply-") {
+				presp := must(http.Post(a.URL, "application/json", strings.NewReader(a.Body)))
+				checkAX(t, presp.Body.Close() == nil && presp.StatusCode < 300, "reply POST status=%d", presp.StatusCode)
+				tapped = true
+			}
+		}
+		confirmed = confirmed || strings.Contains(ev.Message, "✓ Glue job "+jobID+": answered")
+		if ev.Title == "Glue job achieved" {
+			logs := run("job", "logs", jobID, "--json", "--ax")
+			checkAX(t, tapped && confirmed && strings.Contains(logs, `"source":"ntfy"`) && !strings.Contains(logs, "glue-reply-"), "tapped=%v confirmed=%v", tapped, confirmed)
+			return
+		}
+	}
+	t.Fatalf("ntfy stream ended before %s achieved (tapped=%v confirmed=%v err=%v)", jobID, tapped, confirmed, sc.Err())
 }
 
 func okGW(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"ok":true}`) }
