@@ -2,103 +2,67 @@
 
 [![CI](https://github.com/erain/glue/actions/workflows/ci.yml/badge.svg)](https://github.com/erain/glue/actions/workflows/ci.yml)
 
-**Glue is an AX-first, remote-first coding agent and Go agent framework.**
-Websites: <https://glue-framework-site.vercel.app> (framework) ·
-<https://glue-coding.vercel.app> (coding agent).
-Start a coding job from your laptop in one command, close your lid, and come
-back to verified commits and a draft pull request — or import Glue's Go SDK to
-build your own tool-calling agents on the same provider-agnostic loop.
+**Glue is an AX-first, remote-first coding agent and composable Go agent framework.**
 
-- **Remote-first coding agent (`glue --remote` / `glue job` / `glue remote`):** Dispatch
-  interactive (`-i`) or autonomous coding jobs directly from a git checkout into isolated
-  [AX](https://github.com/google/ax) sandboxes with zero mandatory gateway deployment
-  ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)). Inspect, steer, answer from
-  phone lock-screen `ntfy` action buttons, open a local/QR browser UI (`glue job ui`),
-  `glue job teleport` code + context into your local TUI, run offline (`glue`, `glue code`,
-  `glue run`, `glue goal`, `glue serve`), or run `glue remote setup` for a bookmarkable
-  Cloudflare Access browser workspace (`0` idle AX workers; [ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md)).
-- **Composable Go agent framework (`github.com/erain/glue`):** A small,
-  code-first `Agent` / `Session` API, typed tools, five model providers,
-  context compaction, and optional SQLite FTS5 persistence — inspired by
-  [Flue](https://github.com/withastro/flue) and
-  [pi-mono](https://github.com/badlogic/pi-mono).
-
-**Remote jobs in five minutes → [docs/remote-quickstart.md](docs/remote-quickstart.md).**
-
-```sh
-glue job init                         # doctor checks + one-time QR phone pairing (~/.config/glue/config.yaml)
-glue --remote "Add Sub(a, b int) next to Add, with a table-driven test" \
-  --snapshot --verify "go test ./..."
-glue job attach latest                # live transcript; Ctrl-C detaches, the job keeps going
-glue job pull latest --apply          # the result, on top of the work you sent (or `glue job teleport` to open TUI with context)
-```
-
-The job ID comes back in about 3 seconds; your phone hears when the job finishes
-or needs a decision — with native `ntfy` lock-screen action buttons (`glue job answer`
-also works from any terminal). `--snapshot` sends uncommitted work; without it,
-glue refuses to start from unpushed changes rather than work on different code.
-Run `glue remote setup` once to add a permanent Cloudflare Access browser
-workspace (`#/new` interactive chat → **Run Autonomously** → unified diff &
-**Open Draft PR**), and `glue job teleport <id>` (or `/teleport` / `/jobs` in the
-TUI) to pull remote code and context into your local session. More: `--attempts N`
-with `glue job compare`/`pick`, `--issue <n>`, `--deliver pr` / `glue job pr` and
-`glue job continue --from-pr`, `glue job say --interrupt`, and `.glue/remote.yaml`
-([docs/jobs.md](docs/jobs.md)).
-
-```go
-agent := glue.NewAgent(glue.AgentOptions{
-	Provider: gemini.New(gemini.Options{}),
-	Model:    "gemini-3.1-pro-preview",
-	Tools:    []glue.Tool{weatherTool},
-})
-session, _ := agent.Session(ctx, "demo")
-result, _ := session.Prompt(ctx, "What's the weather in Toronto?")
-fmt.Println(result.Text)
-```
-
-- **Run remote coding jobs on AX:** → [Quickstart](docs/remote-quickstart.md) · [Jobs reference](docs/jobs.md) · [ADR-0020](docs/adr/0020-ax-first-direct-execution.md) · [ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md) · [Showcase](docs/demo-ax-develops-ax.md)
-- **Build an agent with the Go SDK:** → [docs/building-agents.md](docs/building-agents.md) · [Quickstart](#quickstart)
-- **Architecture & roadmap:** → [Concepts](#concepts) · [docs/design.md](docs/design.md) · [Project plan](docs/project-plan.md) · [Remote roadmap](docs/remote-mode-roadmap.md)
+- **Coding agent (`cmd/glue`):** Code interactively in a terminal TUI, or dispatch uncommitted work directly into isolated [AX](https://github.com/google/ax) gVisor sandboxes in ~3 seconds — steer from phone lock-screen buttons at `0 CPU`, open a Zero-Trust Cloudflare Access browser workspace, and teleport tested code + context back into your checkout. → <https://glue-coding.vercel.app>
+- **Go agent framework (`github.com/erain/glue`):** A small, code-first `Agent` / `Session` / `Tool` SDK across five model providers with context compaction, MCP client support, and pure-Go SQLite FTS5 search. → <https://glue-framework-site.vercel.app>
 
 ## Install
 
-The coding agent CLI:
-
 ```sh
+# Coding agent binary:
 go install github.com/erain/glue/cmd/glue@latest
-```
 
-The Go framework:
-
-```sh
+# Go SDK:
 go get github.com/erain/glue
 ```
 
-Module path: `github.com/erain/glue`. Key subpackages:
+| Package | Purpose |
+| :--- | :--- |
+| `github.com/erain/glue` | Core public SDK: `Agent`, `Session`, `Tool`, `Store`, `PursueGoal`, failover, subagents. |
+| `.../loop` | Provider-agnostic streaming & tool-execution loop with history hardening and retries. |
+| `.../providers/{gemini,codex,deepseek,nvidia,openrouter}` | Model adapters + capability registry (`providers.New`, shared `openaicompat` core). |
+| `.../stores/{file,sqlite}` | Transcript persistence (`sqlite` adds pure-Go BM25 FTS5 cross-session search). |
+| `.../tools/{fs,git,shell,coding,mcp}` | Workspace tools, self-repairing `edit_file`, head+tail `shell_exec`, and MCP client. |
+| `.../prompts` · `.../cli` | Versioned `embed.FS` prompt catalog and standard CLI flags for custom agent binaries. |
 
-| Import | Purpose |
-|--------|---------|
-| `github.com/erain/glue` | Public API: `Agent`, `Session`, `Tool`, options. |
-| `.../loop` | The provider-agnostic agent loop. |
-| `.../providers/{gemini,codex,deepseek,nvidia,openrouter}` | Model providers (+ shared `openaicompat` core, driver registry in `providers`). |
-| `.../stores/{file,sqlite}` | Session persistence (sqlite adds FTS5 search). |
-| `.../tools/{fs,git,shell,coding,mcp}` | Reusable tool bundles. |
-| `.../prompts` | Versioned-prompt catalog. |
-| `.../cli` | Shared standard flags for agent binaries. |
+## The `glue` CLI
+
+Start with the **5-minute walkthrough → [docs/remote-quickstart.md](docs/remote-quickstart.md)**, or see the full command, TUI, and flag reference in **[docs/cli.md](docs/cli.md)**.
+
+### Remote on AX (close the laptop, ship verified PRs)
+
+```sh
+glue job init                         # doctor preflight + QR phone pairing (~/.config/glue/config.yaml)
+glue --remote "Add bounded jitter & race tests" \
+  --snapshot --verify "go test -race ./..."
+glue job attach latest                # live resumable transcript; Ctrl-C detaches cleanly
+glue job teleport latest              # pulls patch + session briefing into your local coding TUI
+```
+
+- **Zero mandatory gateway ([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)):** `glue --remote` connects directly to AX over ephemeral mTLS and pushes model/GitHub tokens into memory (`POST /v1/credentials`). `--snapshot` packages uncommitted edits safely instead of silently cloning stale code.
+- **Two-way lock-screen control:** When a job calls `ask_user` or requests permission, AX suspends the sandbox to `0 CPU` and pushes native HTTP `POST` action buttons to `ntfy` on your phone.
+- **Zero-Trust browser workspace ([ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md)):** Run `glue remote setup` once to deploy a 1-pod `glue-gateway` + `cloudflared` behind **Cloudflare Access** (`0` idle AX workers, no OAuth app, no second login) — chat in `#/new`, escalate via **Run Autonomously**, review the unified diff, and click **Open Draft PR** (or run `glue job ui --open --tunnel` locally).
+- **Parallel attempts, issues & PR rounds:** `--attempts N` + `glue job compare`/`pick`, `--issue <n>`, `glue job pr`, `glue job continue --from-pr`, `glue job say --interrupt`, and repo-wide `.glue/remote.yaml` ([docs/jobs.md](docs/jobs.md)).
+
+### Local TUI, autonomous goals & headless runs
+
+```sh
+glue                                  # interactive coding TUI (/remote, /jobs, /teleport, /goal, @file)
+glue goal --coding --worktree "Make golangci-lint pass on ./..."
+git diff main | glue run --prompt "Review this diff for bugs."
+```
 
 ## Quickstart
 
-Pick a provider and send a prompt. With Gemini:
-
-```sh
-export GEMINI_API_KEY=...
-```
+Build a tool-calling agent in Go (full step-by-step tutorial in **[docs/building-agents.md](docs/building-agents.md)**; runnable ~100-line demo in [`examples/local-agent`](examples/local-agent)):
 
 ```go
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -106,543 +70,78 @@ import (
 	"github.com/erain/glue/providers/gemini"
 )
 
+type cityArgs struct {
+	City string `json:"city"`
+}
+
 func main() {
 	ctx := context.Background()
+	weather := glue.NewTool[cityArgs](
+		glue.ToolSpec{
+			Name:        "weather",
+			Description: "Look up current weather for a city.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+		},
+		func(_ context.Context, a cityArgs) (glue.ToolResult, error) {
+			return glue.TextResult("18C and sunny in " + a.City), nil
+		},
+	)
+
 	agent := glue.NewAgent(glue.AgentOptions{
 		Provider: gemini.New(gemini.Options{}),
-		Model:    "gemini-3.1-pro-preview",
+		Model:    "gemini-3-flash-preview",
+		Tools:    []glue.Tool{weather},
 	})
 	session, err := agent.Session(ctx, "demo")
 	if err != nil {
 		log.Fatal(err)
 	}
-	result, err := session.Prompt(ctx, "Reply with the single word: glue.")
+	res, err := session.Prompt(ctx, "What's the weather in Toronto?")
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(result.Text)
+	fmt.Println(res.Text)
 }
 ```
-
-The session keeps an in-memory transcript, so a second `Prompt`
-continues the conversation. Other providers are one import away — see
-[Providers](#providers). To go from here to a real tool-calling,
-persistent agent, follow **[docs/building-agents.md](docs/building-agents.md)**.
 
 ## Concepts
 
-Glue has a small vocabulary. Once these click, the rest is API surface.
-
 | Type | What it is |
-|------|-----------|
-| **`Provider`** | A model backend that streams assistant events. |
-| **`Agent`** | The configured unit: provider, model, tools, store, work dir, roles. Built with `glue.NewAgent`. |
-| **`Session`** | A named conversation with its own transcript, opened from an Agent; driven with `session.Prompt`. |
-| **`Tool`** | A function the model can call. Define with `glue.NewTool[Args]`. |
-| **`Store`** | Where transcripts persist (`stores/file` or `stores/sqlite`). Optional. |
-| **`Skill` / `Role`** | Markdown-driven reusable instructions and named instruction profiles. |
-| **`loop`** | The engine: stream → run tools → append results → repeat until the model stops. |
-
-Every `session.Prompt` runs the same loop:
-
-```text
-prompt ─▶ provider streams events ─▶ text? emit deltas
-                                  └─▶ tool calls? run tools, append results, loop
-                                  └─▶ stop ─▶ return final text
-```
-
-The loop is provider-agnostic, and product concerns (sandboxing,
-channels, scheduling, policy) enter only as interfaces you fill in —
-they are not baked into core glue ([ADR-0005](docs/adr/0005-foundation-expansion.md)).
-
-## Build your own agent
-
-The full walkthrough — typed tools, persistence, streaming, project
-context, subagents, structured output, multi-provider failover,
-packaging as a CLI, and testing — lives in one place:
-
-➡️ **[docs/building-agents.md](docs/building-agents.md)**
-
-The shortest complete example is
-[`examples/local-agent`](examples/local-agent) (~100 lines: provider +
-store + a typed `local_time` tool + streaming). Real agents live under
-[`agents/`](#reference-agents).
-
-The sections below are a feature reference for when you need the
-specifics.
+| :--- | :--- |
+| **`Provider`** | Model backend streaming assistant deltas, thinking, and tool calls. |
+| **`Agent`** | Configured unit (`glue.NewAgent`): provider, model, tools, store, `WorkDir`, compactor, roles. |
+| **`Session`** | Named conversation transcript driven with `Prompt`, `PromptJSON`, `Skill`, or `Subscribe`. |
+| **`Tool`** | Typed function (`glue.NewTool[Args]`), delegated `SubagentTool`, or MCP server tool (`tools/mcp`). |
+| **`Store`** | Optional session persistence (`stores/file` JSON or `stores/sqlite` with BM25 FTS5 search). |
+| **`loop`** | Provider-agnostic engine with transcript repair, classified retries, overflow compaction, and guardrails. |
 
 ## Providers
 
-Glue ships five providers and a driver-style registry. Construct one
-directly, or select by name via `providers.New`.
+Run `glue models` to inspect curated defaults and verified thinking levels offline, or see [docs/provider-guide.md](docs/provider-guide.md) to implement a custom provider.
 
 | Provider | Import | Auth | Notes |
-|----------|--------|------|-------|
-| **Gemini** | `providers/gemini` | `GEMINI_API_KEY` | Google `genai` SDK. |
-| **Codex** | `providers/codex` | ChatGPT subscription (`codex login`) | No per-token bill; reuses the upstream Codex CLI's `auth.json`. |
-| **DeepSeek** | `providers/deepseek` | `DEEPSEEK_API_KEY` | `deepseek-flash` (V4.1 Flash), with reasoning replay for tool calls. |
-| **NVIDIA build** | `providers/nvidia` | `NVIDIA_API_KEY` | OpenAI-compatible; Kimi K2, Llama, Qwen, etc. by `org/name`. |
-| **OpenRouter** | `providers/openrouter` | `OPENROUTER_API_KEY` | OpenAI-compatible aggregator; `openrouter/free` auto-picks a free model. |
-
-CLI defaults depend on activity: `glue run` and `glue serve` use
-`openrouter` / `openrouter/free`; bare `glue`, `glue code`, `--coding`, and `glue goal` use
-`gemini` / `gemini-3-flash-preview` with thinking `low`. Explicit `--provider` and `--model`
-(or `~/.config/glue/config.yaml` for coding runs) override these choices. `glue models` labels the chat and coding defaults.
-
-```go
-// Codex — bill against your ChatGPT subscription instead of an API key:
-agent := glue.NewAgent(glue.AgentOptions{
-	Provider: codex.New(codex.Options{}),
-	Model:    codex.DefaultModel, // "gpt-5-codex"
-})
-```
-
-Codex quarantines all subscription-auth fragility (OAuth, token refresh,
-Cloudflare cookies) to its package — run `codex login` once; Glue reads
-`~/.codex/auth.json` (override with `$GLUE_CODEX_AUTH` / `$CODEX_HOME`).
-Subscription-auth via third-party tools is not formally documented by
-OpenAI; the provider is intended for personal use. See
-[ADR-0006](docs/adr/0006-codex-provider.md).
-
-DeepSeek, NVIDIA, and OpenRouter share the `providers/openaicompat` core. NVIDIA and OpenRouter can
-have multi-second first-byte latency on cold routing. To add your own
-provider, see [docs/provider-guide.md](docs/provider-guide.md) and
-[`examples/echo-provider`](examples/echo-provider).
-
-### Choosing models and thinking levels
-
-The Gemini adapter accepts `ProviderRequest.Options["thinking_level"]` for
-Gemini 3 and 4 models. Gemini 4 Argon supports `low`, `medium`, and `high`;
-omitting the option preserves the API default.
-
-Discover provider and model choices without API credentials:
-
-```sh
-glue models
-glue models --provider gemini --json
-```
-
-The catalog is curated, includes each provider's default, and shows verified
-thinking levels. It does not check account access or fetch a live model list.
-Use `--model <id>` for models outside the catalog; JSON output includes each
-provider's credential variable and live catalog URL when available.
-
-DeepSeek is available directly with `--provider deepseek` and
-`DEEPSEEK_API_KEY`. Its default model, `deepseek-flash`, serves V4.1 Flash.
-The adapter preserves streamed reasoning when replaying tool conversations.
-Images are not yet supported by Glue's shared Chat Completions transport.
-
-```sh
-export DEEPSEEK_API_KEY=...
-glue run --provider deepseek --prompt 'Explain this repository' --coding
-```
-
-See the [DeepSeek thinking and tool replay requirements](https://api-docs.deepseek.com/guides/thinking_mode/).
-
-Select model-specific thinking effort in `run`, `serve`, and `goal`:
-
-```sh
-glue run --provider gemini --model gemini-4-argon --thinking high --prompt 'Review this design'
-glue run --provider deepseek --thinking low --coding --prompt 'Find the entry point'
-glue serve --provider deepseek --thinking max
-glue goal --provider gemini --model gemini-4-argon --thinking medium 'Explain the parser'
-```
-
-Omit `--thinking` or use `--thinking default` to preserve API defaults.
-Gemini Argon supports `low`, `medium`, and `high`; DeepSeek Flash supports
-`off`, `low`, `high`, and `max`. `glue models` lists each model's supported
-levels. Unsupported combinations fail before provider construction. Models
-without verified controls, including custom IDs, accept only the default.
-These settings apply to all prompts in the local run or goal and to daemon
-runs started through `connect`. They do not change provider defaults globally.
-
-For interactive selection, run:
-
-```sh
-glue run --select --coding
-glue run --select --prompt 'Explain this code'
-```
-
-Use the arrow keys and Enter to choose a provider, a model, and its supported
-thinking level. Esc or Ctrl+C cancels before provider construction. The menus
-include a custom model ID option. `--provider`, `--model`, and `--thinking`
-set initial choices; the confirmed menu choices take precedence. Changing
-providers resets the model choice to that provider's default. Unsupported
-thinking preselection resets to the API default. Choices apply to this run.
-Menus require terminal stdin and stderr and render on stderr, leaving stdout
-available for one-shot text or JSON output. In scripts, use `glue models`
-and the explicit flags instead. Account access is checked when the provider
-runs. Provider/model switching during an active TUI session is not included.
-
-### Failover across providers
-
-`glue.WithFailover(provs...)` tries providers in order until one accepts
-the stream — handy when a CLI supports several backends and should skip
-those whose keys aren't set:
-
-```go
-import (
-	"github.com/erain/glue"
-	"github.com/erain/glue/providers"
-	_ "github.com/erain/glue/providers/codex"
-	_ "github.com/erain/glue/providers/gemini"
-	_ "github.com/erain/glue/providers/nvidia"
-)
-
-var provs []glue.Provider
-for _, name := range []string{"codex", "nvidia", "gemini"} {
-	if p, _, _, err := providers.New(name); err == nil {
-		provs = append(provs, p)
-	}
-}
-agent := glue.NewAgent(glue.AgentOptions{Provider: glue.WithFailover(provs...)})
-```
-
-Failover only falls through *before* the first event commits to the
-consumer; once a non-error event arrives it stays on that provider for
-the turn. All-providers-failed surfaces as a typed `*glue.FailoverError`.
-
-## Tools
-
-Define typed tools with `glue.NewTool[Args]`. It decodes
-`ToolCall.Arguments` into your Go type before the executor runs and
-turns malformed arguments into a model-visible error result instead of a
-panic. Pair it with `glue.TextResult` / `glue.ErrorResult`:
-
-```go
-type weatherArgs struct {
-	City string `json:"city"`
-}
-
-weather := glue.NewTool[weatherArgs](
-	glue.ToolSpec{
-		Name:        "weather",
-		Description: "Look up current weather for a city.",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
-	},
-	func(ctx context.Context, a weatherArgs) (glue.ToolResult, error) {
-		report, err := lookup(ctx, a.City)
-		if err != nil {
-			return glue.ErrorResult(err), nil
-		}
-		return glue.TextResult(report), nil
-	},
-)
-```
-
-Return `ErrorResult` for recoverable failures (the model can retry); a
-Go `error` only for failures that should stop the run. Schema generation
-is out of scope — write `Parameters` by hand.
-
-**Ready-made bundles** under `tools/`: `tools/fs` (read/write/edit, plus
-read-only `list_dir`/`find_files`/`grep`), `tools/git`, `tools/shell`,
-and the assembled `tools/coding` bundle. See [Coding tools](#coding-tools).
-
-**Subagents.** `glue.SubagentTool` wraps a child `*glue.Agent` as a
-tool, so a parent can delegate a focused task to a fresh, isolated
-transcript:
-
-```go
-researchTool, _ := glue.SubagentTool(glue.SubagentOptions{
-	Name:        "research",
-	Description: "Delegate a focused research question.",
-	Agent:       researcher, // a *glue.Agent
-})
-```
-
-**MCP servers.** `tools/mcp` consumes [Model Context
-Protocol](https://modelcontextprotocol.io) servers (stdio / Streamable
-HTTP), mapping their tools to permission-gated `glue.Tool` values. See
-[ADR-0011](docs/adr/0011-mcp-client-integration.md).
-
-## Persistent sessions with search
-
-`stores/file` writes one JSON file per session — the dependency-free
-default. `stores/sqlite` implements the same `glue.Store` against a
-pure-Go SQLite DB with FTS5 over message text, for cross-session recall:
-
-```go
-store, err := sqlite.Open(sqlite.Options{Path: "agent.db"})
-defer store.Close()
-agent := glue.NewAgent(glue.AgentOptions{Provider: prov, Store: store})
-
-hits, _ := agent.SearchSessions(ctx, "Australian Shepherd", glue.WithLimit(5))
-for _, h := range hits {
-	fmt.Printf("[%s#%d] %s\n", h.SessionID, h.Index, h.Snippet)
-}
-```
-
-Search options: `WithLimit`, `WithOffset`, `WithSessionID`, `WithSince`,
-`WithUntil`. The query is FTS5 `MATCH` syntax; hits come back by BM25
-score. `stores/file` does not implement search, so both
-`Agent.SearchSessions` and `Session.Search` return
-`glue.ErrSearchNotSupported` there — picking `stores/sqlite` is the
-signal that you want it. Uses
-[`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) (no CGo). Schema
-details in [ADR-0007](docs/adr/0007-memory-layer.md).
-
-## Streaming, roles, skills, structured output
-
-**Streaming.** Mirror text deltas with the convenience options, or
-subscribe for full control:
-
-```go
-session.Prompt(ctx, "Stream a haiku.",
-	glue.WithStreamWriter(os.Stdout),  // EventTextDelta → writer
-	glue.WithToolLogger(os.Stderr),    // "[tool] <name>" on tool start
-)
-
-unsubscribe := session.Subscribe(func(e glue.Event) {
-	if e.Type == glue.EventTextDelta { fmt.Print(e.Delta) }
-})
-defer unsubscribe()
-```
-
-**Per-prompt overrides:** `glue.WithModel`, `glue.WithSystemPrompt`,
-`glue.WithMaxTurns`.
-
-**Roles** are named instruction profiles with optional model overrides,
-from `AgentOptions.Roles` or `<WorkDir>/roles/*.md`. Precedence:
-`WithRole` (call) > `WithSessionRole` (session) > `AgentOptions.Role`.
-
-**Project context & skills.** Set `AgentOptions.WorkDir`:
-`<WorkDir>/AGENTS.md` is appended to the system prompt;
-`<WorkDir>/.agents/skills/<name>/SKILL.md` becomes a runnable skill via
-`session.Skill(ctx, name, args)`.
-
-**Structured output.** `session.PromptJSON(ctx, prompt, &out)` requests
-JSON-only and decodes into your Go type; `glue.WithJSONSchema(schema)`
-forwards an explicit schema.
-
-**Versioned prompts.** `prompts.NewCatalog(embedFS, dir, default)` wraps
-an `embed.FS` of `<version>.md` files so you can A/B-test and roll back
-system prompts; unknown versions error with the available list.
-
-**Long context.** `AgentOptions.Compactor` + `CompactionThreshold`.
-`glue.KeepRecentMessages(n)` is the zero-dependency default;
-`SummarizingCompactor` is token-aware and produces a **structured
-state snapshot** (goal / constraints / progress / next steps, exact
-paths and errors preserved) with a prompt-injection firewall, a
-cumulative read/modified **file ledger** that survives repeated
-compactions, splits that never sever a tool-call/result pair, and an
-inflation guard; `KeepRecentTokens` keeps the recent tail by token
-budget instead of message count
-([ADR-0002](docs/adr/0002-context-compaction.md),
-[ADR-0007](docs/adr/0007-memory-layer.md)).
-
-## Harness reliability
-
-The loop absorbs the failure shapes that waste agent turns — on by
-default, each with an opt-out
-([docs/coding-harness-roadmap.md](docs/coding-harness-roadmap.md)
-records the analysis behind them):
-
-- **History hardening.** Every run repairs the transcript first:
-  dangling tool calls from an interrupted turn get synthesized error
-  results, orphaned results and empty turns are dropped, and turns
-  from a different model lose their thinking signatures — the things
-  providers reject with opaque 400s (`loop.HardenHistory`).
-- **Classified retries.** Transient provider failures (429/5xx,
-  dropped streams) retry with backoff, honoring `Retry-After` /
-  Gemini `RetryInfo` hints; auth and invalid-request errors fail
-  fast. Context overflow surfaces as a typed `*loop.OverflowError`
-  that sessions answer by compacting once and retrying once. Opt out
-  with `RunRequest.Retry.Disabled`
-  ([ADR-0017](docs/adr/0017-loop-retry-overflow-recovery.md)).
-- **Guardrails.** Repeating the same tool call with identical
-  arguments, or burning consecutive all-error tool rounds, first
-  draws a corrective message and then halts the run with a typed
-  error (`RunRequest.Guardrails`).
-- **Stall recovery.** `AgentOptions.AutoContinue` nudges a model that
-  narrates "I will now…" and stops without acting — bounded to twice
-  per run; the `glue` binary enables it for providers that declare
-  the stall in the capability registry.
-
-**Per-model capabilities.** Providers declare harness-relevant facts
-at registration — context window, parallel-tool safety, prompt
-variant, auto-continue proneness — queried via
-`providers.CapabilitiesFor(name)` instead of if-provider-name
-switches.
+| :--- | :--- | :--- | :--- |
+| **Gemini** | `providers/gemini` | `GEMINI_API_KEY` | Coding default (`gemini-3-flash-preview` at `low`); Gemini 3/4 thinking levels. |
+| **Codex** | `providers/codex` | `codex login` | Uses your ChatGPT subscription (`~/.codex/auth.json`, personal use). |
+| **DeepSeek** | `providers/deepseek` | `DEEPSEEK_API_KEY` | `deepseek-flash` default (`off`/`low`/`high`/`max` thinking + reasoning replay). |
+| **NVIDIA** | `providers/nvidia` | `NVIDIA_API_KEY` | OpenAI-compatible open-weight endpoints (`org/name`). |
+| **OpenRouter** | `providers/openrouter` | `OPENROUTER_API_KEY` | Open-weight aggregator; `openrouter/free` auto-picks a free model. |
 
 ## Coding tools
 
-`tools/coding.Tools(...)` assembles a permission-gated local coding
-bundle — `read_file`, `write_file`, `edit_file`, `list_dir`,
-`find_files`, `grep`, `shell_exec`, `git_diff_branch`, `git_log_branch`
-— over `tools/fs`, `tools/git`, `tools/shell`, and `glue.Executor`. The
-`glue` binary exposes it directly:
-
-```sh
-go run ./cmd/glue run --provider codex --coding --work . \
-  --prompt "Run the tests and fix the first failure."
-```
-
-The bundle is built to tolerate model sloppiness instead of bouncing
-it back:
-
-- **`edit_file` repairs near-miss matches** — a deterministic ladder
-  (whitespace → indentation, with the replacement re-indented to the
-  file's real indentation → smart-quote/dash folding → block-anchor)
-  plus over-escape repair; non-exact matches are named in the result,
-  and success echoes the updated lines so the model doesn't re-read
-  the file. CRLF and BOMs are preserved.
-- **`shell_exec` keeps head *and* tail** of long output with an
-  omitted-bytes marker and the complete stream spooled to a named
-  temp file; timeouts keep the partial output. `read_file` pages by
-  line offset and says exactly how to continue.
-- **The system prompt is assembled from the active toolset**
-  (`coding.SystemPrompt`): one line per registered tool plus their
-  usage guidelines, in a terse variant for frontier models and an
-  explicit variant for open-weight ones — it cannot drift from the
-  tools actually available. Tools contribute their own text via
-  `ToolSpec.PromptSnippet` / `PromptGuidelines`.
-
-Side-effecting tools (`write_file`, `edit_file`, `shell_exec`) are
-permission-gated; reads and navigation are not. Execution defaults to
-the local process via `glue.Executor` — not a sandbox. Implement your
-own `Executor` to run in a container/VM. See
-[ADR-0012](docs/adr/0012-sdk-coding-agent-peggy-boundary.md).
-
-## The `glue` CLI
-
-`cmd/glue` is a remote-first coding agent for AX and local checkouts, built on
-the public `glue` library API (homepage: <https://glue-coding.vercel.app>; remote jobs:
-[quickstart](docs/remote-quickstart.md)):
-
-```sh
-# Launch an autonomous coding job directly on AX (auto policy by default, zero gateway needed):
-id=$(go run ./cmd/glue --remote "Add a Makefile test target" --verify "make test")
-go run ./cmd/glue job list
-go run ./cmd/glue job attach "$id"   # replays from last seen seq; Ctrl-C detaches without canceling
-go run ./cmd/glue job say "$id" "Keep existing target names unchanged."
-go run ./cmd/glue job result "$id"
-go run ./cmd/glue job pr "$id"       # opens a draft PR for the pushed branch and persists pr_url
-
-# Interactive coding TUI (bare `glue` on a TTY, or `glue code [flags]`):
-go run ./cmd/glue
-go run ./cmd/glue code --continue
-
-# One-shot runs (`glue code` enables coding tools; `glue run` defaults to openrouter/free):
-go run ./cmd/glue run --prompt "Say hi" --id demo --store .glue/sessions
-go run ./cmd/glue code --provider codex --prompt "Fix the failing test."
-
-# Scripted: pipe the prompt in.
-echo "summarize main.go" | go run ./cmd/glue run --provider codex --coding
-
-# Local HTTP+SSE daemon + a client that streams and brokers permissions:
-go run ./cmd/glue serve --store .glue/sessions
-go run ./cmd/glue connect --inspect
-go run ./cmd/glue connect --prompt "Say hi" --id demo
-
-# Headless goal loop (schedulable from cron/CI; exit code reflects the
-# outcome: 0 achieved · 2 blocked · 3 max-iterations · 4 budget · 1 error):
-go run ./cmd/glue goal --coding --worktree "Make the linter pass on ./..."
-go run ./cmd/glue goal --list
-go run ./cmd/glue goal --resume
-
-# Or run jobs against a local HTTP+SSE daemon (or open http://127.0.0.1:8787 in a browser):
-go run ./cmd/glue serve --coding --state-dir .glue/state --listen 127.0.0.1:8787 --token "$GLUE_TOKEN" &
-id=$(go run ./cmd/glue job submit --server http://127.0.0.1:8787 --repo . --objective "Add a Makefile test target")
-go run ./cmd/glue job attach "$id"
-go run ./cmd/glue job result "$id"
-```
-
-**Interactive mode** (designed in [ADR-0014](docs/adr/0014-coding-agent-tui.md)).
-Running bare `glue` in a terminal (or `glue code` / `glue run` with no `--prompt`)
-opens a bubbletea TUI: scrollable transcript with sticky-scroll,
-multi-line input, streaming text (re-rendered as markdown after each
-turn settles via `charmbracelet/glamour`), tool-call cards with a
-moving spinner while running and an inline `[a] [s] [t] [n]` permission
-prompt right inside the card when a side-effecting tool needs approval,
-and a small `edit_file` diff preview. Slash commands: `/help`,
-`/exit`, `/clear` / `/new`, `/usage`, `/tools`, `/model <id>`,
-`/session [id]`, **`/compact`** (token-aware summarization of older
-messages to free context window), **`/resume`** (modal picker over
-past sessions; ↑/↓ navigate, Enter replays the chosen one into the
-transcript), **`/fork [N]`** (branch from message N — defaults to
-"just before my last user turn" — into a new session id, keeping the
-original intact), **`/clone`** (full duplicate of the current
-session), **`/tree`** (visualize the session lineage with
-`├─ / └─` glyphs, current node marked `◉`; pick one to switch — see
-[ADR-0015](docs/adr/0015-session-tree.md)), **`/jobs`** (remote jobs with status and age, refreshed every 10 s without waking suspended AX tasks; Enter opens a scrollable live transcript with `d` unified diff toggle, `1`–`9`/`a` question answers, `y`/`s`/`n` permission decisions, `s` say and `i` interrupt steering, `c` cancel confirmation, `o` draft PR creation, `p` branch pull, `A` `--apply` working-tree pull, and `t` teleport into the active coding session; the status bar shows `⧗ N remote jobs · M waiting`
-while any run), **`/teleport [<id>]`** (pull a remote job's changes and provider-neutral handoff briefing into `.glue/sessions` and switch the active TUI session), **`/remote [--snapshot] <objective>`**
-(hand the task to a remote AX job with this session's latest compaction
-summary, or its last 4,000 characters, as background; the same local-state
-checks as `glue --remote` apply), and **`/goal <objective>`**
-(pursue a goal autonomously in the background via `Agent.PursueGoal` —
-plan → maker → independent checker per iteration, with a live `[x]/[ ]`
-checklist card in the transcript, a `◎ goal · iter 2/10 · 1/4 ✓` status-bar
-segment, and `/goal status` / `pause` / `resume` (continues from the verified
-checklist without re-planning — even in a new process, since progress is
-checkpointed to the session store) / `list` (recent goals with status and
-age) / `clear` subcommands; `/goal -w <objective>` isolates the run in its
-own git worktree at `.glue/worktrees/<goal-id>` on branch `goal/<id>`, so
-the loop never touches your checkout and the result is a reviewable
-branch — see [ADR-0016](docs/adr/0016-goal-loop.md)), and **`/copy [N]`** (copy an
-assistant reply's **raw markdown** — not the glamour-styled, ANSI-laden form
-you see on screen — to the system clipboard via an OSC 52 sequence that works
-over SSH with no external binary; defaults to the last reply, `/copy 2`
-targets reply #2, and **Ctrl+Y** copies the last reply with no typing).
-Anywhere in a prompt,
-**`@<path>`** inlines that file's
-contents (`@"path with space"` for spaces, `@@literal` to escape — and
-the workspace blocklist refuses `.env` / `id_rsa` / etc.). Typing
-**`@`** in the TUI input also opens an inline file-picker popup that
-fuzzy-matches workspace files; `↑/↓` to navigate, `Tab`/`Enter` to
-insert. **Enter**
-sends; **Ctrl+J** inserts a newline (works on every terminal —
-Shift+Enter does not). **Esc** cancels the
-current turn; **Ctrl+C** once cancels (and a second press quits);
-**Ctrl+Y** copies the last assistant reply to the clipboard;
-mouse wheel scrolls the transcript; PgUp/PgDn does too. The TUI
-dependencies
-(`charmbracelet/{bubbletea,bubbles,lipgloss,glamour}`) live under
-`cmd/glue/tui/` only — `go get github.com/erain/glue` consumers pull
-zero TUI code.
-
-`run` flags include `--provider`, `--model`, `--id`, `--store`,
-`--work`, `--coding` (+ `--allow-binary`, `--coding-allow-overwrite`),
-`--tools name1,name2` (allowlist) / `--no-tools` (text-only),
-`--mode text|json` (one-shot output format; `json` emits stable
-JSONL events for scripting), `--yolo` (auto-approve interactive `glue run` /
-`glue goal` tool calls), `--usage`, and repeatable `--env`. Coding jobs and
-`glue serve` default to the autonomous `auto` policy (`--policy auto`, with
-opt-in `workspace-auto`, `ask-all`, and `--policy-file`; see
-[docs/policies.md](docs/policies.md)) and write local daemon connection metadata
-to the user config dir (never the bearer token).
-The daemon protocol is [ADR-0010](docs/adr/0010-daemon-protocol.md).
-
-**Standard flags for your own binary.** `cli.RegisterStandardFlags`
-wires the same six flags (`--provider`, `--model`, `--id`, `--store`,
-`--work`, `--max-turns`) onto a `flag.FlagSet`:
-
-```go
-fs := flag.NewFlagSet("my-agent", flag.ContinueOnError)
-get := cli.RegisterStandardFlags(fs, nil)
-fs.Parse(os.Args[1:])
-cfg := get() // cfg.Provider, cfg.Model, cfg.ID, cfg.Store, cfg.Work, cfg.MaxTurns
-```
+`tools/coding.Tools(...)` bundles `read_file`, `write_file`, `edit_file` (with deterministic whitespace/indentation/quote match repair), `list_dir`, `find_files`, `grep`, `shell_exec` (head + tail output retention with full stream spooling), and git helpers behind `glue.Executor` and permission hooks. Details in [docs/cli.md](docs/cli.md#coding-tools--harness-reliability).
 
 ## Reference agents
 
-Real agents built on the framework live under `agents/` (peer of the
-harness), not `examples/` (tutorial demos only).
+- **[`agents/glue-review`](agents/glue-review)** — Zero-cost pre-push branch reviewer (CLI and GitHub Action) that posts one sticky PR comment with a copy-pasteable fix block (<https://glue-review.vercel.app>).
 
-- **[`agents/glue-review`](agents/glue-review)** — a free, local
-  pre-push branch reviewer. Reads the diff against `main`, deep-reads
-  files when needed, and posts **one** sticky GitHub comment with a
-  fenced ` ```markdown ` fix block downstream coding agents can paste.
-  Runs as a CLI or a GitHub Action. Defaults to `openrouter/free` with
-  automatic provider failover.
+## Documentation
 
-## Testing without API keys
+Full index in **[docs/README.md](docs/README.md)**:
 
-The `Provider` interface is tiny, so tests drive sessions with a fake —
-no credentials, no network. Test tools by calling
-`tool.Execute(ctx, glue.ToolCall{...})` and asserting on the
-`ToolResult` (including `IsError`). See the
-[testing step](docs/building-agents.md#step-10--test-without-api-keys)
-of the build guide for a copy-paste fake.
+- **Coding Agent:** [Remote Quickstart](docs/remote-quickstart.md) · [CLI, TUI & Local Goals](docs/cli.md) · [Remote Jobs & `.glue/remote.yaml`](docs/jobs.md) · [Permission Policies](docs/policies.md) · [Cloudflare Access Gateway Runbook](docs/runbooks/public-gateway.md)
+- **Go SDK & Architecture:** [Building Agents](docs/building-agents.md) · [Adding a Provider](docs/provider-guide.md) · [Architecture & Internals](docs/design.md) · [ADRs](docs/adr)
+- **Project & Governance:** [Project Plan](docs/project-plan.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
 
 ## Run the tests
 
@@ -652,43 +151,4 @@ go vet ./...
 go test ./...
 ```
 
-CI runs the same commands on every PR. Live provider tests are gated
-behind their API keys and skipped in CI, e.g.:
-
-```sh
-GEMINI_API_KEY=... go test ./providers/gemini -run Live
-```
-
-## Project status & contributing
-
-Glue focuses on two surfaces: the **AX-first, remote-first coding agent**
-(`glue --remote`, `glue job`, `glue remote`, interactive TUI, local goals, and
-opt-in `glue-gateway` + `webui`) and the **Go agent framework**
-(`github.com/erain/glue`). Remote jobs execute directly on
-[AX](https://github.com/google/ax) with `auto` policy by default
-([ADR-0020](docs/adr/0020-ax-first-direct-execution.md)) and an optional
-Cloudflare Access browser gateway ([ADR-0021](docs/adr/0021-opt-in-cluster-gateway-cloudflare-access.md));
-remote mode Phases 1–4 are shipped, with `scripts/demo/aha.sh` and
-`scripts/demo/anywhere.sh` proving the [quickstart](docs/remote-quickstart.md)
-end to end on a live cluster. Execution mode is independent of model/provider selection. The
-[project plan](docs/project-plan.md) and
-[remote mode roadmap](docs/remote-mode-roadmap.md) track progress under
-[tracker #392](https://github.com/erain/glue/issues/392) and
-[tracker #402](https://github.com/erain/glue/issues/402). Releases are tagged on
-a `1.x` line (latest `v1.13.0`; newer work is listed under *Unreleased* in the
-CHANGELOG), but the stability stance is still the
-pre-stability one recorded in
-[ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md) (see its
-addendum for why the tags say `1.x`): the public `Agent` / `Session`
-surface is stable in practice, but **minor versions may still break
-API** until a deliberate surface-review pass. Breaking changes always
-land with a `**Breaking:**` entry in [`CHANGELOG.md`](CHANGELOG.md),
-never on a patch release. Security reports go through
-[`SECURITY.md`](SECURITY.md).
-
-Glue is built one GitHub issue at a time. The contributor workflow,
-branch/PR conventions, and the active tracker are documented in
-[`CONTRIBUTING.md`](CONTRIBUTING.md); the roadmap shape lives in
-[`docs/project-plan.md`](docs/project-plan.md), and durable design
-decisions are recorded as ADRs under [`docs/adr/`](docs/adr). The
-canonical architecture reference is [`docs/design.md`](docs/design.md).
+Pre-1.0 stability policy ([ADR-0013](docs/adr/0013-pre-1-0-stability-stance.md)): minor versions may evolve library APIs until an explicit surface lock, with every breaking change documented in [`CHANGELOG.md`](CHANGELOG.md).
