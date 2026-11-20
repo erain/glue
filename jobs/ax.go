@@ -33,14 +33,20 @@ func JobSpecFromAXTaskYAML(raw []byte) (Spec, error) {
 			Workspace struct {
 				Path string `yaml:"path"`
 			} `yaml:"workspace"`
+			Goal struct {
+				Text string `yaml:"text"`
+			} `yaml:"goal"`
 			Config map[string]any `yaml:"config"`
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return Spec{}, fmt.Errorf("jobs: decode ax task yaml: %w", err)
 	}
-	if len(doc.Spec.Config) == 0 {
-		return Spec{}, errors.New("jobs: ax task yaml is missing spec.config")
+	if len(doc.Spec.Config) == 0 && strings.TrimSpace(doc.Spec.Goal.Text) == "" {
+		return Spec{}, errors.New("jobs: ax task yaml is missing spec.config and spec.goal.text")
+	}
+	if doc.Spec.Config == nil {
+		doc.Spec.Config = map[string]any{}
 	}
 	cfgYAML, err := yaml.Marshal(doc.Spec.Config)
 	if err != nil {
@@ -64,8 +70,9 @@ func JobSpecFromAXTaskYAML(raw []byte) (Spec, error) {
 	if err := json.Unmarshal(cfgJSON, &spec); err != nil {
 		return Spec{}, fmt.Errorf("jobs: decode ax spec.config: %w", err)
 	}
-	if strings.TrimSpace(spec.Objective) == "" {
-		return Spec{}, errors.New("jobs: ax spec.config.objective is required")
+	spec.Objective = cmp.Or(strings.TrimSpace(spec.Objective), strings.TrimSpace(doc.Spec.Goal.Text))
+	if spec.Objective == "" {
+		return Spec{}, errors.New("jobs: ax spec.config.objective or spec.goal.text is required")
 	}
 	if strings.TrimSpace(spec.Repo.Path) == "" && strings.TrimSpace(spec.Repo.URL) == "" {
 		spec.Repo.Path = cmp.Or(strings.TrimSpace(doc.Spec.Workspace.Path), "/workspace")

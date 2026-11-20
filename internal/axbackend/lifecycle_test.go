@@ -42,7 +42,7 @@ func finishedJobHandler(status *atomic.Value) http.HandlerFunc {
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{}`))
 		default:
-			_, _ = fmt.Fprintf(w, `{"id":%q,"status":%q,"credentials":"present"}`, jobID, st)
+			_, _ = fmt.Fprintf(w, `{"id":%q,"status":%q,"last_seq":5,"credentials":"present"}`, jobID, st)
 		}
 	}
 }
@@ -50,14 +50,16 @@ func finishedJobHandler(status *atomic.Value) http.HandlerFunc {
 func markRunning(cp *fakeAXControlPlane, id string) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
-	cp.tasks[TaskName(id)].Status = &v1alpha1.TaskStatus{Phase: "Running", Conditions: []*v1alpha1.Condition{{Type: "WorkspaceReady", Status: "True"}}}
-	cp.egress[TaskName(id)] = true
+	cp.tasks[TaskName(id)].Status = &v1alpha1.TaskStatus{
+		State:      v1alpha1.TaskState_TASK_STATE_WORKING,
+		Conditions: []*v1alpha1.Condition{{Type: v1alpha1.ConditionWorkspaceReady, Status: "True"}, {Type: v1alpha1.ConditionReady, Status: "True"}},
+	}
 }
 
-func taskPhase(cp *fakeAXControlPlane, id string) string {
+func taskState(cp *fakeAXControlPlane, id string) v1alpha1.TaskState {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
-	return cp.tasks[TaskName(id)].GetStatus().GetPhase()
+	return cp.tasks[TaskName(id)].GetStatus().GetState()
 }
 
 func TestListReconcilesFinishedRunningTask(t *testing.T) {
@@ -71,7 +73,7 @@ func TestListReconcilesFinishedRunningTask(t *testing.T) {
 
 	list := must(b.ListJobs(t.Context(), jobs.Filter{}))(t)
 	check(t, len(list) == 1 && list[0].Status == jobs.Achieved, "ListJobs = %+v", list)
-	check(t, taskPhase(cp, id) == "Suspended", "finished task phase = %q, want Suspended", taskPhase(cp, id))
+	check(t, taskState(cp, id) == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "finished task state = %v, want Suspended", taskState(cp, id))
 	c := b.loadCache(id)
 	check(t, c != nil && c.Result != nil && c.Result.Summary == "done", "cache = %+v", c)
 
@@ -88,7 +90,7 @@ func TestListLeavesActiveRunningTaskAwake(t *testing.T) {
 	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Work", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
 	markRunning(cp, id)
 	list := must(b.ListJobs(t.Context(), jobs.Filter{}))(t)
-	check(t, len(list) == 1 && list[0].Status == jobs.Running && taskPhase(cp, id) == "Running", "active job: list=%+v phase=%q", list, taskPhase(cp, id))
+	check(t, len(list) == 1 && list[0].Status == jobs.Running && taskState(cp, id) == v1alpha1.TaskState_TASK_STATE_WORKING, "active job: list=%+v state=%v", list, taskState(cp, id))
 }
 
 func TestAttachSuspendsAfterJobDone(t *testing.T) {
@@ -101,8 +103,21 @@ func TestAttachSuspendsAfterJobDone(t *testing.T) {
 	var types []string
 	mustOK(t, b.Stream(t.Context(), id, 0, func(ev eventlog.Envelope) error { types = append(types, ev.Type); return nil }))
 	check(t, len(types) == 1 && types[0] == "job_done", "events = %v", types)
-	check(t, taskPhase(cp, id) == "Suspended", "phase after job_done = %q", taskPhase(cp, id))
-	check(t, b.loadCache(id).Result != nil, "result not cached after job_done")
+	check(t, taskState(cp, id) == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "state after job_done = %v", taskState(cp, id))
+	check(t, b.loadCache(id).Result != nil && must(b.Show(t.Context(), id))(t).LastSeq == 5, "result/detail not cached after job_done")
+
+	// When a caller such as glue-gateway suspends inside the Stream callback,
+	// settleFinished must not contact the router and wake the task back up.
+	id2 := "job-streamdone002"
+	must(b.Create(t.Context(), id2, jobs.Spec{Objective: "Gateway stream", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
+	markRunning(cp, id2)
+	var hitsAfterSuspend int32
+	mustOK(t, b.Stream(t.Context(), id2, 0, func(ev eventlog.Envelope) error {
+		mustOK(t, b.Suspend(t.Context(), id2))
+		hitsAfterSuspend = cp.taskHTTPHits.Load()
+		return nil
+	}))
+	check(t, cp.taskHTTPHits.Load() == hitsAfterSuspend && taskState(cp, id2) == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "settleFinished contacted suspended task: hits %d->%d", hitsAfterSuspend, cp.taskHTTPHits.Load())
 }
 
 func TestCancelSuspends(t *testing.T) {
@@ -113,7 +128,7 @@ func TestCancelSuspends(t *testing.T) {
 	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Cancel me", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
 	markRunning(cp, id)
 	mustOK(t, b.Cancel(t.Context(), id))
-	check(t, taskPhase(cp, id) == "Suspended", "phase after cancel = %q", taskPhase(cp, id))
+	check(t, taskState(cp, id) == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "state after cancel = %v", taskState(cp, id))
 	check(t, b.loadCache(id).Status == jobs.Canceled, "cached status = %q", b.loadCache(id).Status)
 }
 
@@ -127,9 +142,9 @@ func TestPruneKeepsCachedResult(t *testing.T) {
 	mustOK(t, b.Prune(t.Context(), id))
 	cp.mu.Lock()
 	_, taskLeft := cp.tasks[TaskName(id)]
-	_, wsLeft := cp.workspaces[WorkspaceName(id)]
+	_, gwLeft := cp.gateways[GatewayName(id)]
 	cp.mu.Unlock()
-	check(t, !taskLeft && !wsLeft, "prune left task=%v workspace=%v", taskLeft, wsLeft)
+	check(t, !taskLeft && !gwLeft, "prune left task=%v gateway=%v", taskLeft, gwLeft)
 	res := must(b.Result(t.Context(), id))(t)
 	check(t, res.Status == jobs.Achieved && res.Summary == "done", "result after prune = %+v", res)
 }

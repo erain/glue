@@ -25,23 +25,23 @@ import (
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/jobs"
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type fakeAXControlPlane struct {
 	v1alpha1.UnimplementedAXServer
-	ateapipb.UnimplementedControlServer
 	mu                                     sync.Mutex
 	steps                                  []string
 	workspaces                             map[string]*v1alpha1.Workspace
+	gateways                               map[string]*v1alpha1.Gateway
 	tasks                                  map[string]*v1alpha1.Task
-	egress                                 map[string]bool
 	polls                                  map[string]int
+	pageSizeLimit                          int
 	createTaskCalls, resumeCalls, getCalls int
 	failFirstCreateTask                    error
 	noRoom, neverReady, noRoomRPC          bool
@@ -60,34 +60,39 @@ func (f *fakeAXControlPlane) lockStep(name string) func() {
 	f.steps = append(f.steps, name)
 	return f.mu.Unlock
 }
-func (f *fakeAXControlPlane) UpdateWorkspace(_ context.Context, req *v1alpha1.UpdateWorkspaceRequest) (*v1alpha1.Workspace, error) {
-	defer f.lockStep("UpdateWorkspace")()
-	f.workspaces[req.GetWorkspace().GetMetadata().GetName()] = req.GetWorkspace()
-	return req.GetWorkspace(), nil
+func (f *fakeAXControlPlane) CreateGateway(_ context.Context, req *v1alpha1.CreateGatewayRequest) (*v1alpha1.Gateway, error) {
+	defer f.lockStep("CreateGateway")()
+	gw := req.GetGateway()
+	if _, ok := f.gateways[gw.GetMetadata().GetName()]; ok {
+		return nil, status.Error(codes.AlreadyExists, "gateway exists")
+	}
+	f.gateways[gw.GetMetadata().GetName()] = gw
+	return gw, nil
+}
+func (f *fakeAXControlPlane) UpdateGateway(_ context.Context, req *v1alpha1.UpdateGatewayRequest) (*v1alpha1.Gateway, error) {
+	defer f.lockStep("UpdateGateway")()
+	gw := req.GetGateway()
+	f.gateways[gw.GetMetadata().GetName()] = gw
+	return gw, nil
 }
 func (f *fakeAXControlPlane) CreateTask(_ context.Context, req *v1alpha1.CreateTaskRequest) (*v1alpha1.Task, error) {
 	defer f.lockStep("CreateTask")()
 	f.createTaskCalls++
 	t := req.GetTask()
 	if _, ok := f.tasks[t.GetMetadata().GetName()]; ok {
-		return nil, status.Error(codes.AlreadyExists, "task exists")
+		return nil, status.Error(codes.FailedPrecondition, "task already exists and is immutable")
+	}
+	if gwName := t.GetSpec().GetGateway().GetName(); gwName != "" && f.gateways[gwName] == nil {
+		return nil, status.Error(codes.FailedPrecondition, "gateway not found")
 	}
 	err := f.failFirstCreateTask
-	t.Status, f.tasks[t.GetMetadata().GetName()], f.failFirstCreateTask = &v1alpha1.TaskStatus{Phase: "Suspended"}, t, nil
+	t.Status, f.tasks[t.GetMetadata().GetName()], f.failFirstCreateTask = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_SUSPENDED}, t, nil
 	return t, err
-}
-func (f *fakeAXControlPlane) CreateActorEgressPolicy(_ context.Context, req *ateapipb.CreateActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
-	defer f.lockStep("CreateActorEgressPolicy")()
-	if f.egress[req.GetActor().GetName()] {
-		return nil, status.Error(codes.AlreadyExists, "egress exists")
-	}
-	f.egress[req.GetActor().GetName()] = true
-	return req.GetEgressPolicy(), nil
 }
 func (f *fakeAXControlPlane) SuspendTask(_ context.Context, req *v1alpha1.SuspendTaskRequest) (*v1alpha1.Task, error) {
 	defer f.lockStep("SuspendTask")()
 	if t, ok := f.tasks[req.GetName()]; ok {
-		t.Status = &v1alpha1.TaskStatus{Phase: "Suspended"}
+		t.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_SUSPENDED}
 		return t, nil
 	}
 	return nil, status.Error(codes.NotFound, "not found")
@@ -96,13 +101,13 @@ func (f *fakeAXControlPlane) ResumeTask(_ context.Context, req *v1alpha1.ResumeT
 	defer f.lockStep("ResumeTask")()
 	f.resumeCalls, f.polls[req.GetName()] = f.resumeCalls+1, 0
 	if f.noRoomRPC {
-		return nil, status.Error(codes.Internal, "resuming task on substrate: resuming actor: rpc error: code = ResourceExhausted desc = no worker has room for the actor")
+		return nil, status.Error(codes.Unavailable, "resuming task on substrate: resuming actor: rpc error: code = ResourceExhausted desc = no worker has room for the actor")
 	}
-	if t, ok := f.tasks[req.GetName()]; ok && f.egress[req.GetName()] {
-		t.Status = &v1alpha1.TaskStatus{Phase: "Pending"}
+	if t, ok := f.tasks[req.GetName()]; ok && f.gateways[t.GetSpec().GetGateway().GetName()] != nil {
+		t.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_QUEUED}
 		return t, nil
 	}
-	return nil, status.Error(codes.FailedPrecondition, "missing task or egress before ResumeTask")
+	return nil, status.Error(codes.FailedPrecondition, "missing task or gateway before ResumeTask")
 }
 func (f *fakeAXControlPlane) GetTask(_ context.Context, req *v1alpha1.GetTaskRequest) (*v1alpha1.Task, error) {
 	defer f.lockStep("GetTask")()
@@ -111,31 +116,49 @@ func (f *fakeAXControlPlane) GetTask(_ context.Context, req *v1alpha1.GetTaskReq
 	if !ok {
 		return nil, status.Error(codes.NotFound, "not found")
 	}
-	if f.polls[req.GetName()]++; f.noRoom && t.GetStatus().GetPhase() == "Pending" {
-		t.Status = &v1alpha1.TaskStatus{Phase: "Failed", Conditions: []*v1alpha1.Condition{{Type: "Ready", Status: "False", Reason: "ActorResumeFailed", Message: "resuming actor default/" + req.GetName() + ": rpc error: code = ResourceExhausted desc = no worker has room for the actor"}}}
+	if f.polls[req.GetName()]++; f.noRoom && t.GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_QUEUED {
+		t.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_QUEUED, Conditions: []*v1alpha1.Condition{{Type: v1alpha1.ConditionReady, Status: "False", Reason: v1alpha1.ReasonActorResumeFailed, Message: "resuming actor default/" + req.GetName() + ": rpc error: code = ResourceExhausted desc = no worker has room for the actor"}}}
 	} else if f.neverReady {
-		// stays Pending
-	} else if t.GetStatus().GetPhase() == "Pending" && f.polls[req.GetName()] >= 2 {
-		t.Status = &v1alpha1.TaskStatus{Phase: "Running", Conditions: []*v1alpha1.Condition{{Type: "WorkspaceReady", Status: "True"}}}
+		// stays Queued
+	} else if t.GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_QUEUED && f.polls[req.GetName()] >= 2 {
+		t.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_WORKING, Conditions: []*v1alpha1.Condition{{Type: v1alpha1.ConditionWorkspaceReady, Status: "True"}, {Type: v1alpha1.ConditionReady, Status: "True"}}}
 	}
 	return t, nil
 }
-func (f *fakeAXControlPlane) ListTasks(_ context.Context, _ *v1alpha1.ListTasksRequest) (*v1alpha1.ListTasksResponse, error) {
+func (f *fakeAXControlPlane) ListTasks(_ context.Context, req *v1alpha1.ListTasksRequest) (*v1alpha1.ListTasksResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return &v1alpha1.ListTasksResponse{Tasks: slices.Collect(maps.Values(f.tasks))}, nil
+	keys := slices.Sorted(maps.Keys(f.tasks))
+	start := 0
+	if req.GetPageToken() != "" {
+		_, _ = fmt.Sscanf(req.GetPageToken(), "%d", &start)
+	}
+	limit := len(keys)
+	if f.pageSizeLimit > 0 && f.pageSizeLimit < limit {
+		limit = f.pageSizeLimit
+	}
+	end := min(len(keys), start+limit)
+	var out []*v1alpha1.Task
+	for _, k := range keys[start:end] {
+		out = append(out, f.tasks[k])
+	}
+	var next string
+	if end < len(keys) {
+		next = fmt.Sprintf("%d", end)
+	}
+	return &v1alpha1.ListTasksResponse{Tasks: out, NextPageToken: next}, nil
 }
-func (f *fakeAXControlPlane) DeleteTask(_ context.Context, req *v1alpha1.DeleteTaskRequest) (*v1alpha1.DeleteTaskResponse, error) {
+func (f *fakeAXControlPlane) DeleteTask(_ context.Context, req *v1alpha1.DeleteTaskRequest) (*emptypb.Empty, error) {
 	defer f.lockStep("DeleteTask")()
-	return &v1alpha1.DeleteTaskResponse{}, delKey(f.tasks, req.GetName())
+	return &emptypb.Empty{}, delKey(f.tasks, req.GetName())
 }
-func (f *fakeAXControlPlane) DeleteWorkspace(_ context.Context, req *v1alpha1.DeleteWorkspaceRequest) (*v1alpha1.DeleteWorkspaceResponse, error) {
+func (f *fakeAXControlPlane) DeleteGateway(_ context.Context, req *v1alpha1.DeleteGatewayRequest) (*emptypb.Empty, error) {
+	defer f.lockStep("DeleteGateway")()
+	return &emptypb.Empty{}, delKey(f.gateways, req.GetName())
+}
+func (f *fakeAXControlPlane) DeleteWorkspace(_ context.Context, req *v1alpha1.DeleteWorkspaceRequest) (*emptypb.Empty, error) {
 	defer f.lockStep("DeleteWorkspace")()
-	return &v1alpha1.DeleteWorkspaceResponse{}, delKey(f.workspaces, req.GetName())
-}
-func (f *fakeAXControlPlane) DeleteActorEgressPolicy(_ context.Context, req *ateapipb.DeleteActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
-	defer f.lockStep("DeleteActorEgressPolicy")()
-	return &ateapipb.EgressPolicy{}, delKey(f.egress, req.GetActor().GetName())
+	return &emptypb.Empty{}, delKey(f.workspaces, req.GetName())
 }
 
 func check(t *testing.T, ok bool, format string, args ...any) {
@@ -151,16 +174,14 @@ func mustOK(t *testing.T, err error) { t.Helper(); check(t, err == nil, "unexpec
 
 func newFakeBackendEnv(t *testing.T, handler http.HandlerFunc) (*fakeAXControlPlane, *fakeConnectRouter, Options, *Backend) {
 	t.Helper()
-	cp := &fakeAXControlPlane{workspaces: map[string]*v1alpha1.Workspace{}, tasks: map[string]*v1alpha1.Task{}, egress: map[string]bool{}, polls: map[string]int{}}
+	cp := &fakeAXControlPlane{workspaces: map[string]*v1alpha1.Workspace{}, gateways: map[string]*v1alpha1.Gateway{}, tasks: map[string]*v1alpha1.Task{}, polls: map[string]int{}}
 	lis, srv := bufconn.Listen(1<<20), grpc.NewServer()
 	v1alpha1.RegisterAXServer(srv, cp)
-	ateapipb.RegisterControlServer(srv, cp)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() { srv.Stop(); _ = lis.Close() })
 	dialOpt := []grpc.DialOption{grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials())}
 	axCli, axConn, _ := DialAX("passthrough:///bufnet", dialOpt...)
-	ctrlCli, ctrlConn, _ := dialControl("passthrough:///bufnet", nil, nil, dialOpt...)
-	t.Cleanup(func() { _ = axConn.Close(); _ = ctrlConn.Close() })
+	t.Cleanup(func() { _ = axConn.Close() })
 	router := startFakeConnectRouter(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cp.taskHTTPHits.Add(1)
 		defer cp.lockStep(r.Method + " " + r.URL.Path)()
@@ -172,7 +193,7 @@ func newFakeBackendEnv(t *testing.T, handler http.HandlerFunc) (*fakeAXControlPl
 		jobID := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/jobs/"), "/")[0]
 		_, _ = fmt.Fprintf(w, `{"id":%q,"status":"running","credentials":"present"}`, jobID)
 	}))
-	opts := Options{Connect: ConnectOptions{Atespace: "default", RouterAddr: router.Addr, RouterTLS: router.ClientTLS, AXClient: axCli, ControlClient: ctrlCli}, Image: "localhost:5001/glue-task@sha256:abcd", Secret: "unit-test-hmac-secret", CacheDir: filepath.Join(t.TempDir(), "ax-jobs"), PollInterval: 5 * time.Millisecond}
+	opts := Options{Connect: ConnectOptions{Atespace: "default", RouterAddr: router.Addr, RouterTLS: router.ClientTLS, AXClient: axCli}, Image: "localhost:5001/glue-task@sha256:abcd", Secret: "unit-test-hmac-secret", CacheDir: filepath.Join(t.TempDir(), "ax-jobs"), PollInterval: 5 * time.Millisecond}
 	b := must(NewBackend(t.Context(), opts))(t)
 	t.Cleanup(func() { _ = b.Close() })
 	return cp, router, opts, b
@@ -221,7 +242,7 @@ func TestDefaultImageAndRandomInjectedSecret(t *testing.T) {
 	_, err := b1.Create(t.Context(), "job-noimage001", jobs.Spec{Objective: "test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
 	mustOK(t, err)
 	cp.mu.Lock()
-	taskImg := cp.tasks[TaskName("job-noimage001")].GetSpec().GetImage()
+	taskImg := cp.tasks[TaskName("job-noimage001")].GetSpec().GetProfile().GetImage()
 	cp.mu.Unlock()
 	check(t, taskImg == PublishedImage+"@sha256:"+strings.Repeat("ab", 32), "task image without configuration = %q, want the published image pinned by digest", taskImg)
 }
@@ -279,7 +300,7 @@ func TestUnpinnedImageWhenRegistryDown(t *testing.T) {
 	_, err := b.Create(t.Context(), "job-noimage002", jobs.Spec{Objective: "test", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}})
 	mustOK(t, err)
 	cp.mu.Lock()
-	taskImg := cp.tasks[TaskName("job-noimage002")].GetSpec().GetImage()
+	taskImg := cp.tasks[TaskName("job-noimage002")].GetSpec().GetProfile().GetImage()
 	cp.mu.Unlock()
 	check(t, taskImg == PublishedImage+":main", "fallback task image = %q", taskImg)
 	check(t, len(stages) > 0 && strings.Contains(strings.Join(stages, "\n"), "could not resolve"), "no warning: %v", stages)
@@ -311,11 +332,12 @@ func TestAXSubmitReconcileCredentialsAndCleanup(t *testing.T) {
 	id, spec := "job-111122223333", jobs.Spec{Objective: "Update docs", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox", BaseRef: "main"}}
 	job := must(b.Submit(t.Context(), id, spec))(t)
 	check(t, job.ID == id && job.Status == jobs.Running, "Submit: job=%+v", job)
-	want := []string{"UpdateWorkspace", "CreateTask", "CreateActorEgressPolicy", "ResumeTask", "GetTask", "GetTask", "POST /v1/credentials", "POST /v1/jobs/" + id + "/start"}
+	want := []string{"CreateGateway", "CreateTask", "ResumeTask", "GetTask", "GetTask", "POST /v1/credentials", "POST /v1/jobs/" + id + "/start"}
 	check(t, reflect.DeepEqual(cp.steps, want), "steps = %v, want %v", cp.steps, want)
 	task := cp.tasks[TaskName(id)]
 	cfgStr := strings.ToLower(fmt.Sprint(task.GetSpec().GetConfig().AsMap()))
-	check(t, len(task.GetSpec().GetEnv()) == 0 && slices.Contains(task.GetSpec().GetCommand(), "--token-file") && !strings.Contains(cfgStr, strings.ToLower(b.taskToken(id))) && !strings.Contains(cfgStr, "ghp_") && !strings.Contains(cfgStr, "aiza"), "unexpected task spec or leaked secret: %+v", task.GetSpec())
+	cmdStr := strings.Join(task.GetSpec().GetCommands(), " ")
+	check(t, len(task.GetSpec().GetEnv()) == 0 && task.GetSpec().GetGoal().GetText() == "Update docs" && strings.Contains(cmdStr, "--token "+daemon.HashToken(b.taskToken(id))) && !strings.Contains(cmdStr, b.taskToken(id)) && !strings.Contains(cfgStr, strings.ToLower(b.taskToken(id))) && !strings.Contains(cfgStr, "ghp_") && !strings.Contains(cfgStr, "aiza"), "unexpected task spec or leaked secret: %+v", task.GetSpec())
 	check(t, len(pushed) == 1 && pushed[0].GitHubToken == "ghp_envtoken1234567890" && pushed[0].ProviderKeys["gemini"] == "AIzaEnvGeminiKey1234567890", "pushed = %+v", pushed)
 	router.mu.Lock()
 	caps := slices.Clone(router.connects)
@@ -362,6 +384,9 @@ func TestStatelessDiscoveryAndResultResumeSuspend(t *testing.T) {
 	b2 := must(NewBackend(t.Context(), opts))(t)
 	defer b2.Close()
 
+	cp.mu.Lock()
+	cp.pageSizeLimit = 1
+	cp.mu.Unlock()
 	cp.taskHTTPHits.Store(0)
 	list := must(b2.ListJobs(t.Context(), jobs.Filter{}))(t)
 	check(t, len(list) == 2 && list[0].ID == j2.ID && list[1].ID == j1.ID && list[0].Status == jobs.Suspended && list[0].Spec.Repo.URL == "https://github.com/erain/glue-sandbox", "ListJobs = %+v", list)
@@ -370,10 +395,10 @@ func TestStatelessDiscoveryAndResultResumeSuspend(t *testing.T) {
 	check(t, len(must(b2.Permissions(t.Context(), j2.ID, "pending"))(t)) == 0, "expected empty permissions while suspended")
 	check(t, cp.resumeCalls == 0 && cp.taskHTTPHits.Load() == 0, "expected 0 resume/HTTP hits, got %d/%d", cp.resumeCalls, cp.taskHTTPHits.Load())
 	_, resErr := b2.Result(t.Context(), j1.ID)
-	check(t, resErr != nil && cp.tasks[TaskName(j1.ID)].GetStatus().GetPhase() == "Suspended", "expected non-terminal Result to re-suspend, err=%v", resErr)
+	check(t, resErr != nil && cp.tasks[TaskName(j1.ID)].GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "expected non-terminal Result to re-suspend, err=%v", resErr)
 
 	res := must(b2.Result(t.Context(), j2.ID))(t)
-	check(t, res.Status == jobs.Achieved && res.Summary == "all tests green" && cp.tasks[TaskName(j2.ID)].GetStatus().GetPhase() == "Suspended", "Result = %+v", res)
+	check(t, res.Status == jobs.Achieved && res.Summary == "all tests green" && cp.tasks[TaskName(j2.ID)].GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "Result = %+v", res)
 	check(t, must(os.Stat(b2.cachePath(j2.ID)))(t).Mode().Perm() == 0o600, "expected 0600 cache file")
 	cp.getCalls, _ = 0, cp.taskHTTPHits.Swap(0)
 	res2 := must(b2.Result(t.Context(), j2.ID))(t)
@@ -417,7 +442,7 @@ func TestLiveAXJobLifecycle(t *testing.T) {
 	check(t, slices.ContainsFunc(list, func(j jobs.Job) bool {
 		return j.ID == created.ID && j.Status == jobs.Suspended && j.Spec.Repo.URL == "https://github.com/erain/glue-sandbox.git"
 	}), "ListJobs missing %s: %+v", created.ID, list)
-	check(t, must(b2.Show(ctx, created.ID))(t).Status == jobs.Suspended && must(b2.getTask(ctx, created.ID))(t).GetStatus().GetPhase() == "Suspended", "expected task to remain Suspended")
+	check(t, must(b2.Show(ctx, created.ID))(t).Status == jobs.Suspended && must(b2.getTask(ctx, created.ID))(t).GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "expected task to remain Suspended")
 
 	_, resumeDur := measure(func() int { mustOK(t, b2.Resume(ctx, created.ID)); return 0 })
 	d, showDur := measure(func() jobs.Detail { return must(b2.Show(ctx, created.ID))(t) })
@@ -450,11 +475,8 @@ func TestJobDiffUsesCache(t *testing.T) {
 	})
 	id := "job-diffcache001"
 	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Diff", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
-	cp.mu.Lock()
-	cp.egress[TaskName(id)] = true
-	cp.mu.Unlock()
 	p1 := must(b.Patch(t.Context(), id))(t)
-	check(t, strings.Contains(string(p1), "+hello from aaa111") && cp.tasks[TaskName(id)].GetStatus().GetPhase() == "Suspended", "first patch = %q phase %q", p1, cp.tasks[TaskName(id)].GetStatus().GetPhase())
+	check(t, strings.Contains(string(p1), "+hello from aaa111") && cp.tasks[TaskName(id)].GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_SUSPENDED, "first patch = %q state %v", p1, cp.tasks[TaskName(id)].GetStatus().GetState())
 	hits, resumes := cp.taskHTTPHits.Load(), cp.resumeCalls
 	p2 := must(b.Patch(t.Context(), id))(t)
 	check(t, string(p2) == string(p1) && cp.taskHTTPHits.Load() == hits && cp.resumeCalls == resumes, "cached patch woke the task: hits %d->%d resumes %d->%d", hits, cp.taskHTTPHits.Load(), resumes, cp.resumeCalls)
@@ -472,16 +494,20 @@ func TestJobDiffUsesCache(t *testing.T) {
 	check(t, errors.Is(err, os.ErrNotExist), "patch cache not removed on delete: %v", err)
 }
 
-func TestWorkspaceSeedsOnlyTokenHash(t *testing.T) {
+func TestTaskCommandCarriesOnlyTokenHashAndGateway(t *testing.T) {
 	cp, _, _, b := newFakeBackendEnv(t, nil)
 	id := "job-tokenhash001"
 	must(b.Create(t.Context(), id, jobs.Spec{Objective: "Hash", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
 	cp.mu.Lock()
-	files := cp.workspaces[WorkspaceName(id)].GetSpec().GetFiles()
+	gw := cp.gateways[GatewayName(id)]
+	task := cp.tasks[TaskName(id)]
+	wsCount := len(cp.workspaces)
 	cp.mu.Unlock()
-	check(t, len(files) == 1 && files[0].GetPath() == ".glue/token", "files = %v", files)
-	content := files[0].GetContent()
-	check(t, content == daemon.HashToken(b.taskToken(id))+"\n" && !strings.Contains(content, b.taskToken(id)), "workspace token file must hold only the hash, got %q", content)
+	check(t, wsCount == 0 && task.GetSpec().GetWorkspace() == nil, "expected no per-job Workspace prewarm resource, got %d", wsCount)
+	check(t, gw != nil && task.GetSpec().GetGateway().GetName() == GatewayName(id) && len(gw.GetSpec().GetEgress()) == 1, "gateway = %+v", gw)
+	cmds := task.GetSpec().GetCommands()
+	idx := slices.Index(cmds, "--token")
+	check(t, idx >= 0 && idx+1 < len(cmds) && cmds[idx+1] == daemon.HashToken(b.taskToken(id)) && !strings.Contains(strings.Join(cmds, " "), b.taskToken(id)), "task commands must hold only the hash, got %v", cmds)
 }
 
 func TestSubmitProgress(t *testing.T) {
@@ -498,7 +524,7 @@ func TestSubmitProgress(t *testing.T) {
 	b := must(NewBackend(t.Context(), opts))(t)
 	defer b.Close()
 	must(b.Submit(t.Context(), "job-progress0001", jobs.Spec{Objective: "Show stages", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox"}}))(t)
-	want := []string{"workspace", "task", "egress", "sandbox ready", "credentials", "started"}
+	want := []string{"gateway", "task", "sandbox ready", "credentials", "started"}
 	check(t, reflect.DeepEqual(stages, want), "stages = %v, want %v", stages, want)
 }
 
@@ -579,10 +605,10 @@ func TestTaskClonesRepoItself(t *testing.T) {
 	_, err := b.Create(t.Context(), "job-clone0000001", jobs.Spec{Objective: "x", Repo: jobs.RepoSpec{URL: "https://github.com/erain/glue-sandbox", BaseRef: "dev", SnapshotOf: "main"}})
 	mustOK(t, err)
 	cp.mu.Lock()
-	ws := cp.workspaces[WorkspaceName("job-clone0000001")]
 	task := cp.tasks[TaskName("job-clone0000001")]
+	wsCount := len(cp.workspaces)
 	cp.mu.Unlock()
-	check(t, ws != nil && len(ws.GetSpec().GetGit()) == 0 && len(ws.GetSpec().GetFiles()) == 1, "workspace declares git (AX's setup cannot fetch it in the sandbox): %+v", ws.GetSpec())
+	check(t, wsCount == 0 && task.GetSpec().GetWorkspace() == nil, "expected no workspace git setup: %+v", task.GetSpec().GetWorkspace())
 	repo, _ := task.GetSpec().GetConfig().AsMap()["repo"].(map[string]any)
 	check(t, repo["url"] == "https://github.com/erain/glue-sandbox" && repo["base_ref"] == "dev" && repo["snapshot_of"] == "main" && repo["path"] == nil, "task config repo = %v", repo)
 }

@@ -37,7 +37,6 @@ import (
 	"github.com/erain/glue/internal/qr"
 	"github.com/erain/glue/internal/redact"
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"gopkg.in/yaml.v3"
 )
 
@@ -56,17 +55,15 @@ func inKubePod(explicitKube bool) bool {
 type ConnectOptions struct {
 	AXServer, KubeConfig, KubeContext, Atespace, AXNamespace, RouterAddr string
 	AXClient                                                             v1alpha1.AXClient
-	ControlClient                                                        ateapipb.ControlClient
 	RouterTLS                                                            *tls.Config
 	RouterDialContext                                                    func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
-// Connection holds ready-to-use AX gRPC, internal control, and router HTTP clients.
+// Connection holds ready-to-use AX gRPC and router HTTP clients.
 type Connection struct {
 	Atespace, KubeConfig, KubeContext, RouterAddr string
 	RouterTLS                                     *tls.Config
 	AX                                            v1alpha1.AXClient
-	Control                                       ateapipb.ControlClient
 	RouterHTTP                                    *http.Client
 	closers                                       []io.Closer
 }
@@ -89,8 +86,8 @@ type tunnelInfo struct {
 	Port, PID int
 }
 type cachedCreds struct {
-	TrustBundlePEM, CertChainPEM, KeyPEM, Token string
-	ExpiresAt                                   time.Time
+	TrustBundlePEM, CertChainPEM, KeyPEM string
+	ExpiresAt                            time.Time
 }
 
 // TunnelDir returns the 0700 directory used for local AX tunnel state and short-lived credentials.
@@ -211,24 +208,23 @@ func ResolveKubeTarget(kubeConfigOpt, kubeContextOpt string) (string, string, er
 	return "", "", errors.New("axbackend: no Kubernetes context found for AX connection")
 }
 
-// Connect establishes AX gRPC, internal control gRPC, and router mTLS HTTP clients.
+// Connect establishes AX gRPC and router mTLS HTTP clients.
 func Connect(ctx context.Context, opts ConnectOptions) (*Connection, error) {
 	opts.Atespace = cmp.Or(strings.TrimSpace(opts.Atespace), "default")
 	opts.AXNamespace = cmp.Or(strings.TrimSpace(opts.AXNamespace), envOr("AX_SYSTEM_NAMESPACE"), DefaultAXNamespace)
 	explicitKube := opts.KubeConfig != "" || opts.KubeContext != "" || envOr("GLUE_AX_KUBECONFIG", "GLUE_AX_CONTEXT") != ""
 	inCluster, pod := !explicitKube, inKubePod(explicitKube)
-	for _, p := range []string{podCertBundlePath, DefaultServiceDNSCA, DefaultControlToken} {
+	for _, p := range []string{podCertBundlePath, DefaultServiceDNSCA} {
 		if _, err := os.Stat(p); err != nil {
 			inCluster = false
 		}
 	}
 	axTarget, routerAddr := cmp.Or(strings.TrimSpace(opts.AXServer), envOr("GLUE_AX_SERVER", "AX_SERVER_ADDR", "AX_SERVER"), map[bool]string{true: "ax-server." + opts.AXNamespace + ":8080"}[inCluster || pod]), strings.TrimSpace(opts.RouterAddr)
-	needAX, needRouter := opts.AXClient == nil && axTarget == "" && !inCluster && !pod, routerAddr == "" && opts.RouterDialContext == nil && !inCluster && !pod
-	needCtrl, needCreds := opts.ControlClient == nil && !inCluster && !pod, opts.RouterTLS == nil || opts.ControlClient == nil
-	var kubeCfg, kubeCtx, ctrlAddr string
+	needAX, needRouter, needCreds := opts.AXClient == nil && axTarget == "" && !inCluster && !pod, routerAddr == "" && opts.RouterDialContext == nil && !inCluster && !pod, opts.RouterTLS == nil
+	var kubeCfg, kubeCtx string
 	var err error
-	if !inCluster && !pod && (needAX || needRouter || needCtrl || needCreds || explicitKube) {
-		if kubeCfg, kubeCtx, err = ResolveKubeTarget(opts.KubeConfig, opts.KubeContext); err != nil && (needAX || needRouter || needCtrl || needCreds) {
+	if !inCluster && !pod && (needAX || needRouter || needCreds || explicitKube) {
+		if kubeCfg, kubeCtx, err = ResolveKubeTarget(opts.KubeConfig, opts.KubeContext); err != nil && (needAX || needRouter || needCreds) {
 			return nil, err
 		}
 	}
@@ -238,30 +234,20 @@ func Connect(ctx context.Context, opts ConnectOptions) (*Connection, error) {
 	if err == nil && needRouter {
 		routerAddr, err = ensureTunnel(ctx, kubeCfg, kubeCtx, "ate-system", "atenet-router", 8444, "")
 	}
-	if err == nil && needCtrl {
-		ctrlAddr, err = ensureTunnel(ctx, kubeCfg, kubeCtx, "ate-system", "api", 443, "")
-	}
 	if err != nil {
 		return nil, err
 	}
 	var getRouterTLS func(context.Context) (*tls.Config, error)
-	var getToken func(context.Context) (string, error)
 	var initTLS *tls.Config
-	var ctrlRootCAs *x509.CertPool
 	if needCreds {
 		cs := &credSource{kubeCfg: kubeCfg, kubeCtx: kubeCtx, namespace: opts.AXNamespace, inCluster: inCluster}
-		if initTLS, _, err = cs.get(ctx); err != nil {
+		if initTLS, err = cs.get(ctx); err != nil {
 			return nil, err
 		}
-		ctrlRootCAs = initTLS.RootCAs
-		getToken = func(c context.Context) (string, error) { _, t, e := cs.get(c); return t, e }
-		getRouterTLS = func(c context.Context) (*tls.Config, error) { cfg, _, e := cs.get(c); return cfg, e }
+		getRouterTLS = cs.get
 	}
 	if opts.RouterTLS != nil {
 		initTLS, getRouterTLS = opts.RouterTLS.Clone(), nil
-		if ctrlRootCAs == nil {
-			ctrlRootCAs = initTLS.RootCAs
-		}
 	}
 	dialRouter := opts.RouterDialContext
 	if needRouter {
@@ -280,21 +266,13 @@ func Connect(ctx context.Context, opts ConnectOptions) (*Connection, error) {
 		}
 	}
 	rt, _ := NewRouterTransport(RouterOptions{RouterAddr: routerAddr, Atespace: opts.Atespace, TLSConfig: initTLS, GetTLSConfig: getRouterTLS, DialContext: dialRouter})
-	conn := &Connection{Atespace: opts.Atespace, KubeConfig: kubeCfg, KubeContext: kubeCtx, RouterAddr: rt.opts.RouterAddr, RouterTLS: rt.baseTLS.Clone(), AX: opts.AXClient, Control: opts.ControlClient, RouterHTTP: &http.Client{Transport: rt}}
+	conn := &Connection{Atespace: opts.Atespace, KubeConfig: kubeCfg, KubeContext: kubeCtx, RouterAddr: rt.opts.RouterAddr, RouterTLS: rt.baseTLS.Clone(), AX: opts.AXClient, RouterHTTP: &http.Client{Transport: rt}}
 	if conn.AX == nil {
 		axCli, cc, err := DialAX(axTarget)
 		if err != nil {
 			return nil, err
 		}
 		conn.AX, conn.closers = axCli, append(conn.closers, cc)
-	}
-	if conn.Control == nil {
-		ctrlCli, cc, err := dialControl(ctrlAddr, ctrlRootCAs, getToken)
-		if err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		conn.Control, conn.closers = ctrlCli, append(conn.closers, cc)
 	}
 	return conn, nil
 }
@@ -411,65 +389,60 @@ func ensureTunnel(ctx context.Context, kubeCfg, kubeCtx, namespace, service stri
 }
 
 type credSource struct {
-	kubeCfg, kubeCtx, namespace, token string
-	inCluster                          bool
-	mu                                 sync.Mutex
-	tlsCfg                             *tls.Config
-	expiresAt                          time.Time
+	kubeCfg, kubeCtx, namespace string
+	inCluster                   bool
+	mu                          sync.Mutex
+	tlsCfg                      *tls.Config
+	expiresAt                   time.Time
 }
 
-func (cs *credSource) get(ctx context.Context) (*tls.Config, string, error) {
+func (cs *credSource) get(ctx context.Context) (*tls.Config, error) {
 	if cs.inCluster {
 		ca, caErr := os.ReadFile(DefaultServiceDNSCA)
 		bundle, bErr := os.ReadFile(podCertBundlePath)
-		tok, tErr := os.ReadFile(DefaultControlToken)
 		cfg, _, pErr := parseCredTLS(cachedCreds{TrustBundlePEM: string(ca), CertChainPEM: string(bundle), KeyPEM: string(bundle)})
-		return cfg, strings.TrimSpace(string(tok)), errors.Join(caErr, bErr, tErr, pErr)
+		return cfg, errors.Join(caErr, bErr, pErr)
 	}
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	now := time.Now()
-	if cs.tlsCfg != nil && cs.token != "" && now.Before(cs.expiresAt) {
-		return cs.tlsCfg, cs.token, nil
+	if cs.tlsCfg != nil && now.Before(cs.expiresAt) {
+		return cs.tlsCfg, nil
 	}
 	tunnelMu.Lock()
 	defer tunnelMu.Unlock()
 	path := filepath.Join(TunnelDir(), cacheKey(cs.kubeCfg, cs.kubeCtx, cs.namespace)+"-creds.json")
 	if data, err := os.ReadFile(path); err == nil {
 		var c cachedCreds
-		if json.Unmarshal(data, &c) == nil && c.Token != "" && now.Before(c.ExpiresAt) {
+		if json.Unmarshal(data, &c) == nil && now.Before(c.ExpiresAt) {
 			if cfg, notAfter, err := parseCredTLS(c); err == nil && now.Add(time.Minute).Before(notAfter) {
-				cs.tlsCfg, cs.token, cs.expiresAt = cfg, c.Token, c.ExpiresAt
-				return cfg, c.Token, nil
+				cs.tlsCfg, cs.expiresAt = cfg, c.ExpiresAt
+				return cfg, nil
 			}
 		}
 	}
 	ctbOut, err := runKubectl(ctx, cs.kubeCfg, cs.kubeCtx, nil, "get", "clustertrustbundles.certificates.k8s.io", "-l", "podcert.ate.dev/canarying=live", "-o", `jsonpath={range .items[?(@.spec.signerName=="servicedns.podcert.ate.dev/identity")]}{.spec.trustBundle}{"\n"}{end}`)
 	if err != nil || strings.TrimSpace(string(ctbOut)) == "" {
-		return nil, "", fmt.Errorf("axbackend: get servicedns ClusterTrustBundle: %w", cmp.Or(err, errors.New("empty trust bundle")))
+		return nil, fmt.Errorf("axbackend: get servicedns ClusterTrustBundle: %w", cmp.Or(err, errors.New("empty trust bundle")))
 	}
 	chainPEM, keyPEM, err := mintPodCert(ctx, cs.kubeCfg, cs.kubeCtx, cs.namespace)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	tokOut, err := runKubectl(ctx, cs.kubeCfg, cs.kubeCtx, nil, "-n", cs.namespace, "create", "token", "ax-server", "--audience="+DefaultControlSNI, "--duration=3600s")
-	if err != nil {
-		return nil, "", fmt.Errorf("axbackend: create token in %s: %w", cs.namespace, err)
-	}
-	c := cachedCreds{TrustBundlePEM: string(ctbOut), CertChainPEM: chainPEM, KeyPEM: keyPEM, Token: strings.TrimSpace(string(tokOut))}
+	c := cachedCreds{TrustBundlePEM: string(ctbOut), CertChainPEM: chainPEM, KeyPEM: keyPEM}
 	cfg, notAfter, err := parseCredTLS(c)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	c.ExpiresAt = time.Unix(min(now.Add(25*time.Minute).Unix(), notAfter.Add(-time.Minute).Unix()), 0)
 	if !now.Before(c.ExpiresAt) {
-		return nil, "", fmt.Errorf("axbackend: minted certificate expires too soon (%s)", notAfter.UTC().Format(time.RFC3339))
+		return nil, fmt.Errorf("axbackend: minted certificate expires too soon (%s)", notAfter.UTC().Format(time.RFC3339))
 	}
 	if err := writePrivateJSON(path, c); err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	cs.tlsCfg, cs.token, cs.expiresAt = cfg, c.Token, c.ExpiresAt
-	return cfg, c.Token, nil
+	cs.tlsCfg, cs.expiresAt = cfg, c.ExpiresAt
+	return cfg, nil
 }
 func parseCredTLS(c cachedCreds) (*tls.Config, time.Time, error) {
 	pool := x509.NewCertPool()

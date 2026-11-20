@@ -8,7 +8,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -18,9 +17,7 @@ import (
 	"strings"
 
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -29,11 +26,8 @@ const (
 	DefaultAXServerAddr  = "ax-server.ax-system:8080"
 	DefaultRouterAddr    = "atenet-router.ate-system:8444"
 	DefaultRouterSNI     = "atenet-router.ate-system.svc"
-	DefaultControlAddr   = "api.ate-system.svc.cluster.local:443"
-	DefaultControlSNI    = "api.ate-system.svc"
 	DefaultPodCertBundle = "/run/podidentity.podcert.ate.dev/credential-bundle.pem"
 	DefaultServiceDNSCA  = "/run/servicedns-ca/trust-bundle.pem"
-	DefaultControlToken  = "/var/run/secrets/ateapi/token"
 	TargetActorHeader    = "ate-target-actor"
 	DefaultTaskPort      = 8080
 )
@@ -172,26 +166,4 @@ func DialAX(target string, opts ...grpc.DialOption) (v1alpha1.AXClient, *grpc.Cl
 	}
 	conn, err := grpc.NewClient(trimScheme(cmp.Or(strings.TrimSpace(target), DefaultAXServerAddr)), opts...)
 	return v1alpha1.NewAXClient(conn), conn, err
-}
-
-type bearerFunc func(context.Context) (string, error)
-
-func (fn bearerFunc) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
-	tok, err := fn(ctx)
-	return map[string]string{"authorization": "Bearer " + strings.TrimSpace(tok)}, err
-}
-
-func (bearerFunc) RequireTransportSecurity() bool { return false }
-
-func dialControl(target string, rootCAs *x509.CertPool, getToken func(context.Context) (string, error), extraOpts ...grpc.DialOption) (ateapipb.ControlClient, *grpc.ClientConn, error) {
-	target = trimScheme(cmp.Or(strings.TrimSpace(target), DefaultControlAddr))
-	if len(extraOpts) == 0 {
-		cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: DefaultControlSNI, RootCAs: rootCAs}
-		extraOpts = append(extraOpts, grpc.WithTransportCredentials(credentials.NewTLS(cfg)), grpc.WithAuthority(DefaultControlSNI))
-		if getToken != nil {
-			extraOpts = append(extraOpts, grpc.WithPerRPCCredentials(bearerFunc(getToken)))
-		}
-	}
-	conn, err := grpc.NewClient(target, extraOpts...)
-	return ateapipb.NewControlClient(conn), conn, err
 }
