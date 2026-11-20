@@ -40,12 +40,12 @@ import (
 	"github.com/erain/glue/jobs"
 	filestore "github.com/erain/glue/stores/file"
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,14 +64,13 @@ func runGit(t *testing.T, dir string, args ...string) {
 
 type fakeAXRig struct {
 	v1alpha1.UnimplementedAXServer
-	ateapipb.UnimplementedControlServer
 	t            *testing.T
 	repoDir      string
 	makeProvider func() glue.Provider
 	mu           sync.Mutex
 	workspaces   map[string]*v1alpha1.Workspace
+	gateways     map[string]*v1alpha1.Gateway
 	tasks        map[string]*v1alpha1.Task
-	egress       map[string]bool
 	daemons      map[string]*daemon.Server
 	managers     map[string]*jobs.Manager
 	restarts     map[string]func() *jobs.Manager
@@ -83,21 +82,18 @@ func newFakeAXRig(t *testing.T, makeProvider func() glue.Provider) *fakeAXRig {
 	t.Helper()
 	rig := &fakeAXRig{
 		t: t, repoDir: serveJobRepo(t), makeProvider: makeProvider,
-		workspaces: map[string]*v1alpha1.Workspace{}, tasks: map[string]*v1alpha1.Task{},
-		egress: map[string]bool{}, daemons: map[string]*daemon.Server{}, managers: map[string]*jobs.Manager{},
+		workspaces: map[string]*v1alpha1.Workspace{}, gateways: map[string]*v1alpha1.Gateway{}, tasks: map[string]*v1alpha1.Task{},
+		daemons: map[string]*daemon.Server{}, managers: map[string]*jobs.Manager{},
 		restarts: map[string]func() *jobs.Manager{},
 	}
 	lis, gs := bufconn.Listen(1<<20), grpc.NewServer()
 	v1alpha1.RegisterAXServer(gs, rig)
-	ateapipb.RegisterControlServer(gs, rig)
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(func() { gs.Stop(); _ = lis.Close() })
 	dialOpts := []grpc.DialOption{grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(insecure.NewCredentials())}
 	axCli, axCC, err := axbackend.DialAX("passthrough:///bufnet", dialOpts...)
 	checkAX(t, err == nil, "DialAX: %v", err)
-	ctrlCC := must(grpc.NewClient("passthrough:///bufnet", dialOpts...))
-	t.Cleanup(func() { _ = axCC.Close(); _ = ctrlCC.Close() })
-	ctrlCli := ateapipb.NewControlClient(ctrlCC)
+	t.Cleanup(func() { _ = axCC.Close() })
 
 	upTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, _ := net.SplitHostPort(r.Host)
@@ -137,7 +133,7 @@ func newFakeAXRig(t *testing.T, makeProvider func() glue.Provider) *fakeAXRig {
 		rig.mu.Lock()
 		rig.lastOpts, opts.Image, opts.Secret, opts.CacheDir, opts.PollInterval = opts, cmp.Or(opts.Image, "localhost:5001/glue-task:test"), "test-hmac-secret", cacheDir, 5*time.Millisecond
 		rig.mu.Unlock()
-		opts.Connect = axbackend.ConnectOptions{Atespace: opts.Connect.Atespace, AXClient: axCli, ControlClient: ctrlCli, RouterDialContext: dialRouter, RouterTLS: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}
+		opts.Connect = axbackend.ConnectOptions{Atespace: opts.Connect.Atespace, AXClient: axCli, RouterDialContext: dialRouter, RouterTLS: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}
 		b, err := axbackend.NewBackend(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -154,10 +150,20 @@ func (r *fakeAXRig) taskOrErr(name string) (*v1alpha1.Task, error) {
 	}
 	return nil, status.Error(codes.NotFound, "not found")
 }
-func (r *fakeAXRig) UpdateWorkspace(_ context.Context, req *v1alpha1.UpdateWorkspaceRequest) (*v1alpha1.Workspace, error) {
+func (r *fakeAXRig) CreateGateway(_ context.Context, req *v1alpha1.CreateGatewayRequest) (*v1alpha1.Gateway, error) {
 	defer r.lock()()
-	r.workspaces[req.GetWorkspace().GetMetadata().GetName()] = req.GetWorkspace()
-	return req.GetWorkspace(), nil
+	gw := req.GetGateway()
+	if _, ok := r.gateways[gw.GetMetadata().GetName()]; ok {
+		return nil, status.Error(codes.AlreadyExists, "exists")
+	}
+	r.gateways[gw.GetMetadata().GetName()] = gw
+	return gw, nil
+}
+func (r *fakeAXRig) UpdateGateway(_ context.Context, req *v1alpha1.UpdateGatewayRequest) (*v1alpha1.Gateway, error) {
+	defer r.lock()()
+	gw := req.GetGateway()
+	r.gateways[gw.GetMetadata().GetName()] = gw
+	return gw, nil
 }
 func (r *fakeAXRig) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest) (*v1alpha1.Task, error) {
 	defer r.lock()()
@@ -167,10 +173,9 @@ func (r *fakeAXRig) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequ
 		return nil, status.Error(codes.AlreadyExists, "exists")
 	}
 	var tok string
-	for _, f := range r.workspaces[task.GetSpec().GetWorkspace().GetName()].GetSpec().GetFiles() {
-		if f.GetPath() == ".glue/token" {
-			tok = strings.TrimSpace(f.GetContent())
-		}
+	cmds := task.GetSpec().GetCommands()
+	if idx := slices.Index(cmds, "--token"); idx >= 0 && idx+1 < len(cmds) {
+		tok = strings.TrimSpace(cmds[idx+1])
 	}
 	rawCfg, _ := json.Marshal(task.GetSpec().GetConfig().AsMap())
 	var spec jobs.Spec
@@ -187,7 +192,7 @@ func (r *fakeAXRig) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequ
 	}
 	srv := must(daemon.New(daemon.Options{Host: glue.NewAgent(glue.AgentOptions{Provider: prov, Model: "fake", Store: filestore.New(r.t.TempDir())}), Token: tok, StateDir: stateDir, Jobs: mgr}))
 	r.t.Cleanup(func() { _ = srv.Close(); _ = mgr.Close() })
-	task.Status = &v1alpha1.TaskStatus{Phase: "Suspended"}
+	task.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_SUSPENDED}
 	jobID := strings.TrimPrefix(name, "glue-")
 	r.tasks[name], r.daemons[name], r.managers[jobID] = task, srv, mgr
 	r.restarts[jobID] = func() *jobs.Manager {
@@ -197,30 +202,25 @@ func (r *fakeAXRig) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequ
 		srv = must(daemon.New(daemon.Options{Host: glue.NewAgent(glue.AgentOptions{Provider: p2, Model: "fake", Store: filestore.New(r.t.TempDir())}), Token: tok, StateDir: stateDir, Jobs: mgr}))
 		r.t.Cleanup(func() { _ = srv.Close(); _ = mgr.Close() })
 		defer r.lock()()
-		r.tasks[name].Status, r.daemons[name], r.managers[jobID] = &v1alpha1.TaskStatus{Phase: "Suspended"}, srv, mgr
+		r.tasks[name].Status, r.daemons[name], r.managers[jobID] = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_SUSPENDED}, srv, mgr
 		return mgr
 	}
 	return task, nil
 }
-func (r *fakeAXRig) CreateActorEgressPolicy(_ context.Context, req *ateapipb.CreateActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
-	defer r.lock()()
-	r.egress[req.GetActor().GetName()] = true
-	return req.GetEgressPolicy(), nil
-}
 func (r *fakeAXRig) ResumeTask(_ context.Context, req *v1alpha1.ResumeTaskRequest) (*v1alpha1.Task, error) {
 	defer r.lock()()
 	r.resumes++
-	if t, ok := r.tasks[req.GetName()]; ok && r.egress[req.GetName()] {
-		t.Status = &v1alpha1.TaskStatus{Phase: "Running", Conditions: []*v1alpha1.Condition{{Type: "WorkspaceReady", Status: "True"}}}
+	if t, ok := r.tasks[req.GetName()]; ok && r.gateways[t.GetSpec().GetGateway().GetName()] != nil {
+		t.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_WORKING, Conditions: []*v1alpha1.Condition{{Type: v1alpha1.ConditionWorkspaceReady, Status: "True"}, {Type: v1alpha1.ConditionReady, Status: "True"}}}
 		return t, nil
 	}
-	return nil, status.Error(codes.FailedPrecondition, "missing task or egress")
+	return nil, status.Error(codes.FailedPrecondition, "missing task or gateway")
 }
 func (r *fakeAXRig) SuspendTask(_ context.Context, req *v1alpha1.SuspendTaskRequest) (*v1alpha1.Task, error) {
 	defer r.lock()()
 	t, err := r.taskOrErr(req.GetName())
 	if err == nil {
-		t.Status = &v1alpha1.TaskStatus{Phase: "Suspended"}
+		t.Status = &v1alpha1.TaskStatus{State: v1alpha1.TaskState_TASK_STATE_SUSPENDED}
 	}
 	return t, err
 }
@@ -232,20 +232,20 @@ func (r *fakeAXRig) ListTasks(_ context.Context, _ *v1alpha1.ListTasksRequest) (
 	defer r.lock()()
 	return &v1alpha1.ListTasksResponse{Tasks: slices.Collect(maps.Values(r.tasks))}, nil
 }
-func (r *fakeAXRig) DeleteTask(_ context.Context, req *v1alpha1.DeleteTaskRequest) (*v1alpha1.DeleteTaskResponse, error) {
+func (r *fakeAXRig) DeleteTask(_ context.Context, req *v1alpha1.DeleteTaskRequest) (*emptypb.Empty, error) {
 	defer r.lock()()
 	delete(r.tasks, req.GetName())
-	return &v1alpha1.DeleteTaskResponse{}, nil
+	return &emptypb.Empty{}, nil
 }
-func (r *fakeAXRig) DeleteWorkspace(_ context.Context, req *v1alpha1.DeleteWorkspaceRequest) (*v1alpha1.DeleteWorkspaceResponse, error) {
+func (r *fakeAXRig) DeleteGateway(_ context.Context, req *v1alpha1.DeleteGatewayRequest) (*emptypb.Empty, error) {
+	defer r.lock()()
+	delete(r.gateways, req.GetName())
+	return &emptypb.Empty{}, nil
+}
+func (r *fakeAXRig) DeleteWorkspace(_ context.Context, req *v1alpha1.DeleteWorkspaceRequest) (*emptypb.Empty, error) {
 	defer r.lock()()
 	delete(r.workspaces, req.GetName())
-	return &v1alpha1.DeleteWorkspaceResponse{}, nil
-}
-func (r *fakeAXRig) DeleteActorEgressPolicy(_ context.Context, req *ateapipb.DeleteActorEgressPolicyRequest) (*ateapipb.EgressPolicy, error) {
-	defer r.lock()()
-	delete(r.egress, req.GetActor().GetName())
-	return &ateapipb.EgressPolicy{}, nil
+	return &emptypb.Empty{}, nil
 }
 
 func clearJobTestEnv(t *testing.T) {
@@ -885,7 +885,7 @@ func TestRemoteSetupManifestsAndConfigValidate(t *testing.T) {
 	}
 	_, _ = must(run("setup", "--public-url", "https://glue.example.com", "--cf-team", "myteam.cloudflareaccess.com", "--cf-aud", "aud-1")), must(run("setup", "--dev-token"))
 	ucfg, _, uerr := loadUserConfig()
-	checkAX(t, uerr == nil && ucfg.PublicURL == "https://glue.example.com" && slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "PersistentVolumeClaim", "ConfigMap", "Secret", "Deployment", "Service"}) && parsedGW.Auth.TeamDomain == "https://myteam.cloudflareaccess.com" && parsedGW.Auth.CertsURL == "http://172.18.0.1:9000/certs" && strings.Contains(dry, "ate.dev/api-access") && strings.Contains(dry, "cloudflared"), "kinds=%v gw=%+v ucfg=%+v", kinds, parsedGW, ucfg)
+	checkAX(t, uerr == nil && ucfg.PublicURL == "https://glue.example.com" && slices.Equal(kinds, []string{"Namespace", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "PersistentVolumeClaim", "ConfigMap", "Secret", "Deployment", "Service"}) && parsedGW.Auth.TeamDomain == "https://myteam.cloudflareaccess.com" && parsedGW.Auth.CertsURL == "http://172.18.0.1:9000/certs" && !strings.Contains(dry, "serviceaccounts/token") && strings.Contains(dry, "cloudflared"), "kinds=%v gw=%+v ucfg=%+v", kinds, parsedGW, ucfg)
 }
 
 func TestRemoteSetupRedactsSecrets(t *testing.T) {
@@ -974,7 +974,9 @@ func TestE2EClusterGatewaySetupAndCloudflareAccess(t *testing.T) {
 	axConn := must(axbackend.Connect(ctx, axbackend.ConnectOptions{KubeConfig: kc, KubeContext: kctx, Atespace: "default"}))
 	defer axConn.Close()
 	before := must(axConn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: "default"}))
-	checkAX(t, !slices.ContainsFunc(before.GetTasks(), func(tk *v1alpha1.Task) bool { return tk.GetStatus().GetPhase() == "Running" }), "idle gateway consumed running AX task: %+v", before.GetTasks())
+	checkAX(t, !slices.ContainsFunc(before.GetTasks(), func(tk *v1alpha1.Task) bool {
+		return tk.GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_WORKING
+	}), "idle gateway consumed running AX task: %+v", before.GetTasks())
 	baseURL := "http://" + must(axbackend.EnsureTunnel(ctx, kc, kctx, remoteGatewayNS, "glue-gateway", 8800, "/healthz"))
 	doReq := func(method, path, jwt, cookie, csrf, body string) (int, map[string]any, []*http.Cookie) {
 		req, _ := http.NewRequestWithContext(ctx, method, baseURL+path, strings.NewReader(body))

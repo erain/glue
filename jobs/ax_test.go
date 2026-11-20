@@ -21,6 +21,12 @@ func TestJobSpecFromAXTaskYAML(t *testing.T) {
 			t.Fatalf("unexpected spec: %+v", spec)
 		}
 	})
+	t.Run("goal.text fallback", func(t *testing.T) {
+		spec, err := JobSpecFromAXTaskYAML([]byte("apiVersion: ax.io/v1alpha1\nkind: Task\nspec:\n  goal:\n    text: \"solve via spec.goal\"\n"))
+		if err != nil || spec.Objective != "solve via spec.goal" || spec.Repo.Path != "/workspace" {
+			t.Fatalf("goal fallback: spec=%+v err=%v", spec, err)
+		}
+	})
 	t.Run("missing config", func(t *testing.T) {
 		for _, yml := range []string{
 			"apiVersion: ax.io/v1alpha1\nkind: Task\nspec:\n  debug: true\n",

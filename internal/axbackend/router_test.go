@@ -33,10 +33,7 @@ import (
 	"github.com/erain/glue/internal/eventlog"
 	"github.com/erain/glue/internal/jobclient"
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
 )
 
 func TestRootPackageHasZeroAXImports(t *testing.T) {
@@ -224,19 +221,7 @@ func (stubAXServer) ListTasks(context.Context, *v1alpha1.ListTasksRequest) (*v1a
 	return &v1alpha1.ListTasksResponse{}, nil
 }
 
-type stubControlServer struct {
-	ateapipb.UnimplementedControlServer
-	gotAuth atomic.Value
-}
-
-func (s *stubControlServer) GetAtespace(ctx context.Context, _ *ateapipb.GetAtespaceRequest) (*ateapipb.Atespace, error) {
-	if md, ok := metadata.FromIncomingContext(ctx); ok && len(md.Get("authorization")) > 0 {
-		s.gotAuth.Store(md.Get("authorization")[0])
-	}
-	return &ateapipb.Atespace{}, nil
-}
-
-func TestDialAXAndControl(t *testing.T) {
+func TestDialAX(t *testing.T) {
 	axLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -253,30 +238,5 @@ func TestDialAXAndControl(t *testing.T) {
 	t.Cleanup(func() { _ = axConn.Close() })
 	if _, err := axCli.ListTasks(t.Context(), &v1alpha1.ListTasksRequest{Atespace: "default"}); err != nil {
 		t.Fatalf("ListTasks: %v", err)
-	}
-
-	tlsCert, pool := newTestTLS(t, DefaultControlSNI)
-	ctrlLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctrlImpl := &stubControlServer{}
-	ctrlSrv := grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(&tlsCert)))
-	ateapipb.RegisterControlServer(ctrlSrv, ctrlImpl)
-	t.Cleanup(ctrlSrv.Stop)
-	go func() { _ = ctrlSrv.Serve(ctrlLn) }()
-
-	ctrlCli, ctrlConn, err := dialControl(ctrlLn.Addr().String(), pool, func(context.Context) (string, error) {
-		return "minted-token", nil
-	})
-	if err != nil {
-		t.Fatalf("dialControl: %v", err)
-	}
-	t.Cleanup(func() { _ = ctrlConn.Close() })
-	if _, err := ctrlCli.GetAtespace(t.Context(), &ateapipb.GetAtespaceRequest{Atespace: &ateapipb.ObjectRef{Name: "default"}}); err != nil {
-		t.Fatalf("GetAtespace: %v", err)
-	}
-	if got, _ := ctrlImpl.gotAuth.Load().(string); got != "Bearer minted-token" {
-		t.Fatalf("expected Bearer minted-token, got %q", got)
 	}
 }

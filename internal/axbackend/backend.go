@@ -55,13 +55,17 @@ var noCapacityGrace = 3 * time.Second
 // DefaultStartTimeout bounds how long Resume waits for a task to be ready.
 const DefaultStartTimeout = 2 * time.Minute
 
-// noCapacity reports whether a Failed task failed only because no worker had room.
+// noCapacity reports whether a task failed or queued only because no worker had room.
 func noCapacity(t *v1alpha1.Task) bool {
-	if t.GetStatus().GetPhase() != "Failed" {
+	st := t.GetStatus().GetState()
+	if st != v1alpha1.TaskState_TASK_STATE_FAILED && st != v1alpha1.TaskState_TASK_STATE_QUEUED {
 		return false
 	}
+	if noRoomMessage(t.GetStatus().GetStatusDetail().GetDetail()) {
+		return true
+	}
 	return slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
-		return c.GetReason() == "ActorResumeFailed" && noRoomMessage(c.GetMessage())
+		return c.GetReason() == v1alpha1.ReasonActorResumeFailed && noRoomMessage(c.GetMessage())
 	})
 }
 
@@ -75,6 +79,7 @@ func noRoomMessage(msg string) bool {
 var DefaultEgressHosts = []string{"github.com", "api.github.com", "codeload.github.com", "proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "generativelanguage.googleapis.com", "openrouter.ai", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"}
 
 func WorkspaceName(jobID string) string { return "glue-" + jobID + "-ws" }
+func GatewayName(jobID string) string   { return "glue-" + jobID + "-gw" }
 func TaskName(jobID string) string      { return "glue-" + jobID }
 
 // PublishedImage is the task image CI publishes; see .github/workflows/task-image.yml.
@@ -149,7 +154,7 @@ type Options struct {
 	StartTimeout time.Duration
 	GetJob       func(ctx context.Context, id string) (jobs.Spec, jobs.Status, error)
 	// Progress, when set, is called as each submit stage completes:
-	// "workspace", "task", "egress", "sandbox ready", "credentials", "started".
+	// "gateway", "task", "sandbox ready", "credentials", "started".
 	Progress  func(stage string)
 	SetStatus func(ctx context.Context, id string, spec jobs.Spec, status jobs.Status) error
 }
@@ -242,13 +247,53 @@ func resolveTaskSecret(ctx context.Context, opts Options, conn *Connection) (str
 func isTerminal(st jobs.Status) bool {
 	return st != "" && st != jobs.Created && st != SubmitUnknown && st != Queued && st != jobs.Running && st != jobs.WaitingForInput && st != jobs.WaitingForCredentials && st != jobs.Suspended
 }
+func isTaskAwakeState(st v1alpha1.TaskState) bool {
+	return st == v1alpha1.TaskState_TASK_STATE_WORKING || st == v1alpha1.TaskState_TASK_STATE_IDLE || st == v1alpha1.TaskState_TASK_STATE_REQUIRES_ACTION
+}
+func isTaskFailed(t *v1alpha1.Task) bool {
+	st := t.GetStatus().GetState()
+	return st == v1alpha1.TaskState_TASK_STATE_FAILED || st == v1alpha1.TaskState_TASK_STATE_CANCELLED
+}
+func isTaskSuspended(t *v1alpha1.Task) bool {
+	return t.GetStatus().GetState() == v1alpha1.TaskState_TASK_STATE_SUSPENDED
+}
 func isWorkspaceReady(t *v1alpha1.Task) bool {
-	return t.GetStatus().GetPhase() == "Running" && slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
-		return c.GetType() == "WorkspaceReady" && c.GetStatus() == "True"
+	return isTaskAwakeState(t.GetStatus().GetState()) && slices.ContainsFunc(t.GetStatus().GetConditions(), func(c *v1alpha1.Condition) bool {
+		return (c.GetType() == v1alpha1.ConditionReady || c.GetType() == v1alpha1.ConditionWorkspaceReady) && c.GetStatus() == "True"
 	})
 }
 func (b *Backend) getTask(ctx context.Context, id string) (*v1alpha1.Task, error) {
 	return b.conn.AX.GetTask(ctx, &v1alpha1.GetTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)})
+}
+func (b *Backend) listAllTasks(ctx context.Context) ([]*v1alpha1.Task, error) {
+	var all []*v1alpha1.Task
+	var pageTok string
+	for {
+		resp, err := b.conn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: b.conn.Atespace, PageSize: 1000, PageToken: pageTok})
+		if err != nil {
+			return nil, fmt.Errorf("axbackend: list tasks in %s: %w", b.conn.Atespace, err)
+		}
+		all = append(all, resp.GetTasks()...)
+		if pageTok = resp.GetNextPageToken(); pageTok == "" {
+			return all, nil
+		}
+	}
+}
+func (b *Backend) ensureGateway(ctx context.Context, id string) error {
+	gw := &v1alpha1.Gateway{
+		Metadata: &v1alpha1.ObjectMeta{Name: GatewayName(id), Atespace: b.conn.Atespace},
+		Spec: &v1alpha1.GatewaySpec{Egress: []*ateapipb.EgressRule{{
+			TlsPassthrough: &ateapipb.TlsPassthroughRule{Hostnames: slices.Clone(b.opts.EgressHosts), Ports: &ateapipb.Ports{Numbers: []int32{443}}},
+		}}},
+	}
+	_, err := b.conn.AX.CreateGateway(ctx, &v1alpha1.CreateGatewayRequest{Gateway: gw})
+	if status.Code(err) == codes.AlreadyExists {
+		_, err = b.conn.AX.UpdateGateway(ctx, &v1alpha1.UpdateGatewayRequest{Gateway: gw})
+	}
+	if err != nil {
+		return fmt.Errorf("axbackend: ensure gateway %s: %w", GatewayName(id), err)
+	}
+	return nil
 }
 func (b *Backend) taskToken(jobID string) string {
 	mac := hmac.New(sha256.New, []byte(b.secret))
@@ -351,7 +396,7 @@ func (b *Backend) EnsureCredentials(ctx context.Context, id string) error {
 	return err
 }
 
-// Create provisions the AX Workspace and Task (reconciling via GetTask first on SubmitUnknown).
+// Create provisions the AX Gateway and Task (reconciling via GetTask first on SubmitUnknown).
 func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.Job, error) {
 	if id = strings.TrimSpace(cmp.Or(id, spec.ID)); id == "" {
 		id, _ = jobs.NewID()
@@ -375,14 +420,11 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 			return job, fmt.Errorf("axbackend: reconcile task %s: %w", TaskName(id), err)
 		}
 	}
-	if _, err := b.conn.AX.UpdateWorkspace(ctx, &v1alpha1.UpdateWorkspaceRequest{Workspace: &v1alpha1.Workspace{Metadata: &v1alpha1.ObjectMeta{Name: WorkspaceName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.WorkspaceSpec{Files: []*v1alpha1.File{{Path: ".glue/token", Content: daemon.HashToken(b.taskToken(id)) + "\n"}}}}}); err != nil {
-		return job, fmt.Errorf("axbackend: update workspace %s: %w", WorkspaceName(id), err)
+	if err := b.ensureGateway(ctx, id); err != nil {
+		return job, err
 	}
-	b.progress("workspace")
+	b.progress("gateway")
 	taskCfg := spec
-	// glue clones the repo itself inside the task. AX's workspace git setup
-	// runs before the task's network is usable, fails, and retries for about
-	// 10 s on every boot, which made every start and resume slow.
 	taskCfg.ID, taskCfg.Repo = id, jobs.RepoSpec{URL: spec.Repo.URL, BaseRef: spec.Repo.BaseRef, SnapshotOf: spec.Repo.SnapshotOf}
 	rawCfg, _ := json.Marshal(taskCfg)
 	var cfgMap map[string]any
@@ -394,8 +436,15 @@ func (b *Backend) Create(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	}
 	cfgMap["repo_url"], cfgMap["created_at"] = spec.Repo.URL, now.Format(time.RFC3339Nano)
 	cfgStruct, _ := structpb.NewStruct(cfgMap)
-	cmd := []string{"glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state", "--token-file", "/workspace/.glue/token"}
-	if _, err := b.conn.AX.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{Metadata: &v1alpha1.ObjectMeta{Name: TaskName(id), Atespace: b.conn.Atespace}, Spec: &v1alpha1.TaskSpec{Image: img, Command: cmd, Workspace: &v1alpha1.WorkspaceRef{Name: WorkspaceName(id), Path: "/workspace"}, Resources: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Cpu: b.opts.CPU, Memory: b.opts.Memory}}, Config: cfgStruct}}}); err != nil && status.Code(err) != codes.AlreadyExists {
+	cmd := []string{"glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state", "--token", daemon.HashToken(b.taskToken(id))}
+	taskSpec := &v1alpha1.TaskSpec{
+		Profile:  &v1alpha1.Profile{Image: img, Resources: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Cpu: b.opts.CPU, Memory: b.opts.Memory}}},
+		Gateway:  &v1alpha1.GatewayRef{Name: GatewayName(id)},
+		Commands: cmd,
+		Goal:     &v1alpha1.Goal{Text: spec.Objective},
+		Config:   cfgStruct,
+	}
+	if _, err := b.conn.AX.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{Metadata: &v1alpha1.ObjectMeta{Name: TaskName(id), Atespace: b.conn.Atespace}, Spec: taskSpec}}); err != nil && status.Code(err) != codes.AlreadyExists && !(status.Code(err) == codes.FailedPrecondition && strings.Contains(err.Error(), "already exists")) {
 		if c := status.Code(err); errors.Is(err, context.DeadlineExceeded) || c == codes.DeadlineExceeded || c == codes.Unavailable || c == codes.Unknown {
 			job.Status = SubmitUnknown
 			b.recordState(ctx, id, spec, SubmitUnknown, now)
@@ -413,7 +462,7 @@ func (b *Backend) IsSuspended(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return t.GetStatus().GetPhase() == "Suspended", nil
+	return isTaskSuspended(t), nil
 }
 
 func (b *Backend) Suspend(ctx context.Context, id string) error {
@@ -421,15 +470,8 @@ func (b *Backend) Suspend(ctx context.Context, id string) error {
 	return err
 }
 
-// Resume ensures the task egress policy exists, resumes the AX task, waits for WorkspaceReady, and pushes credentials.
+// Resume resumes the AX task, waits for readiness, and pushes credentials.
 func (b *Backend) Resume(ctx context.Context, id string) error {
-	if _, err := b.conn.Control.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{
-		Actor:        &ateapipb.ObjectRef{Atespace: b.conn.Atespace, Name: TaskName(id)},
-		EgressPolicy: &ateapipb.EgressPolicy{Metadata: &ateapipb.ResourceMetadata{Atespace: b.conn.Atespace, Name: "default"}, Rules: []*ateapipb.EgressRule{{TlsPassthrough: &ateapipb.TlsPassthroughRule{Hostnames: slices.Clone(b.opts.EgressHosts), Ports: &ateapipb.Ports{Numbers: []int32{443}}}}}},
-	}); err != nil && status.Code(err) != codes.AlreadyExists {
-		return fmt.Errorf("axbackend: create egress policy for %s: %w", TaskName(id), err)
-	}
-	b.progress("egress")
 	if _, err := b.conn.AX.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)}); err != nil {
 		if noRoomMessage(err.Error()) {
 			return ErrNoCapacity
@@ -453,8 +495,8 @@ func (b *Backend) Resume(ctx context.Context, id string) error {
 			}
 			continue
 		}
-		if err != nil || t.GetStatus().GetPhase() == "Failed" {
-			return cmp.Or(err, fmt.Errorf("axbackend: task %s entered Failed phase", TaskName(id)))
+		if err != nil || isTaskFailed(t) {
+			return cmp.Or(err, fmt.Errorf("axbackend: task %s entered %v state", TaskName(id), t.GetStatus().GetState()))
 		}
 		if time.Now().After(deadline) {
 			return ErrStartTimeout
@@ -480,8 +522,8 @@ func (b *Backend) EnsureRunning(ctx context.Context, id string) error {
 	if err == nil && noCapacity(t) {
 		return b.Resume(ctx, id)
 	}
-	if err != nil || t.GetStatus().GetPhase() == "Failed" {
-		return cmp.Or(err, fmt.Errorf("axbackend: task %s is in Failed phase", TaskName(id)))
+	if err != nil || isTaskFailed(t) {
+		return cmp.Or(err, fmt.Errorf("axbackend: task %s is in %v state", TaskName(id), t.GetStatus().GetState()))
 	}
 	if isWorkspaceReady(t) {
 		return b.EnsureCredentials(ctx, id)
@@ -532,17 +574,17 @@ func (b *Backend) Submit(ctx context.Context, id string, spec jobs.Spec) (jobs.J
 	return b.Start(ctx, created.ID)
 }
 
-func resolvePhaseStatus(phase string, st jobs.Status, suspendedWins bool) jobs.Status {
+func resolveStateStatus(state v1alpha1.TaskState, st jobs.Status, suspendedWins bool) jobs.Status {
 	switch {
 	case isTerminal(st):
 		return st
-	case st == Queued && phase != "Running":
+	case st == Queued && !isTaskAwakeState(state):
 		return Queued
-	case phase == "Failed":
+	case state == v1alpha1.TaskState_TASK_STATE_FAILED || state == v1alpha1.TaskState_TASK_STATE_CANCELLED:
 		return jobs.Errored
-	case phase == "Suspended" && (suspendedWins || st == ""):
+	case state == v1alpha1.TaskState_TASK_STATE_SUSPENDED && (suspendedWins || st == ""):
 		return jobs.Suspended
-	case phase == "Running" && (st == "" || st == SubmitUnknown || st == jobs.Created || st == jobs.Suspended):
+	case isTaskAwakeState(state) && (st == "" || st == SubmitUnknown || st == jobs.Created || st == jobs.Suspended):
 		return jobs.Running
 	default:
 		return cmp.Or(st, jobs.Created)
@@ -557,7 +599,11 @@ func (b *Backend) taskToJob(t *v1alpha1.Task) (jobs.Job, bool) {
 	id, cfgMap := strings.TrimPrefix(name, "glue-"), t.GetSpec().GetConfig().AsMap()
 	raw, err := json.Marshal(cfgMap)
 	var spec jobs.Spec
-	if err != nil || json.Unmarshal(raw, &spec) != nil || strings.TrimSpace(spec.Objective) == "" {
+	if err != nil || json.Unmarshal(raw, &spec) != nil {
+		return jobs.Job{}, false
+	}
+	spec.Objective = cmp.Or(strings.TrimSpace(spec.Objective), strings.TrimSpace(t.GetSpec().GetGoal().GetText()))
+	if spec.Objective == "" {
 		return jobs.Job{}, false
 	}
 	spec.ID = ""
@@ -573,7 +619,7 @@ func (b *Backend) taskToJob(t *v1alpha1.Task) (jobs.Job, bool) {
 	if c != nil {
 		cSt = c.Status
 	}
-	j := jobs.Job{ID: id, Spec: spec, Status: resolvePhaseStatus(t.GetStatus().GetPhase(), cSt, true), CreatedAt: createdAt, UpdatedAt: createdAt}
+	j := jobs.Job{ID: id, Spec: spec, Status: resolveStateStatus(t.GetStatus().GetState(), cSt, true), CreatedAt: createdAt, UpdatedAt: createdAt}
 	if c != nil && !c.UpdatedAt.IsZero() {
 		j.UpdatedAt = c.UpdatedAt
 	}
@@ -585,17 +631,17 @@ func (b *Backend) taskToJob(t *v1alpha1.Task) (jobs.Job, bool) {
 
 // ListJobs reconstructs Glue jobs directly from AX tasks and local terminal cache without waking suspended tasks.
 func (b *Backend) ListJobs(ctx context.Context, f jobs.Filter) ([]jobs.Job, error) {
-	resp, err := b.conn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: b.conn.Atespace})
+	tasks, err := b.listAllTasks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("axbackend: list tasks in %s: %w", b.conn.Atespace, err)
+		return nil, err
 	}
 	var out []jobs.Job
-	for _, t := range resp.GetTasks() {
+	for _, t := range tasks {
 		if j, ok := b.taskToJob(t); ok {
 			out = append(out, j)
 		}
 	}
-	b.reconcileAwake(ctx, resp.GetTasks(), out)
+	b.reconcileAwake(ctx, tasks, out)
 	slices.SortFunc(out, func(a, b jobs.Job) int { return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID)) })
 	if idx := slices.IndexFunc(out, func(j jobs.Job) bool { return f.Before != "" && j.ID == f.Before }); idx >= 0 {
 		out = out[idx+1:]
@@ -654,14 +700,23 @@ func (b *Backend) reconcileAwake(ctx context.Context, tasks []*v1alpha1.Task, ou
 	wg.Wait()
 }
 
-// settleFinished caches the completion record of a finished job whose task
-// is awake, then suspends the task. It does nothing while the job is active.
+// settleFinished caches the completion record and detail of a finished job
+// whose task is awake, then suspends the task. It does nothing while active.
 func (b *Backend) settleFinished(ctx context.Context, id string) bool {
+	if t, err := b.getTask(ctx, id); err != nil || !isWorkspaceReady(t) {
+		return false
+	}
 	res, err := b.jobClient(id).Result(ctx, id)
 	if err != nil || !isTerminal(res.Status) {
 		return false
 	}
-	b.updateCache(id, func(c *cachedJob) { c.Status, c.Result = res.Status, &res })
+	d, derr := b.jobClient(id).Show(ctx, id)
+	b.updateCache(id, func(c *cachedJob) {
+		c.Status, c.Result = res.Status, &res
+		if derr == nil && d.ID != "" {
+			c.Detail = &d
+		}
+	})
 	return b.Suspend(ctx, id) == nil
 }
 
@@ -673,26 +728,31 @@ func (b *Backend) Show(ctx context.Context, id string) (jobs.Detail, error) {
 	}
 	job, _ := b.taskToJob(t)
 	if isWorkspaceReady(t) {
-		d, err := b.fetchDetail(ctx, id)
-		if err != nil {
-			return jobs.Detail{}, err
-		}
-		if job.Spec.Repo.URL != "" {
-			d.Spec.Repo = job.Spec.Repo
-		}
-		b.updateCache(id, func(c *cachedJob) {
-			c.Spec, c.Status, c.Detail = d.Spec, d.Status, &d
-			if !isTerminal(d.Status) {
-				c.Result = nil
+		d, ferr := b.fetchDetail(ctx, id)
+		if ferr == nil {
+			if job.Spec.Repo.URL != "" {
+				d.Spec.Repo = job.Spec.Repo
 			}
-		})
-		if isTerminal(d.Status) {
-			b.settleFinished(ctx, id)
+			b.updateCache(id, func(c *cachedJob) {
+				c.Spec, c.Status, c.Detail = d.Spec, d.Status, &d
+				if !isTerminal(d.Status) {
+					c.Result = nil
+				}
+			})
+			if isTerminal(d.Status) {
+				b.settleFinished(ctx, id)
+			}
+			if c := b.loadCache(id); c != nil && c.Result != nil && d.PRURL == "" {
+				d.PRURL = c.Result.PRURL
+			}
+			return d, nil
 		}
-		if c := b.loadCache(id); c != nil && c.Result != nil && d.PRURL == "" {
-			d.PRURL = c.Result.PRURL
+		// A task suspending right after job_done can answer 503 before GetTask reflects Suspended.
+		if c := b.loadCache(id); c == nil || !isTerminal(c.Status) {
+			if t2, gerr := b.getTask(ctx, id); gerr != nil || isWorkspaceReady(t2) {
+				return jobs.Detail{}, ferr
+			}
 		}
-		return d, nil
 	}
 	c := b.loadCache(id)
 	d := jobs.Detail{Job: job}
@@ -721,7 +781,7 @@ func (b *Backend) Status(ctx context.Context, id string) (jobs.Status, error) {
 	if err != nil {
 		return cmp.Or(st, jobs.Created), err
 	}
-	return resolvePhaseStatus(t.GetStatus().GetPhase(), st, false), nil
+	return resolveStateStatus(t.GetStatus().GetState(), st, false), nil
 }
 
 func (b *Backend) withRunning(ctx context.Context, id string, fn func(*jobclient.Client) error) error {
@@ -735,7 +795,7 @@ func (b *Backend) withTempWake(ctx context.Context, id string, fn func(*jobclien
 	if err != nil {
 		return err
 	}
-	wasSuspended := t.GetStatus().GetPhase() == "Suspended"
+	wasSuspended := isTaskSuspended(t)
 	if err = b.withRunning(ctx, id, fn); wasSuspended {
 		_ = b.Suspend(ctx, id)
 	}
@@ -951,12 +1011,12 @@ func (b *Backend) Continue(ctx context.Context, id, text string, maxIterations i
 func (b *Backend) LoadSeq(id string) int64            { return b.jobClient(id).LoadSeq(id) }
 func (b *Backend) SaveSeq(id string, seq int64) error { return b.jobClient(id).SaveSeq(id, seq) }
 
-// DeleteTask deletes the job's AX task, workspace, and egress policy and its local cache.
+// DeleteTask deletes the job's AX task, gateway, and workspace (if any) and its local cache.
 func (b *Backend) DeleteTask(ctx context.Context, id string) error {
 	return b.deleteResources(ctx, id, false)
 }
 
-// Prune deletes the job's AX task, workspace, and egress policy but keeps the
+// Prune deletes the job's AX task, gateway, and workspace (if any) but keeps the
 // locally cached completion record, so glue job result still works.
 func (b *Backend) Prune(ctx context.Context, id string) error {
 	if _, err := b.Result(ctx, id); err != nil {
@@ -967,8 +1027,8 @@ func (b *Backend) Prune(ctx context.Context, id string) error {
 
 func (b *Backend) deleteResources(ctx context.Context, id string, keepCache bool) error {
 	_, err1 := b.conn.AX.DeleteTask(ctx, &v1alpha1.DeleteTaskRequest{Atespace: b.conn.Atespace, Name: TaskName(id)})
-	_, err2 := b.conn.AX.DeleteWorkspace(ctx, &v1alpha1.DeleteWorkspaceRequest{Atespace: b.conn.Atespace, Name: WorkspaceName(id)})
-	_, err3 := b.conn.Control.DeleteActorEgressPolicy(ctx, &ateapipb.DeleteActorEgressPolicyRequest{Actor: &ateapipb.ObjectRef{Atespace: b.conn.Atespace, Name: TaskName(id)}, Name: "default"})
+	_, err2 := b.conn.AX.DeleteGateway(ctx, &v1alpha1.DeleteGatewayRequest{Atespace: b.conn.Atespace, Name: GatewayName(id)})
+	_, err3 := b.conn.AX.DeleteWorkspace(ctx, &v1alpha1.DeleteWorkspaceRequest{Atespace: b.conn.Atespace, Name: WorkspaceName(id)})
 	for _, err := range []error{err1, err2, err3} {
 		if err != nil && status.Code(err) != codes.NotFound {
 			return fmt.Errorf("axbackend: delete task resources for %s: %w", id, err)
@@ -986,12 +1046,12 @@ func (b *Backend) deleteResources(ctx context.Context, id string, keepCache bool
 }
 
 func (b *Backend) ListTasks(ctx context.Context) ([]string, error) {
-	resp, err := b.conn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: b.conn.Atespace})
+	tasks, err := b.listAllTasks(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("axbackend: list tasks in %s: %w", b.conn.Atespace, err)
+		return nil, err
 	}
 	var names []string
-	for _, t := range resp.GetTasks() {
+	for _, t := range tasks {
 		if name := strings.TrimSpace(t.GetMetadata().GetName()); name != "" {
 			names = append(names, name)
 		}

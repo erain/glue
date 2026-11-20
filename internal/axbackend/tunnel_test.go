@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 )
 
 func axClusterRequired() bool {
@@ -204,8 +203,8 @@ func TestResolveKubeTargetAndTunnelCredCache(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = c2.Close() })
 	log2, _ := os.ReadFile(filepath.Join(k8sDir, "kubectl.log"))
-	if strings.Count(string(log2), "create token") != 1 || strings.Count(string(log2), "port-forward") != 3 {
-		t.Fatalf("expected 1 token mint and 3 port-forwards across warm Connect calls, got:\n%s", log2)
+	if strings.Count(string(log2), "create -f -") != 1 || strings.Count(string(log2), "port-forward") != 2 {
+		t.Fatalf("expected 1 PodCertificateRequest mint and 2 port-forwards across warm Connect calls, got:\n%s", log2)
 	}
 
 	credsPath := filepath.Join(TunnelDir(), cacheKey(axKubePath, "kind-glue-ax", DefaultAXNamespace)+"-creds.json")
@@ -223,7 +222,7 @@ func TestResolveKubeTargetAndTunnelCredCache(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = c3.Close() })
 	log3, _ := os.ReadFile(filepath.Join(k8sDir, "kubectl.log"))
-	if strings.Count(string(log3), "create token") != 2 || strings.Count(string(log3), "port-forward") != 3 {
+	if strings.Count(string(log3), "create -f -") != 2 || strings.Count(string(log3), "port-forward") != 2 {
 		t.Fatalf("expected automatic credential refresh with warm tunnels preserved, got:\n%s", log3)
 	}
 
@@ -273,8 +272,8 @@ func TestLiveAXConnect(t *testing.T) {
 	if _, err := conn.AX.ListTasks(ctx, &v1alpha1.ListTasksRequest{Atespace: conn.Atespace}); err != nil {
 		t.Fatalf("AX.ListTasks: %v", err)
 	}
-	if _, err := conn.Control.GetAtespace(ctx, &ateapipb.GetAtespaceRequest{Atespace: &ateapipb.ObjectRef{Name: conn.Atespace}}); err != nil {
-		t.Fatalf("Control.GetAtespace: %v", err)
+	if _, err := conn.AX.ListGateways(ctx, &v1alpha1.ListGatewaysRequest{Atespace: conn.Atespace}); err != nil {
+		t.Fatalf("AX.ListGateways: %v", err)
 	}
 	tlsConn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", conn.RouterAddr, conn.RouterTLS)
 	if err != nil {

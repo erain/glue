@@ -182,6 +182,11 @@ func (m *Manager) writeResult(res Result) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if outPath := strings.TrimSpace(os.Getenv("AX_OUTPUT_FILE")); outPath != "" && strings.TrimSpace(res.Summary) != "" {
+		if mkErr := os.MkdirAll(filepath.Dir(outPath), 0o755); mkErr == nil {
+			_ = os.WriteFile(outPath, []byte(strings.TrimSpace(res.Summary)+"\n"), 0o600)
+		}
+	}
 	return nil
 }
 
