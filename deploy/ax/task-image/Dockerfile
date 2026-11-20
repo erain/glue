@@ -3,7 +3,7 @@
 # Node.js LTS, Python tooling (pip, venv, uv), a C toolchain, git, make,
 # ripgrep, jq, and the glue CLI. Keeps ENTRYPOINT untouched.
 
-ARG BASE_IMAGE=localhost:5001/ax-task-runner@sha256:93c00918863ab142806ea1e97c3318eb8983324a9973b8419231b67d8fcaee22
+ARG BASE_IMAGE=ghcr.io/google/ax/ax-task-runner@sha256:3a61e70d70cede25cec04c34b2902e2febac08bd78741207101d5c102f6e7a2c
 FROM ${BASE_IMAGE} AS base
 
 ARG GO_VERSION=1.27.3
@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certifi
     && tar -C /usr/local --strip-components=1 -xJf /tmp/node.tar.xz && rm -f /tmp/node.tar.xz \
     && python3 -m pip install --no-cache-dir "uv==${UV_VERSION}"
 
-ENV GOPATH=/go GOMODCACHE=/go/pkg/mod GOTOOLCHAIN=local PATH="/usr/local/go/bin:/go/bin:${PATH}"
+ENV GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/tmp/go-build GOTOOLCHAIN=local PATH="/usr/local/go/bin:/go/bin:${PATH}"
 
 FROM base AS build
 WORKDIR /src/glue
@@ -48,6 +48,8 @@ RUN if [ -n "${PREWARM_GOMOD_REPO}" ]; then \
       (cd /tmp/prewarm && go mod download) && rm -rf /tmp/prewarm; \
     fi
 COPY --from=build /out/glue /usr/local/bin/glue
-RUN printf '#!/bin/sh\nexec /usr/local/bin/glue git-askpass "$@"\n' >/usr/local/bin/glue-git-askpass \
+RUN mkdir -p /go/pkg/mod /go/bin \
+    && chmod -R a+rwX /go \
+    && printf '#!/bin/sh\nexec /usr/local/bin/glue git-askpass "$@"\n' >/usr/local/bin/glue-git-askpass \
     && chmod 0755 /usr/local/bin/glue-git-askpass \
     && git config --system core.askPass /usr/local/bin/glue-git-askpass

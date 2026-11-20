@@ -129,7 +129,7 @@ uninstall_substrate() {
 
 WORKER_KO_REF="$(awk '$1 == "workerImage:" {print $2; exit}' "${E2E_DIR}/manifests/workerpool.yaml")"
 WORKER_IMG="${WORKER_KO_REF##*/}"
-SUBSTRATE_IMAGES=(ateapi atecontroller atelet atenet "${WORKER_IMG}" podcertcontroller objectstore-plugin envoy-dataplane)
+SUBSTRATE_IMAGES=(ateapi atecontroller atelet atenet "${WORKER_IMG}" podcertcontroller objectstore-plugin envoy-dataplane kubernetes-secrets)
 
 INGRESS_SPIFFE_IDS="spiffe://cluster.local/ns/${AX_SYSTEM_NAMESPACE}/sa/ax-server,spiffe://cluster.local/ns/ate-system/sa/atenet-client"
 BOOTSTRAP_OWNERS="system:serviceaccount:ate-system:ate-client,system:serviceaccount:${AX_SYSTEM_NAMESPACE}:ax-server"
@@ -181,7 +181,7 @@ if [[ "${FORCE_INSTALL_AX:-false}" != "true" ]] && [[ "${INSTALLED_AX}" == "${AX
   exit 0
 fi
 
-log "Building and pushing ax-server and ax-task-runner (${AX_COMMIT:0:12}) to ${REGISTRY_ADDR}..."
+log "Building and pushing ax-server, ax-task-runner, and ax-runner-volume (${AX_COMMIT:0:12}) to ${REGISTRY_ADDR}..."
 (
   cd "${AX_DIR}"
   mkdir -p "bin/linux_${GOARCH}"
@@ -196,7 +196,8 @@ build_and_push() {
 }
 AX_SERVER_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-server:dev" --build-arg TARGETARCH="${GOARCH}" -f "${AX_DIR}/Dockerfile.server")"
 AX_TASK_RUNNER_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-task-runner:dev" --build-arg TARGETARCH="${GOARCH}" -f "${AX_DIR}/Dockerfile.task-runner")"
-export AX_SERVER_IMAGE AX_TASK_RUNNER_IMAGE AX_DEFAULT_TASK_IMAGE="${AX_TASK_RUNNER_IMAGE}" AX_WORKER_REPLICAS="${GLUE_AX_WORKERS}"
+AX_RUNNER_VOLUME_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-runner-volume:dev" --build-arg TARGETARCH="${GOARCH}" -f "${AX_DIR}/Dockerfile.runner-volume")"
+export AX_SERVER_IMAGE AX_TASK_RUNNER_IMAGE AX_RUNNER_VOLUME_IMAGE AX_DEFAULT_TASK_IMAGE="${AX_TASK_RUNNER_IMAGE}" AX_WORKER_REPLICAS="${GLUE_AX_WORKERS}"
 
 EXISTING_TASK_IMAGE=""
 if [[ -f "${STATE}/images.env" ]]; then
@@ -205,13 +206,14 @@ fi
 {
   printf 'export AX_SERVER_IMAGE="%s"\n' "${AX_SERVER_IMAGE}"
   printf 'export AX_TASK_RUNNER_IMAGE="%s"\n' "${AX_TASK_RUNNER_IMAGE}"
+  printf 'export AX_RUNNER_VOLUME_IMAGE="%s"\n' "${AX_RUNNER_VOLUME_IMAGE}"
   printf 'export AX_DEFAULT_TASK_IMAGE="%s"\n' "${AX_DEFAULT_TASK_IMAGE}"
   [[ -n "${EXISTING_TASK_IMAGE}" ]] && printf 'export GLUE_TASK_IMAGE="%s"\n' "${EXISTING_TASK_IMAGE}"
 } > "${STATE}/images.env"
 
 render_manifest() {
   # shellcheck disable=SC2016
-  envsubst '${AX_SYSTEM_NAMESPACE} ${AX_WORKER_REPLICAS} ${AX_SERVER_IMAGE} ${AX_DEFAULT_TASK_IMAGE}' < "${E2E_DIR}/manifests/$1"
+  envsubst '${AX_SYSTEM_NAMESPACE} ${AX_WORKER_REPLICAS} ${AX_SERVER_IMAGE} ${AX_DEFAULT_TASK_IMAGE} ${AX_RUNNER_VOLUME_IMAGE}' < "${E2E_DIR}/manifests/$1"
 }
 
 log "Deploying '${AX_SYSTEM_NAMESPACE}' and WorkerPool 'ax-workers' (${GLUE_AX_WORKERS} gVisor replicas)..."
@@ -222,6 +224,9 @@ for _ in $(seq 1 60); do k -n "${AX_SYSTEM_NAMESPACE}" get deployment ax-workers
 k -n "${AX_SYSTEM_NAMESPACE}" rollout status deployment/ax-workers --timeout=180s
 
 log "Deploying ax-postgres and ax-server in '${AX_SYSTEM_NAMESPACE}'..."
+k -n "${AX_SYSTEM_NAMESPACE}" delete deployment ax-server --ignore-not-found >/dev/null
+k -n "${AX_SYSTEM_NAMESPACE}" delete statefulset ax-postgres --ignore-not-found --wait >/dev/null
+k -n "${AX_SYSTEM_NAMESPACE}" delete pvc -l app.kubernetes.io/name=ax-postgres --ignore-not-found --wait >/dev/null
 if ! k -n "${AX_SYSTEM_NAMESPACE}" get secret ax-postgres >/dev/null 2>&1; then
   k -n "${AX_SYSTEM_NAMESPACE}" create secret generic ax-postgres --from-literal=password="$(openssl rand -hex 24)" --dry-run=client -o yaml | k apply -f -
 fi
@@ -229,5 +234,10 @@ render_manifest postgres.yaml | k apply -f -
 k -n "${AX_SYSTEM_NAMESPACE}" rollout status statefulset/ax-postgres --timeout=180s
 render_manifest ax-server.yaml | k apply -f -
 k -n "${AX_SYSTEM_NAMESPACE}" rollout status deployment/ax-server --timeout=120s
+if [[ -f "${E2E_DIR}/manifests/credential-policy.yaml" ]] && k -n ate-system get deployment k8s-credential-provider >/dev/null 2>&1; then
+  render_manifest credential-policy.yaml | k apply -f -
+  k -n ate-system rollout restart deployment/k8s-credential-provider
+  k -n ate-system rollout status deployment/k8s-credential-provider --timeout=180s
+fi
 k annotate namespace "${AX_SYSTEM_NAMESPACE}" "glue.ax-dev/spec=${AX_CFG_SPEC}" --overwrite >/dev/null
 log "Cluster '${KIND_CLUSTER_NAME}' is ready (digests recorded in ${STATE}/images.env)."

@@ -122,26 +122,47 @@ export AX_SERVER_URL="http://127.0.0.1:${AX_PORT}"
 run_ax() { ax --server "${AX_SERVER_URL}" --context "${KUBE_CONTEXT}" -a default "$@"; }
 
 WS_NAME="${TASK_NAME}-ws"
+GW_NAME="${TASK_NAME}-gw"
 if run_ax get task "${TASK_NAME}" >/dev/null 2>&1; then
   if [[ "${RECREATE}" == "true" ]]; then
-    log "Deleting existing task '${TASK_NAME}' and workspace '${WS_NAME}' (--recreate)..."
+    log "Deleting existing task '${TASK_NAME}', workspace '${WS_NAME}', and gateway '${GW_NAME}' (--recreate)..."
     run_ax delete task "${TASK_NAME}" >/dev/null 2>&1 || true
     run_ax delete workspace "${WS_NAME}" >/dev/null 2>&1 || true
-    kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "${TASK_NAME}" -a default >/dev/null 2>&1 || true
+    run_ax delete gateway "${GW_NAME}" >/dev/null 2>&1 || true
   else
     log "Task '${TASK_NAME}' already exists; reusing existing task (pass --recreate to start fresh)."
   fi
 fi
 
 if ! run_ax get task "${TASK_NAME}" >/dev/null 2>&1; then
-  log "1. Creating AX Workspace '${WS_NAME}' (${REPO_URL} @ ${BASE_REF}, depth=1, dir=.)..."
-  jq -n --arg ws "${WS_NAME}" --arg repo "${REPO_URL}" --arg branch "${BASE_REF}" '{
+  log "1. Applying AX Gateway '${GW_NAME}' (tls_passthrough:443)..."
+  cat > "${TMP_DIR}/gateway.yaml" <<EOF
+apiVersion: ax.io/v1alpha1
+kind: Gateway
+metadata:
+  name: ${GW_NAME}
+  atespace: default
+spec:
+  egress:
+    - tls_passthrough:
+        hostnames: [github.com, api.github.com, codeload.github.com, proxy.golang.org, sum.golang.org, storage.googleapis.com, generativelanguage.googleapis.com, openrouter.ai]
+        ports: {numbers: [443]}
+EOF
+  run_ax apply -f "${TMP_DIR}/gateway.yaml"
+
+  log "2. Creating AX Workspace '${WS_NAME}' (${REPO_URL} @ ${BASE_REF}, depth=1, dir=.)..."
+  jq -n --arg ws "${WS_NAME}" --arg gw "${GW_NAME}" --arg repo "${REPO_URL}" --arg ref "${BASE_REF}" '{
     apiVersion: "ax.io/v1alpha1", kind: "Workspace", metadata: {name: $ws, atespace: "default"},
-    spec: {git: [{name: "repo", repo: $repo, branch: $branch, dir: ".", depth: 1}]}
+    spec: {setup: {gateway: {name: $gw}, git: [{name: "repo", repo: $repo, ref: $ref, dir: ".", depth: 1}]}}
   }' > "${TMP_DIR}/workspace.yaml"
   run_ax apply -f "${TMP_DIR}/workspace.yaml"
+  for _ in $(seq 1 120); do
+    ws_phase="$(run_ax get workspace "${WS_NAME}" -o yaml | awk '$1 == "phase:" && !p++ {gsub(/"/, "", $2); print $2}')"
+    [[ "${ws_phase}" != "Preparing" ]] && break
+    sleep 1
+  done
 
-  log "2. Creating AX Task '${TASK_NAME}' (image=${GLUE_TASK_IMAGE}, limits cpu=${CPU_LIMIT} memory=${MEMORY_LIMIT})..."
+  log "3. Creating AX Task '${TASK_NAME}' (image=${GLUE_TASK_IMAGE}, limits cpu=${CPU_LIMIT} memory=${MEMORY_LIMIT})..."
   t0="$(now_ms)"
   VERIFY_JSON="[]"
   [[ ${#VERIFY_CMDS[@]} -gt 0 ]] && VERIFY_JSON="$(printf '%s\n' "${VERIFY_CMDS[@]}" | jq -R . | jq -cs .)"
@@ -158,44 +179,36 @@ if ! run_ax get task "${TASK_NAME}" >/dev/null 2>&1; then
     + (if $openrouter != "" then [{name: "OPENROUTER_API_KEY", value: $openrouter}] else [] end)')"
 
   jq -n \
-    --arg name "${TASK_NAME}" --arg ws "${WS_NAME}" --arg image "${GLUE_TASK_IMAGE}" \
-    --arg cpu "${CPU_LIMIT}" --arg memory "${MEMORY_LIMIT}" \
+    --arg name "${TASK_NAME}" --arg ws "${WS_NAME}" --arg gw "${GW_NAME}" --arg image "${GLUE_TASK_IMAGE}" \
+    --arg cpu "${CPU_LIMIT}" --arg memory "${MEMORY_LIMIT}" --arg objective "${OBJECTIVE}" \
     --argjson env "${ENV_JSON}" --argjson config "${CONFIG_JSON}" '{
       apiVersion: "ax.io/v1alpha1", kind: "Task", metadata: {name: $name, atespace: "default"},
       spec: {
-        debug: true, image: $image, workspace: {name: $ws, path: "/workspace"},
-        resources: {limits: {cpu: $cpu, memory: $memory}},
-        command: ["glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state", "--token-file", "/workspace/.glue/token"],
+        debug: true, gateway: {name: $gw}, workspace: {name: $ws, path: "/workspace"},
+        profile: {image: $image, resources: {limits: {cpu: $cpu, memory: $memory}}},
+        goal: {text: $objective},
+        commands: ["glue", "serve", "--coding", "--jobs", "--job-from-ax", "--listen", ":8080", "--state-dir", "/workspace/.glue/state", "--token-file", "/workspace/.glue/token"],
         env: $env, config: $config
       }
     }' > "${TMP_DIR}/task.yaml"
   chmod 0600 "${TMP_DIR}/task.yaml"
   run_ax apply -f "${TMP_DIR}/task.yaml"
   rm -f "${TMP_DIR}/task.yaml"
-  printf '  [ok] Task %s created in Suspended phase (%d ms)\n' "${TASK_NAME}" "$(( $(now_ms) - t0 ))"
+  printf '  [ok] Task %s created in Suspended state (%d ms)\n' "${TASK_NAME}" "$(( $(now_ms) - t0 ))"
 fi
 
-log "3. Applying EgressPolicy (tls_passthrough:443) for '${TASK_NAME}' before resume..."
-kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "${TASK_NAME}" -a default >/dev/null 2>&1 || true
-cat <<'EOF' | kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" create egress-policy "${TASK_NAME}" -a default -f -
-rules:
-- tls_passthrough:
-    hostnames: [github.com, api.github.com, codeload.github.com, proxy.golang.org, sum.golang.org, storage.googleapis.com, generativelanguage.googleapis.com, openrouter.ai]
-    ports: {numbers: [443]}
-EOF
-
-log "4. Resuming task '${TASK_NAME}' and waiting for Running + WorkspaceReady..."
+log "4. Resuming task '${TASK_NAME}' and waiting for Working + WorkspaceReady..."
 t_resume="$(now_ms)"
 run_ax resume task "${TASK_NAME}"
 for _ in $(seq 1 60); do
   task_yaml="$(run_ax get task "${TASK_NAME}" -o yaml)"
-  phase="$(awk '$1 == "phase:" && !p++ {print $2}' <<<"${task_yaml}" | tr -d '"')"
+  state="$(awk '$1 == "state:" && !p++ {print $2}' <<<"${task_yaml}" | tr -d '"')"
   ws_ready="$(awk '/type:[[:space:]]*WorkspaceReady/ {f=1; next} f && $1 == "status:" {gsub(/"/, "", $2); print $2; exit}' <<<"${task_yaml}")"
-  [[ "${phase}" == "Running" && "${ws_ready}" == "True" ]] && break
+  [[ "${state}" == "TASK_STATE_WORKING" && "${ws_ready}" == "True" ]] && break
   sleep 0.5
 done
-[[ "${phase:-}" == "Running" && "${ws_ready:-}" == "True" ]] || fail "Task ${TASK_NAME} did not reach Running + WorkspaceReady (phase=${phase:-}, WorkspaceReady=${ws_ready:-})"
-printf '  [ok] Task %s is Running and WorkspaceReady=True (%d ms)\n' "${TASK_NAME}" "$(( $(now_ms) - t_resume ))"
+[[ "${state:-}" == "TASK_STATE_WORKING" && "${ws_ready:-}" == "True" ]] || fail "Task ${TASK_NAME} did not reach Working + WorkspaceReady (state=${state:-}, WorkspaceReady=${ws_ready:-})"
+printf '  [ok] Task %s is Working and WorkspaceReady=True (%d ms)\n' "${TASK_NAME}" "$(( $(now_ms) - t_resume ))"
 
 log "5. Starting 'kubectl ate proxy actor ${TASK_NAME} ${PROXY_PORT}:8080 -a default' and reading bearer token..."
 pkill -f "kubectl[- ]ate.*proxy actor .* ${PROXY_PORT}:8080" >/dev/null 2>&1 || true
