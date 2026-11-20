@@ -52,7 +52,7 @@ export PATH="${STATE}/bin:${PATH}"
 
 TMP_DIR="$(mktemp -d -t glue-ax-suspend-e2e-XXXXXX)"
 chmod 0700 "${TMP_DIR}"
-GW_PID="" AX_PF_PID="" JOB_ID=""
+GW_PID="" JOB_ID=""
 GLUE_GATEWAY_TOKEN="$(openssl rand -hex 24)"
 
 stop_tunnels_in() {
@@ -74,7 +74,6 @@ cleanup() {
     glue job delete --ax --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" "${JOB_ID}" >/dev/null 2>&1 || true
   fi
   [[ -n "${GW_PID}" ]] && kill "${GW_PID}" >/dev/null 2>&1 && wait "${GW_PID}" 2>/dev/null
-  [[ -n "${AX_PF_PID}" ]] && kill "${AX_PF_PID}" >/dev/null 2>&1 && wait "${AX_PF_PID}" 2>/dev/null
   stop_tunnels_in "${TMP_DIR}/gw-config"
   stop_tunnels_in "${TMP_DIR}/glue-config"
   ax tunnel stop "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
@@ -105,26 +104,23 @@ chmod 0600 "${TMP_DIR}/gateway.yaml"
 log "Starting out-of-cluster host glue-gateway (pure type: ax config, suspend_after=${SUSPEND_AFTER})..."
 GLUE_CONFIG_DIR="${TMP_DIR}/gw-config" "${STATE}/bin/glue-gateway" --config "${TMP_DIR}/gateway.yaml" >"${TMP_DIR}/gateway.log" 2>&1 </dev/null &
 GW_PID=$!
-k -n "${AX_SYSTEM_NAMESPACE}" port-forward svc/ax-server 0:8080 >"${TMP_DIR}/ax-pf.log" 2>&1 </dev/null &
-AX_PF_PID=$!
 
-GW_PORT="" AX_PORT=""
+GW_PORT=""
 for _ in $(seq 1 100); do
   [[ -z "${GW_PORT}" ]] && GW_PORT="$(sed -nE 's/.*listening on http:\/\/127\.0\.0\.1:([0-9]+).*/\1/p' "${TMP_DIR}/gateway.log" | head -n1)"
-  [[ -z "${AX_PORT}" ]] && AX_PORT="$(sed -nE 's/.*127\.0\.0\.1:([0-9]+).*/\1/p' "${TMP_DIR}/ax-pf.log" | head -n1)"
-  [[ -n "${GW_PORT}" && -n "${AX_PORT}" ]] && curl -fsS "http://127.0.0.1:${GW_PORT}/v1/health" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:${AX_PORT}/healthz" >/dev/null 2>&1 && break
+  [[ -n "${GW_PORT}" ]] && curl -fsS "http://127.0.0.1:${GW_PORT}/v1/health" >/dev/null 2>&1 && break
   if ! kill -0 "${GW_PID}" 2>/dev/null; then
     cat "${TMP_DIR}/gateway.log" >&2 || true
     fail "host glue-gateway exited during startup"
   fi
   sleep 0.2
 done
-[[ -n "${GW_PORT}" && -n "${AX_PORT}" ]] || { cat "${TMP_DIR}/gateway.log" >&2 || true; fail "host glue-gateway or ax-server port-forward did not become ready"; }
+[[ -n "${GW_PORT}" ]] || { cat "${TMP_DIR}/gateway.log" >&2 || true; fail "host glue-gateway did not become ready"; }
 
 export GLUE_SERVER="http://127.0.0.1:${GW_PORT}" GLUE_TOKEN="${GLUE_GATEWAY_TOKEN}" GLUE_CONFIG_DIR="${TMP_DIR}/glue-config"
 export AX_HOME="${TMP_DIR}/ax-home"
-run_ax() { ax --server "http://127.0.0.1:${AX_PORT}" --context "${KUBE_CONTEXT}" -a default "$@"; }
-task_phase() { run_ax get task "glue-${JOB_ID}" -o yaml 2>/dev/null | awk '$1 == "phase:" && !p++ {print $2}'; }
+run_ax() { ax --context "${KUBE_CONTEXT}" -a default "$@"; }
+task_phase() { run_ax get task "glue-${JOB_ID}" -o yaml 2>/dev/null | awk '$1 == "state:" && !p++ {gsub(/"/, "", $2); print ($2 == "TASK_STATE_SUSPENDED" ? "Suspended" : $2)}'; }
 pending_perms() { curl -fsS -H "Authorization: Bearer ${GLUE_TOKEN}" "${GLUE_SERVER}/v1/jobs/${JOB_ID}/permissions?state=pending"; }
 
 MODEL_ARGS=(--provider openrouter)
@@ -156,7 +152,7 @@ for _ in $(seq 1 120); do
   fi
   sleep 1
 done
-[[ -n "${PERM_ID}" && "$(task_phase)" == "Suspended" ]] || fail "Job ${JOB_ID} did not suspend on waiting_for_input"
+[[ -n "${PERM_ID}" && "$(task_phase)" == "Suspended" ]] || fail "Job ${JOB_ID} did not suspend on waiting_for_input (st=${ST:-}, reason=${REASON:-}, phase=$(task_phase), perm=${PERM_ID:-})"
 
 log "3. Verifying read-only CLI inspection does not wake the suspended AX task..."
 glue job list --server "${GLUE_SERVER}" --json >/dev/null
@@ -185,7 +181,8 @@ done
 
 RESULT_JSON="$(glue job result --server "${GLUE_SERVER}" "${JOB_ID}" --json)"
 jq -e '.status == "achieved"' <<<"${RESULT_JSON}" >/dev/null || fail "Expected achieved result, got: ${RESULT_JSON}"
-[[ "$(task_phase)" == "Suspended" ]] || fail "Expected AX task glue-${JOB_ID} to remain Suspended after result fetch"
+FINAL_PHASE="$(task_phase)"
+[[ "${FINAL_PHASE}" == "Suspended" ]] || fail "Expected AX task glue-${JOB_ID} to remain Suspended after result fetch (got phase=${FINAL_PHASE}, st=${ST:-}, reason=${REASON:-})"
 
 EVENTS_RAW="$(curl -fsS -H "Authorization: Bearer ${GLUE_TOKEN}" "${GLUE_SERVER}/v1/jobs/${JOB_ID}/events?cached=1")"
 EVENTS_JSON="$(sed -n 's/^data: //p' <<<"${EVENTS_RAW}" | jq -cs '.')"

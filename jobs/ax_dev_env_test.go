@@ -26,7 +26,8 @@ func TestAXDevEnvAndScripts(t *testing.T) {
 		for _, want := range []string{
 			`SUBSTRATE_TAG:-v1.0.0}`,
 			`SUBSTRATE_COMMIT:-b34fbee742906494b5eb4f1f36987176bf8770a4}`,
-			`AX_COMMIT:-56bd0fc55574e48ad2ce952a7ea38730694d1fcf}`,
+			`AX_TAG:-v0.4.0-rc.1}`,
+			`AX_COMMIT:-2701b10b459e6fe69ae3e4e0a1422641f349e229}`,
 		} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("versions.env missing %q:\n%s", want, text)

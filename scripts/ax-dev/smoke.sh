@@ -13,10 +13,15 @@ k() { kubectl --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" "$@"; }
 if ! kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
   fail "kind cluster '${KIND_CLUSTER_NAME}' is not running (run scripts/ax-dev/up.sh)"
 fi
+[[ -f "${STATE}/images.env" ]] && { # shellcheck disable=SC1090,SC1091
+  source "${STATE}/images.env"; }
+TASK_IMAGE="${AX_DEFAULT_TASK_IMAGE:-${GLUE_TASK_IMAGE:-}}"
+[[ -n "${TASK_IMAGE}" ]] || fail "missing AX_DEFAULT_TASK_IMAGE in ${STATE}/images.env (run scripts/ax-dev/up.sh)"
 
 TMP_DIR="$(mktemp -d -t glue-ax-smoke-XXXXXX)"
 export AX_HOME="${TMP_DIR}/ax-home"
 TASK_NAME="smoke-$(date +%s)"
+GW_NAME="${TASK_NAME}-gw"
 PROXY_PORT="${GLUE_SMOKE_PROXY_PORT:-18080}"
 PF_PID=""
 PROXY_PID=""
@@ -25,8 +30,10 @@ cleanup() {
   local rc=$?
   set +e
   [[ -n "${PROXY_PID}" ]] && kill "${PROXY_PID}" >/dev/null 2>&1 && wait "${PROXY_PID}" 2>/dev/null
-  [[ -n "${AX_SERVER_URL:-}" ]] && ax --server "${AX_SERVER_URL}" --context "${KUBE_CONTEXT}" -a default delete task "${TASK_NAME}" >/dev/null 2>&1
-  kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "${TASK_NAME}" -a default >/dev/null 2>&1 || true
+  if [[ -n "${AX_SERVER_URL:-}" ]]; then
+    ax --server "${AX_SERVER_URL}" --context "${KUBE_CONTEXT}" -a default delete task "${TASK_NAME}" >/dev/null 2>&1
+    ax --server "${AX_SERVER_URL}" --context "${KUBE_CONTEXT}" -a default delete gateway "${GW_NAME}" >/dev/null 2>&1
+  fi
   [[ -n "${PF_PID}" ]] && kill "${PF_PID}" >/dev/null 2>&1 && wait "${PF_PID}" 2>/dev/null
   ax tunnel stop "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
   rm -rf "${TMP_DIR}"
@@ -45,9 +52,12 @@ done
 [[ -n "${AX_PORT}" ]] || fail "ax-server port-forward did not become ready"
 AX_SERVER_URL="http://127.0.0.1:${AX_PORT}"
 run_ax() { ax --server "${AX_SERVER_URL}" --context "${KUBE_CONTEXT}" -a default "$@"; }
+task_state() { run_ax get task "${TASK_NAME}" -o yaml | awk '$1 == "state:" && !p++ {gsub(/"/, "", $2); print $2}'; }
 
-log "1. Applying task '${TASK_NAME}', resuming, verifying Running and ax ssh..."
-cat > "${TMP_DIR}/task.yaml" <<EOF
+write_task_yaml() {
+  local gw_line=""
+  [[ -n "${1:-}" ]] && gw_line="  gateway: {name: $1}"$'\n'
+  cat > "${TMP_DIR}/task.yaml" <<EOF
 apiVersion: ax.io/v1alpha1
 kind: Task
 metadata:
@@ -55,7 +65,9 @@ metadata:
   atespace: default
 spec:
   debug: true
-  command:
+${gw_line}  profile:
+    image: ${TASK_IMAGE}
+  commands:
     - python3
     - -c
     - |
@@ -66,31 +78,49 @@ spec:
         def log_message(self, *args): pass
       socketserver.TCPServer(("0.0.0.0", 8080), H).serve_forever()
 EOF
+}
+
+log "1. Applying task '${TASK_NAME}', resuming, verifying Working and ax ssh..."
+write_task_yaml ""
 run_ax apply -f "${TMP_DIR}/task.yaml"
 run_ax resume task "${TASK_NAME}"
-phase="$(run_ax get task "${TASK_NAME}" -o yaml | awk '$1 == "phase:" && !p++ {print $2}')"
-[[ "${phase}" == "Running" ]] || fail "expected phase Running, got ${phase}"
+state="$(task_state)"
+[[ "${state}" == "TASK_STATE_WORKING" ]] || fail "expected state TASK_STATE_WORKING, got ${state}"
 ssh_out="$(run_ax ssh "${TASK_NAME}" -- echo ok | tr -d '\r')"
 [[ "${ssh_out}" == "ok" ]] || fail "expected 'ax ssh -- echo ok' to print 'ok', got: ${ssh_out}"
-printf '  [ok] task %s is Running and ax ssh printed: %s\n' "${TASK_NAME}" "${ssh_out}"
+printf '  [ok] task %s is Working and ax ssh printed: %s\n' "${TASK_NAME}" "${ssh_out}"
 
 log "2. Verifying default-deny egress (getent hosts github.com must fail)..."
 if run_ax ssh "${TASK_NAME}" -- getent hosts github.com >/dev/null 2>&1; then
-  fail "expected 'getent hosts github.com' to fail without an egress policy"
+  fail "expected 'getent hosts github.com' to fail without a Gateway"
 fi
-printf '  [ok] getent hosts github.com failed as expected without EgressPolicy\n'
+printf '  [ok] getent hosts github.com failed as expected without Gateway\n'
 
-log "3. Creating EgressPolicy (tls_passthrough github.com:443) and verifying git ls-remote..."
-cat <<'EOF' | kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" create egress-policy "${TASK_NAME}" -a default -f -
-rules:
-- tls_passthrough: {hostnames: ["github.com"], ports: {numbers: [443]}}
+log "3. Binding AX Gateway '${GW_NAME}' (tls_passthrough github.com:443) and verifying git ls-remote..."
+run_ax delete task "${TASK_NAME}"
+cat > "${TMP_DIR}/gateway.yaml" <<EOF
+apiVersion: ax.io/v1alpha1
+kind: Gateway
+metadata:
+  name: ${GW_NAME}
+  atespace: default
+spec:
+  egress:
+    - tls_passthrough:
+        hostnames: ["github.com"]
+        ports:
+          numbers: [443]
 EOF
+run_ax apply -f "${TMP_DIR}/gateway.yaml"
+write_task_yaml "${GW_NAME}"
+run_ax apply -f "${TMP_DIR}/task.yaml"
+run_ax resume task "${TASK_NAME}"
 ls_remote=""
 for _ in $(seq 1 15); do
   if ls_remote="$(run_ax ssh "${TASK_NAME}" -- git ls-remote https://github.com/google/ax HEAD 2>/dev/null)" && [[ "${ls_remote}" == *"HEAD"* ]]; then break; fi
   sleep 1
 done
-[[ "${ls_remote}" == *"HEAD"* ]] || fail "git ls-remote https://github.com/google/ax HEAD did not succeed after egress policy"
+[[ "${ls_remote}" == *"HEAD"* ]] || fail "git ls-remote https://github.com/google/ax HEAD did not succeed after Gateway bind"
 printf '  [ok] git ls-remote succeeded: %s\n' "${ls_remote}"
 
 log "4. Verifying arbitrary-port ingress via 'kubectl ate proxy actor ${TASK_NAME} ${PROXY_PORT}:8080'..."
@@ -108,15 +138,15 @@ printf '  [ok] kubectl ate proxy %s:8080 returned: %s\n' "${PROXY_PORT}" "${prox
 log "5. Verifying suspend/resume persistence (/workspace survives; /tmp is reset)..."
 run_ax ssh "${TASK_NAME}" -- sh -c 'echo survive-416 > /workspace/keep.txt && echo vanish-416 > /tmp/drop.txt'
 run_ax suspend task "${TASK_NAME}"
-sub_phase="$(run_ax get task "${TASK_NAME}" -o yaml | awk '$1 == "phase:" && !p++ {print $2}')"
-[[ "${sub_phase}" == "Suspended" ]] || fail "expected phase Suspended, got ${sub_phase}"
+sub_state="$(task_state)"
+[[ "${sub_state}" == "TASK_STATE_SUSPENDED" ]] || fail "expected state TASK_STATE_SUSPENDED, got ${sub_state}"
 run_ax resume task "${TASK_NAME}"
 persist_out="$(run_ax ssh "${TASK_NAME}" -- sh -c 'cat /workspace/keep.txt && if [ -e /tmp/drop.txt ]; then echo TMP_PRESENT; else echo TMP_GONE; fi' | tr -d '\r')"
 [[ "${persist_out}" == $'survive-416\nTMP_GONE' ]] || fail "unexpected post-resume state: ${persist_out}"
 printf '  [ok] /workspace/keep.txt survived (survive-416) and /tmp/drop.txt was wiped (TMP_GONE)\n'
 
-log "6. Cleaning up task and egress policy '${TASK_NAME}' (leaving '${KIND_CLUSTER_NAME}' running)..."
+log "6. Cleaning up task '${TASK_NAME}' and gateway '${GW_NAME}' (leaving '${KIND_CLUSTER_NAME}' running)..."
 run_ax delete task "${TASK_NAME}"
-kubectl ate --kubeconfig "${KUBECONFIG}" --context "${KUBE_CONTEXT}" delete egress-policy "${TASK_NAME}" -a default >/dev/null 2>&1 || true
+run_ax delete gateway "${GW_NAME}"
 if run_ax get task "${TASK_NAME}" >/dev/null 2>&1; then fail "task ${TASK_NAME} still exists after delete"; fi
-printf '  [ok] task and egress-policy %s deleted\n\nSMOKE PASS: all 6 assertions succeeded.\n' "${TASK_NAME}"
+printf '  [ok] task %s and gateway %s deleted\n\nSMOKE PASS: all 6 assertions succeeded.\n' "${TASK_NAME}" "${GW_NAME}"

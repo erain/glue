@@ -57,8 +57,10 @@ IMG_BYTES="$(docker image inspect --format='{{.Size}}' "${TAG}")"
 
 {
   [[ -n "${AX_SERVER_IMAGE:-}" ]] && printf 'export AX_SERVER_IMAGE="%s"\n' "${AX_SERVER_IMAGE}"
-  printf 'export AX_TASK_RUNNER_IMAGE="%s"\nexport AX_DEFAULT_TASK_IMAGE="%s"\nexport GLUE_TASK_IMAGE="%s"\n' \
-    "${AX_TASK_RUNNER_IMAGE}" "${AX_DEFAULT_TASK_IMAGE:-${AX_TASK_RUNNER_IMAGE}}" "${GLUE_TASK_IMAGE}"
+  printf 'export AX_TASK_RUNNER_IMAGE="%s"\n' "${AX_TASK_RUNNER_IMAGE}"
+  [[ -n "${AX_RUNNER_VOLUME_IMAGE:-}" ]] && printf 'export AX_RUNNER_VOLUME_IMAGE="%s"\n' "${AX_RUNNER_VOLUME_IMAGE}"
+  printf 'export AX_DEFAULT_TASK_IMAGE="%s"\nexport GLUE_TASK_IMAGE="%s"\n' \
+    "${AX_DEFAULT_TASK_IMAGE:-${AX_TASK_RUNNER_IMAGE}}" "${GLUE_TASK_IMAGE}"
 } > "${STATE}/images.env"
 
 log "Pushed ${GLUE_TASK_IMAGE} ($(( IMG_BYTES / 1024 / 1024 )) MiB / ${IMG_BYTES} bytes); recorded in ${STATE}/images.env"
